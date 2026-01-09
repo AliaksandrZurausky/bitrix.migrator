@@ -69,6 +69,14 @@ if ($request->isPost() && check_bitrix_sessid()) {
                 $queueMessage = 'Ошибка: ' . htmlspecialchars($e->getMessage());
             }
             break;
+            
+        case 'save_batch':
+            $batchSize = (int)$request->get('batch_size');
+            if ($batchSize > 0 && $batchSize <= 500) {
+                Option::set($MODULE_ID, 'BATCH_SIZE', $batchSize);
+                $message = 'Настройки сохранены';
+            }
+            break;
     }
 }
 
@@ -76,15 +84,6 @@ if ($request->isPost() && check_bitrix_sessid()) {
 $webhookUrl = Option::get($MODULE_ID, 'CLOUD_WEBHOOK_URL', '');
 $migrationEnabled = Option::get($MODULE_ID, 'MIGRATION_ENABLED', 'N') === 'Y';
 $batchSize = (int)Option::get($MODULE_ID, 'BATCH_SIZE', 50);
-
-// Получение статистики очереди
-try {
-    $queueRepo = new \BitrixMigrator\Repository\Hl\QueueRepository();
-    $logRepo = new \BitrixMigrator\Repository\Hl\LogRepository();
-    // Получение счётчика будет реализовано позже
-} catch (\Exception $e) {
-    // Игнорируем ошибки при отсутствии HL
-}
 
 // Инициализация CAdminTabControl
 $tabControl = new CAdminTabControl('migrator_tabs', [
@@ -94,6 +93,9 @@ $tabControl = new CAdminTabControl('migrator_tabs', [
 ]);
 
 $APPLICATION->SetTitle('Bitrix Migrator - Миграция данных');
+
+// Загружаем скрипт для AJAX
+Asset::getInstance()->addJs('/bitrix/modules/bitrix_migrator/admin/js/migrator.js');
 ?>
 
 <h1>Bitrix Migrator</h1>
@@ -269,30 +271,30 @@ $tabControl->Begin();
         </tr>
         <tr>
             <td colspan="2" class="adm-detail-content-cell-l" style="padding: 20px;">
-                <div style="background: #f5f5f5; padding: 15px; border-radius: 4px; border: 1px solid #ddd;">
+                <div style="background: #f5f5f5; padding: 15px; border-radius: 4px; border: 1px solid #ddd;" id="queue-stats">
                     <div style="margin-bottom: 10px;">
                         <strong>Статистика:</strong>
                     </div>
                     <table width="100%" style="font-size: 12px;">
                         <tr>
                             <td width="50%">Всего задач:</td>
-                            <td><span style="color: #3fa43f; font-weight: bold;">—</span></td>
+                            <td><span class="stat-total">-</span></td>
                         </tr>
                         <tr>
                             <td>Выполнено:</td>
-                            <td><span style="color: #3fa43f; font-weight: bold;">—</span></td>
+                            <td><span class="stat-completed">-</span></td>
                         </tr>
                         <tr>
                             <td>В очереди:</td>
-                            <td><span style="color: #ff8f00; font-weight: bold;">—</span></td>
+                            <td><span class="stat-pending">-</span></td>
                         </tr>
                         <tr>
                             <td>Ошибок:</td>
-                            <td><span style="color: #ff4444; font-weight: bold;">—</span></td>
+                            <td><span class="stat-errors">-</span></td>
                         </tr>
                     </table>
                     <div style="margin-top: 15px; font-size: 11px; color: #999;">
-                        <em>Статистика обновляется из HL-блоков при открытии страницы</em>
+                        <em>Статистика автоматически обновляется каждые 5 секунд</em>
                     </div>
                 </div>
             </td>
@@ -309,20 +311,20 @@ $tabControl->Begin();
         </tr>
         <tr>
             <td colspan="2" class="adm-detail-content-cell-l" style="padding: 20px;">
-                <div style="background: #f5f5f5; padding: 15px; border-radius: 4px; border: 1px solid #ddd; min-height: 300px;">
-                    <table width="100%" style="font-size: 12px; border-collapse: collapse;">
+                <div style="background: #f5f5f5; padding: 15px; border-radius: 4px; border: 1px solid #ddd; min-height: 300px;" id="logs-container">
+                    <table width="100%" style="font-size: 12px; border-collapse: collapse;" id="logs-table">
                         <thead>
                             <tr style="border-bottom: 1px solid #ddd;">
                                 <th width="15%" style="text-align: left; padding: 8px;">Время</th>
-                                <th width="15%" style="text-align: left; padding: 8px;">Уровень</th>
-                                <th width="30%" style="text-align: left; padding: 8px;">Область</th>
-                                <th width="40%" style="text-align: left; padding: 8px;">Сообщение</th>
+                                <th width="10%" style="text-align: left; padding: 8px;">Уровень</th>
+                                <th width="25%" style="text-align: left; padding: 8px;">Область</th>
+                                <th width="50%" style="text-align: left; padding: 8px;">Сообщение</th>
                             </tr>
                         </thead>
-                        <tbody>
+                        <tbody id="logs-tbody">
                             <tr>
                                 <td colspan="4" style="text-align: center; padding: 30px; color: #999;">
-                                    <em>Логи будут отображены здесь после первого запуска миграции</em>
+                                    <em>Загружаю...</em>
                                 </td>
                             </tr>
                         </tbody>
@@ -338,13 +340,13 @@ $tabControl->Begin();
             <td colspan="2" class="adm-detail-content-cell-l" style="padding: 15px;">
                 <div>
                     <label style="margin-right: 20px;">
-                        <input type="checkbox" checked> Ошибки (ERROR)
+                        <input type="checkbox" class="log-filter" value="ERROR" checked> Ошибки (ERROR)
                     </label>
                     <label style="margin-right: 20px;">
-                        <input type="checkbox" checked> Предупреждения (WARNING)
+                        <input type="checkbox" class="log-filter" value="WARNING" checked> Предупреждения (WARNING)
                     </label>
                     <label>
-                        <input type="checkbox"> Информация (INFO)
+                        <input type="checkbox" class="log-filter" value="INFO"> Информация (INFO)
                     </label>
                 </div>
             </td>
@@ -397,6 +399,24 @@ $tabControl->Begin();
         color: #a93b3b;
         padding: 10px;
         border-radius: 4px;
+    }
+    
+    #logs-table tbody tr:hover {
+        background-color: #efefef;
+    }
+    
+    .log-level-error {
+        color: #ff4444;
+        font-weight: bold;
+    }
+    
+    .log-level-warning {
+        color: #ff8f00;
+        font-weight: bold;
+    }
+    
+    .log-level-info {
+        color: #666;
     }
 </style>
 
