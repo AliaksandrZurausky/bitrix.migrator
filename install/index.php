@@ -94,7 +94,7 @@ class bitrix_migrator extends CModule
         return true;
     }
 
-    private function InstallDB()
+    public function InstallDB()
     {
         if (!\Bitrix\Main\Loader::includeModule('highloadblock')) {
             throw new Exception(Loc::getMessage('BITRIX_MIGRATOR_HL_REQUIRED'));
@@ -104,7 +104,7 @@ class bitrix_migrator extends CModule
         $this->createLogsTable();
     }
 
-    private function createQueueTable()
+    public function createQueueTable()
     {
         $hlblock = \Bitrix\Highloadblock\HighloadBlockTable::getList([
             'filter' => ['=NAME' => 'MigratorQueue']
@@ -180,7 +180,7 @@ class bitrix_migrator extends CModule
         }
     }
 
-    private function createLogsTable()
+    public function createLogsTable()
     {
         $hlblock = \Bitrix\Highloadblock\HighloadBlockTable::getList([
             'filter' => ['=NAME' => 'MigratorLogs']
@@ -236,7 +236,7 @@ class bitrix_migrator extends CModule
         }
     }
 
-    private function UninstallDB()
+    public function UninstallDB()
     {
         if (!\Bitrix\Main\Loader::includeModule('highloadblock')) {
             return;
@@ -259,10 +259,8 @@ class bitrix_migrator extends CModule
         }
     }
 
-    private function InstallEvents()
+    public function InstallEvents()
     {
-        $eventManager = EventManager::getInstance();
-
         // Регистрируем агент
         if (class_exists('CAgent')) {
             \CAgent::AddAgent(
@@ -274,7 +272,7 @@ class bitrix_migrator extends CModule
         }
     }
 
-    private function UninstallEvents()
+    public function UninstallEvents()
     {
         if (class_exists('CAgent')) {
             \CAgent::RemoveModuleAgents($this->MODULE_ID);
