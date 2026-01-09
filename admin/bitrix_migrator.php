@@ -14,7 +14,6 @@ $MODULE_ID = 'bitrix_migrator';
 $request = \Bitrix\Main\Application::getInstance()->getContext()->getRequest();
 $tab = $request->get('tab') ?: 'settings';
 
-// Обработка POST запросов
 if ($request->isPost() && check_bitrix_sessid()) {
     $action = $request->get('action');
     
@@ -23,7 +22,7 @@ if ($request->isPost() && check_bitrix_sessid()) {
             $webhook = $request->get('webhook_url');
             if (!empty($webhook)) {
                 Option::set($MODULE_ID, 'CLOUD_WEBHOOK_URL', $webhook);
-                $message = new \Bitrix\Main\UI\PageTitle('Веб-хук сохранён');
+                $message = 'Веб-хук сохранён';
             }
             break;
             
@@ -80,12 +79,10 @@ if ($request->isPost() && check_bitrix_sessid()) {
     }
 }
 
-// Получение текущих значений
 $webhookUrl = Option::get($MODULE_ID, 'CLOUD_WEBHOOK_URL', '');
 $migrationEnabled = Option::get($MODULE_ID, 'MIGRATION_ENABLED', 'N') === 'Y';
 $batchSize = (int)Option::get($MODULE_ID, 'BATCH_SIZE', 50);
 
-// Инициализация CAdminTabControl
 $tabControl = new CAdminTabControl('migrator_tabs', [
     ['DIV' => 'tab-settings', 'TAB' => 'Подключение', 'ICON' => 'settings'],
     ['DIV' => 'tab-queue', 'TAB' => 'Очередь', 'ICON' => 'list'],
@@ -94,58 +91,47 @@ $tabControl = new CAdminTabControl('migrator_tabs', [
 
 $APPLICATION->SetTitle('Bitrix Migrator - Миграция данных');
 
-// Загружаем скрипт для AJAX (три варианта путей)
-if (file_exists($_SERVER['DOCUMENT_ROOT'] . '/bitrix/admin/js/bitrix_migrator.js')) {
-    Asset::getInstance()->addJs('/bitrix/admin/js/bitrix_migrator.js');
-} elseif (file_exists($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/bitrix_migrator/admin/js/migrator.js')) {
-    Asset::getInstance()->addJs('/bitrix/modules/bitrix_migrator/admin/js/migrator.js');
-}
+// Загружаем JS
+Asset::getInstance()->addJs('/bitrix/admin/js/bitrix_migrator.js');
 ?>
 
 <h1>Bitrix Migrator</h1>
 <p style="font-size: 12px; color: #999; margin: -10px 0 20px 0;">
-    Миграция данных из облачного портала в локальный сервер
+    Миграция данных из облакного портала в локальный сервер
 </p>
 
 <?php if (!empty($message)): ?>
 <div class="adm-info-message" style="margin-bottom: 10px;">
-    <div class="adm-info-message-text">
-        <?php echo $message; ?>
-    </div>
+    <div class="adm-info-message-text"><?php echo htmlspecialchars($message); ?></div>
 </div>
 <?php endif; ?>
 
 <?php if (!empty($testMessage)): ?>
 <div class="<?php echo strpos($testMessage, 'Ошибка') === false ? 'adm-info-message' : 'adm-error-message'; ?>" style="margin-bottom: 10px;">
-    <div class="adm-info-message-text">
-        <?php echo $testMessage; ?>
-    </div>
+    <div class="adm-info-message-text"><?php echo htmlspecialchars($testMessage); ?></div>
 </div>
 <?php endif; ?>
 
 <?php if (!empty($startMessage)): ?>
 <div class="adm-info-message" style="margin-bottom: 10px;">
-    <div class="adm-info-message-text"><?php echo $startMessage; ?></div>
+    <div class="adm-info-message-text"><?php echo htmlspecialchars($startMessage); ?></div>
 </div>
 <?php endif; ?>
 
 <?php if (!empty($pauseMessage)): ?>
 <div class="adm-info-message" style="margin-bottom: 10px;">
-    <div class="adm-info-message-text"><?php echo $pauseMessage; ?></div>
+    <div class="adm-info-message-text"><?php echo htmlspecialchars($pauseMessage); ?></div>
 </div>
 <?php endif; ?>
 
 <?php if (!empty($queueMessage)): ?>
 <div class="<?php echo strpos($queueMessage, 'Ошибка') === false ? 'adm-info-message' : 'adm-error-message'; ?>" style="margin-bottom: 10px;">
-    <div class="adm-info-message-text"><?php echo $queueMessage; ?></div>
+    <div class="adm-info-message-text"><?php echo htmlspecialchars($queueMessage); ?></div>
 </div>
 <?php endif; ?>
 
-<?php
-$tabControl->Begin();
-?>
+<?php $tabControl->Begin(); ?>
 
-<!-- TAB 1: SETTINGS -->
 <?php $tabControl->BeginNextTab(); ?>
 <table class="adm-detail-content-table edit-table" width="100%">
     <tbody>
@@ -157,7 +143,7 @@ $tabControl->Begin();
                 <label for="webhook_url">URL webhook:</label>
             </td>
             <td width="60%" class="adm-detail-content-cell-r">
-                <form method="POST" id="webhook-form" style="display: inline;">
+                <form method="POST" style="display: inline;">
                     <?php echo bitrix_sessid_post(); ?>
                     <input type="hidden" name="action" value="save_webhook">
                     <input type="text" name="webhook_url" id="webhook_url" value="<?php echo htmlspecialchars($webhookUrl); ?>" 
@@ -242,7 +228,6 @@ $tabControl->Begin();
     </tbody>
 </table>
 
-<!-- TAB 2: QUEUE -->
 <?php $tabControl->BeginNextTab(); ?>
 <table class="adm-detail-content-table edit-table" width="100%">
     <tbody>
@@ -276,9 +261,7 @@ $tabControl->Begin();
         <tr>
             <td colspan="2" class="adm-detail-content-cell-l" style="padding: 20px;">
                 <div style="background: #f5f5f5; padding: 15px; border-radius: 4px; border: 1px solid #ddd;" id="queue-stats">
-                    <div style="margin-bottom: 10px;">
-                        <strong>Статистика:</strong>
-                    </div>
+                    <div style="margin-bottom: 10px;"><strong>Статистика:</strong></div>
                     <table width="100%" style="font-size: 12px;">
                         <tr>
                             <td width="50%">Всего задач:</td>
@@ -298,7 +281,7 @@ $tabControl->Begin();
                         </tr>
                     </table>
                     <div style="margin-top: 15px; font-size: 11px; color: #999;">
-                        <em>Статистика автоматически обновляется каждые 5 секунд</em>
+                        <em>Статистика обновляется каждые 5 секунд</em>
                     </div>
                 </div>
             </td>
@@ -306,7 +289,6 @@ $tabControl->Begin();
     </tbody>
 </table>
 
-<!-- TAB 3: LOGS -->
 <?php $tabControl->BeginNextTab(); ?>
 <table class="adm-detail-content-table edit-table" width="100%">
     <tbody>
@@ -424,6 +406,4 @@ $tabControl->Begin();
     }
 </style>
 
-<?php
-require_once($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/epilog_admin.php');
-?>
+<?php require_once($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/epilog_admin.php'); ?>
