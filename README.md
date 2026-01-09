@@ -1,58 +1,254 @@
 # Bitrix Migrator (bitrix_migrator)
 
-Модуль-заготовка для миграции данных Bitrix24 «облако → коробка» с переносом максимально возможной части CRM-таймлайна.
+Модуль для миграции данных Bitrix24 «облако → коробка» с переносом максимально возможной части CRM-таймлайна.
 
-## Цели MVP
+## Возможности
 
-- Задать базовую структуру D7-модуля (установка/удаление, автолоад классов).
-- Подготовить каркас для очереди/маппингов/логов (позже будет реализовано через HL-блоки).
-- Подготовить каркас агента, который будет выполнять миграцию пакетами.
+- Перенос CRM-сущностей: сделки, контакты, компании, лиды
+- Перенос таймлайна: комментарии, активности (звонки/письма/задачи)
+- Очередь задач с ретраями и логированием
+- Маппинг ID облако → коробка
+- Автоматическое выполнение через агенты Bitrix
 
-> Важно: в Bitrix стандартный идентификатор модуля обычно имеет вид `vendor.module`. Здесь используется `bitrix_migrator` по требованиям проекта — если будут проблемы с установкой/автолоадом, стоит переименовать в формат с точкой.
+## Архитектура
 
-## Планируемая архитектура (высокоуровнево)
+### Слои
 
-- **Admin UI**: одна главная страница с вкладками (будет сделано отдельно в «лаборатории»).
-- **Application layer**:
-  - `TaskRunner`: выполнение пачки задач.
-  - `QueueBuilder`: формирование задач в очереди.
-- **Integration**:
-  - `CloudRestClient`: чтение данных из облака по webhook.
-- **Box writers (D7)**:
-  - `CrmWriter`: создание/обновление сущностей CRM.
-  - `TimelineWriter`: создание записей таймлайна (комментарии/активности).
-- **Storage (HL)**:
-  - `QueueRepository`: очередь задач.
-  - `MapRepository`: соответствия cloud_id → box_id.
-  - `LogRepository`: журналирование.
+```
+┌─────────────────────────────────────┐
+│   Admin UI (будет добавлено)        │
+└─────────────────────────────────────┘
+           │
+┌─────────────────────────────────────┐
+│   Application Layer              │
+│   - QueueBuilder                  │
+│   - TaskRunner                    │
+└─────────────────────────────────────┘
+           │
+┌─────────────────────────────────────┐
+│   Service/Import                  │
+│   - DealImporter                  │
+│   - ContactImporter               │
+│   - TimelineImporter              │
+└─────────────────────────────────────┘
+           │
+   ┌───────────────────────────────────┐
+   │   Infrastructure             │
+   │   - Cloud REST Client        │
+   │   - Box Writers (CRM/Timeline)│
+   │   - HL Repositories          │
+   └───────────────────────────────────┘
+```
 
-## Структура репозитория
+### Ключевые компоненты
 
-Репозиторий содержит **содержимое** папки модуля (без внешней обёртки). При разворачивании на сервере Битрикс предполагается путь вида:
+**Integration/Cloud:**
+- `RestClient` — REST-клиент для облачного портала
+- `Api/*` — обёртки над REST-методами (Deal, Contact, Timeline...)
 
-- `/local/modules/bitrix_migrator/` (или `/bitrix/modules/bitrix_migrator/` — зависит от проекта)
+**Writer/Box:**
+- `CrmWriter` — создание CRM-сущностей в коробке через D7
+- `TimelineWriter` — создание записей таймлайна (комменты/активности)
 
-Ключевые файлы:
+**Repository/Hl:**
+- `QueueRepository` — управление очередью задач
+- `MapRepository` — соответствия cloud_id → box_id
+- `LogRepository` — логирование
 
-- `install/index.php` — класс модуля и логика установки/удаления.
-- `install/version.php` — версия модуля.
-- `include.php` — регистрация автолоада классов.
-- `lib/` — код модуля (D7/PSR-подобная структура).
+**Service:**
+- `QueueBuilder` — формирование очереди задач
+- `TaskRunner` — выполнение пачек задач из очереди
+- `Import/*` — импортеры для каждого типа сущности
 
-## Агент (как будет работать)
+**Agent:**
+- `MigratorAgent` — агент Bitrix, который запускает TaskRunner
 
-Агент будет зарегистрирован при установке модуля и будет регулярно запускаться (через cron-режим агентов).
+## HL-блоки
 
-Принцип:
+При установке модуля создаются 3 Highload-блока:
 
-1. Агент читает из очереди (HL) N задач.
-2. Выполняет их, обновляет статусы/ошибки.
-3. Возвращает строку с самим собой для повторного выполнения.
+### 1. BitrixMigratorQueue (очередь задач)
 
-Каркас агента уже добавлен: `BitrixMigrator\Agent\MigratorAgent::run()`.
+| Поле | Тип | Описание |
+|------|------|------------|
+| UF_TYPE | string | Тип задачи (ENTITY_CREATE, TIMELINE_IMPORT) |
+| UF_ENTITY_TYPE | string | Тип сущности (DEAL, CONTACT, COMPANY, LEAD) |
+| UF_CLOUD_ID | string | ID сущности в облаке |
+| UF_BOX_ID | int | ID сущности в коробке |
+| UF_STEP | string | Шаг выполнения (CREATE, IMPORT, etc.) |
+| UF_STATUS | string | Статус (NEW, RUNNING, DONE, ERROR, RETRY) |
+| UF_RETRY | int | Количество попыток |
+| UF_NEXT_RUN_AT | datetime | Следующее время запуска |
+| UF_PAYLOAD | text | Доп. данные (JSON) |
+| UF_ERROR | text | Текст ошибки |
 
-## Дальнейшие шаги
+### 2. BitrixMigratorMap (маппинг ID)
 
-- Добавить HL-блоки на установке (Queue/Map/Log) и репозитории для них.
-- Добавить CloudRestClient + обёртки над методами REST.
-- Реализовать первый рабочий сценарий: перенос сделок + перенос комментариев таймлайна.
+| Поле | Тип | Описание |
+|------|------|------------|
+| UF_ENTITY | string | Тип сущности |
+| UF_CLOUD_ID | string | ID в облаке |
+| UF_BOX_ID | int | ID в коробке |
+| UF_HASH | string | Хэш для идемпотентности |
+| UF_META | text | Метаданные (JSON) |
+
+### 3. BitrixMigratorLog (журнал)
+
+| Поле | Тип | Описание |
+|------|------|------------|
+| UF_LEVEL | string | Уровень (INFO, WARNING, ERROR) |
+| UF_SCOPE | string | Область логирования |
+| UF_MESSAGE | text | Сообщение |
+| UF_CONTEXT | text | Контекст (JSON) |
+| UF_ENTITY | string | Тип сущности |
+| UF_CLOUD_ID | string | ID в облаке |
+| UF_BOX_ID | int | ID в коробке |
+
+## Установка
+
+### 1. Разместить модуль
+
+```bash
+cd /path/to/bitrix/local/modules/
+git clone https://github.com/AliaksandrZurausky/bitrix.migrator.git bitrix_migrator
+```
+
+### 2. Установить модуль
+
+Перейти в: **Администрирование → Marketplace → Установленные решения → Bitrix Migrator**
+
+Нажать «Установить».
+
+Модуль:
+- Создаст 3 HL-блока (или использует существующие)
+- Зарегистрирует агента `MigratorAgent`
+
+### 3. Настройка
+
+Добавить в настройки модуля (`.settings.php` или через `Option::set`):
+
+```php
+use Bitrix\Main\Config\Option;
+use BitrixMigrator\Config\Module;
+
+// Webhook облачного портала
+Option::set(Module::ID, 'CLOUD_WEBHOOK_URL', 'https://your-cloud.bitrix24.ru/rest/1/your_webhook_key');
+
+// Включение миграции
+Option::set(Module::ID, 'MIGRATION_ENABLED', 'Y');
+
+// Размер пачки (по умолчанию 50)
+Option::set(Module::ID, 'BATCH_SIZE', 50);
+```
+
+### 4. Перевод агентов на cron (рекомендуется)
+
+Добавить в crontab:
+
+```bash
+* * * * * /usr/bin/php /path/to/bitrix/modules/main/tools/cron_events.php
+```
+
+В `.settings.php` установить:
+
+```php
+'agents' => [
+    'value' => [
+        'use_crontab' => true,
+    ],
+],
+```
+
+## Использование
+
+### Формирование очереди
+
+```php
+use Bitrix\Main\Loader;
+use BitrixMigrator\Repository\Hl\QueueRepository;
+use BitrixMigrator\Integration\Cloud\RestClient;
+use BitrixMigrator\Service\QueueBuilder;
+
+Loader::includeModule('bitrix_migrator');
+
+$queueRepo = new QueueRepository();
+$cloudClient = new RestClient();
+$queueBuilder = new QueueBuilder($queueRepo, $cloudClient);
+
+// Добавить все сделки в очередь
+$count = $queueBuilder->buildForDeals();
+echo "Added {$count} deals to queue";
+
+// Или с фильтром
+$count = $queueBuilder->buildForDeals(['STAGE_ID' => 'WON']);
+```
+
+### Запуск миграции
+
+Миграция запускается автоматически агентом. Для включения/остановки:
+
+```php
+use Bitrix\Main\Config\Option;
+use BitrixMigrator\Config\Module;
+
+// Запустить
+Option::set(Module::ID, 'MIGRATION_ENABLED', 'Y');
+
+// Остановить
+Option::set(Module::ID, 'MIGRATION_ENABLED', 'N');
+```
+
+### Ручной запуск пачки
+
+```php
+use BitrixMigrator\Service\TaskRunner;
+use BitrixMigrator\Repository\Hl\QueueRepository;
+use BitrixMigrator\Repository\Hl\LogRepository;
+// ... и другие зависимости
+
+$taskRunner = new TaskRunner($queueRepo, $logRepo, $importers);
+$processed = $taskRunner->runBatch(50);
+echo "Processed {$processed} tasks";
+```
+
+## Рабочий флоу
+
+1. **Формирование очереди**: `QueueBuilder` читает список сущностей из облака и добавляет задачи в `BitrixMigratorQueue`.
+
+2. **Выполнение**: Агент `MigratorAgent::run()` запускается каждую минуту (или через cron).
+
+3. **Обработка пачки**: `TaskRunner` берёт N задач со статусом `NEW/RETRY`.
+
+4. **Импорт**: Для каждой задачи:
+   - Импортер читает данные из облака (`CloudRestClient`).
+   - Создаёт сущность в коробке (`CrmWriter`, `TimelineWriter`).
+   - Сохраняет маппинг в `BitrixMigratorMap`.
+   - Добавляет дочерние задачи (например, перенос таймлайна).
+
+5. **Логирование**: Все операции логируются в `BitrixMigratorLog`.
+
+6. **Ретраи**: При ошибке задача помечается как `RETRY` (до 3 попыток).
+
+## Удаление модуля
+
+При удалении модуль спрашивает:
+- Сохранить данные (HL-блоки и настройки)?
+
+Если галочка снята — все HL-блоки и настройки удаляются.
+
+## TODO / Дальнейшее развитие
+
+- [ ] Admin UI (страница с вкладками: настройки, очередь, логи)
+- [ ] Перенос файлов и записей звонков (`FileWriter`)
+- [ ] Поддержка OAuth (альтернатива webhook)
+- [ ] Улучшенная обработка связей (контакты↔компании, сделки↔контакты)
+- [ ] Перенос пользователей (с маппингом по email)
+- [ ] Поддержка других типов таймлайна (лог-сообщения, документы)
+
+## Лицензия
+
+MIT
+
+## Автор
+
+Aliaksandr Zurausky
