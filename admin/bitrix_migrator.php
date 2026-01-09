@@ -23,7 +23,7 @@ if ($request->isPost() && check_bitrix_sessid()) {
             $webhook = $request->get('webhook_url');
             if (!empty($webhook)) {
                 Option::set($MODULE_ID, 'CLOUD_WEBHOOK_URL', $webhook);
-                $message = new \Bitrix\Main\UI\PageTitle('Webhook сохранён');
+                $message = new \Bitrix\Main\UI\PageTitle('Веб-хук сохранён');
             }
             break;
             
@@ -94,8 +94,12 @@ $tabControl = new CAdminTabControl('migrator_tabs', [
 
 $APPLICATION->SetTitle('Bitrix Migrator - Миграция данных');
 
-// Загружаем скрипт для AJAX
-Asset::getInstance()->addJs('/bitrix/modules/bitrix_migrator/admin/js/migrator.js');
+// Загружаем скрипт для AJAX (три варианта путей)
+if (file_exists($_SERVER['DOCUMENT_ROOT'] . '/bitrix/admin/js/bitrix_migrator.js')) {
+    Asset::getInstance()->addJs('/bitrix/admin/js/bitrix_migrator.js');
+} elseif (file_exists($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/bitrix_migrator/admin/js/migrator.js')) {
+    Asset::getInstance()->addJs('/bitrix/modules/bitrix_migrator/admin/js/migrator.js');
+}
 ?>
 
 <h1>Bitrix Migrator</h1>
