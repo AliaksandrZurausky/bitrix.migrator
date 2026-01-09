@@ -1,9 +1,10 @@
 <?php
 /**
- * Основные админ-страницы Bitrix Migrator
+ * Entry point for Bitrix Migrator admin page
+ * Location: /bitrix/admin/bitrix_migrator.php
  * 
- * Находится в /bitrix/admin/ и include-ит этот файл:
- * Location: /local/modules/bitrix_migrator/install/admin/bitrix_migrator.php
+ * This file is copied during module installation from install/admin/bitrix_migrator.php
+ * It includes the actual admin logic from the module directory.
  */
 
-require_once(__DIR__ . '/../../../modules/bitrix_migrator/admin/bitrix_migrator.php');
+require_once($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/bitrix_migrator/admin/bitrix_migrator.php');
