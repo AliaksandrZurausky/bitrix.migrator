@@ -16,17 +16,18 @@ header('Content-Type: application/json; charset=utf-8');
 try {
     $queueRepo = new \BitrixMigrator\Repository\Hl\QueueRepository();
     
-    // Получение статистики (приближенная реализация)
-    // Нужно добавить методы в QueueRepository
+    // Получение статистики
+    $data = [
+        'total' => $queueRepo->getTotal(),
+        'completed' => $queueRepo->getCompleted(),
+        'pending' => $queueRepo->getPending(),
+        'errors' => $queueRepo->getErrors(),
+        'statsByType' => $queueRepo->getStatsByEntityType(),
+    ];
     
     echo Json::encode([
         'success' => true,
-        'data' => [
-            'total' => 0,  // требуется getTotal()
-            'completed' => 0,  // требуется getCompleted()
-            'pending' => 0,  // требуется getPending()
-            'errors' => 0,  // требуется getErrors()
-        ]
+        'data' => $data
     ]);
 } catch (\Exception $e) {
     echo Json::encode([
