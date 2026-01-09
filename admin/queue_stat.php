@@ -16,7 +16,6 @@ header('Content-Type: application/json; charset=utf-8');
 try {
     $queueRepo = new \BitrixMigrator\Repository\Hl\QueueRepository();
     
-    // Получение статистики
     $data = [
         'total' => $queueRepo->getTotal(),
         'completed' => $queueRepo->getCompleted(),

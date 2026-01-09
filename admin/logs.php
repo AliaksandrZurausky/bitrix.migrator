@@ -20,7 +20,6 @@ try {
     $offset = (int)$request->get('offset') ?: 0;
     $level = $request->get('level') ?: null;
     
-    // Получение логов
     $logs = $logRepo->getLogs($limit, $offset, $level);
     $total = $logRepo->getLogsCount($level);
     
