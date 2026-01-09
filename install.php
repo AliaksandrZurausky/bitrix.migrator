@@ -25,6 +25,9 @@ class bitrix_migrator extends CModule
         try {
             ModuleManager::registerModule($this->MODULE_ID);
 
+            // Копируем админ-файлы в /bitrix/admin/
+            $this->copyAdminFiles();
+
             // Устанавливаем HL-блоки
             Loader::includeModule($this->MODULE_ID);
             $this->setupHighloadBlocks();
@@ -53,13 +56,16 @@ class bitrix_migrator extends CModule
         }
 
         try {
+            // Удаляем админ-файлы из /bitrix/admin/
+            $this->removeAdminFiles();
+
             // Удаляем агенты
             $this->removeAgents();
 
             // Опрос только для удаления HL (обычно рекомендуется оставлять данные)
-            if (ФЛОЧ) {
-                $this->removeHighloadBlocks();
-            }
+            // if (ФЛОЧ) {
+            //     $this->removeHighloadBlocks();
+            // }
 
             ModuleManager::unregisterModule($this->MODULE_ID);
 
@@ -75,15 +81,73 @@ class bitrix_migrator extends CModule
         return true;
     }
 
+    private function copyAdminFiles(): void
+    {
+        $sourceDir = __DIR__ . '/admin_install/';
+        $targetDir = $_SERVER['DOCUMENT_ROOT'] . '/bitrix/admin/';
+
+        if (!is_dir($sourceDir)) {
+            return;
+        }
+
+        $files = [
+            'bitrix_migrator.php',
+            'menu.php',
+            'queue_stat.php',
+            'logs.php',
+        ];
+
+        foreach ($files as $file) {
+            $source = $sourceDir . $file;
+            $target = $targetDir . $file;
+
+            if (file_exists($source)) {
+                @copy($source, $target);
+            }
+        }
+
+        // Копируем JS
+        $jsSourceDir = __DIR__ . '/admin/js/';
+        $jsTargetDir = $_SERVER['DOCUMENT_ROOT'] . '/bitrix/admin/js/';
+
+        if (!is_dir($jsTargetDir)) {
+            @mkdir($jsTargetDir, 0755, true);
+        }
+
+        if (file_exists($jsSourceDir . 'migrator.js')) {
+            @copy($jsSourceDir . 'migrator.js', $jsTargetDir . 'bitrix_migrator.js');
+        }
+    }
+
+    private function removeAdminFiles(): void
+    {
+        $adminDir = $_SERVER['DOCUMENT_ROOT'] . '/bitrix/admin/';
+
+        $files = [
+            'bitrix_migrator.php',
+            'menu.php',
+            'queue_stat.php',
+            'logs.php',
+        ];
+
+        foreach ($files as $file) {
+            $path = $adminDir . $file;
+            if (file_exists($path)) {
+                @unlink($path);
+            }
+        }
+
+        // Удаляем JS
+        $jsPath = $_SERVER['DOCUMENT_ROOT'] . '/bitrix/admin/js/bitrix_migrator.js';
+        if (file_exists($jsPath)) {
+            @unlink($jsPath);
+        }
+    }
+
     private function setupHighloadBlocks(): void
     {
         // Все HL-блоки создаются в HlConfig
         // Ниже пока плацехолдер
-    }
-
-    private function removeHighloadBlocks(): void
-    {
-        // Опрос данные с HL
     }
 
     private function setupAgents(): void
