@@ -21,7 +21,7 @@ if ($exception) {
 ?>
 
 <div style="margin-top: 20px;">
-    <button type="button" class="adm-btn" onclick="window.location = '/bitrix/admin/settings.php';">
+    <button type="button" class="adm-btn" onclick="window.location = '/bitrix/admin/module_admin.php';">
         <?php echo Loc::getMessage('BITRIX_MIGRATOR_RETURN_MODULES'); ?>
     </button>
 </div>
