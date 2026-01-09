@@ -2,21 +2,26 @@
 
 use Bitrix\Main\Localization\Loc;
 
+if (!defined('B_PROLOG_INCLUDED') || B_PROLOG_INCLUDED !== true) { die(); }
+
 Loc::loadMessages('install.php');
+
+global $APPLICATION;
+$exception = $APPLICATION->GetException();
+
+if ($exception) {
+    CAdminMessage::ShowMessage(
+        Loc::getMessage('BITRIX_MIGRATOR_INSTALL_FAILED') . ': ' . $exception->GetString()
+    );
+} else {
+    CAdminMessage::ShowNote(
+        Loc::getMessage('BITRIX_MIGRATOR_INSTALL_SUCCESS')
+    );
+}
 ?>
 
-<div class="adm-info-message">
-    <div class="adm-info-message-text">
-        ✓ <?php echo Loc::getMessage('BITRIX_MIGRATOR_NAME'); ?> успешно установлен
-    </div>
-</div>
-
-<p style="margin-top: 20px;">
-    Модуль готов к работе. Перейдите в <strong>Admin > Settings > Bitrix Migrator</strong> для настройки.
-</p>
-
-<div style="margin-top: 30px;">
-    <button type="button" class="adm-btn" onclick="window.location.href='/bitrix/admin/settings.php';">
-        <span>← Вернуться в админку</span>
+<div style="margin-top: 20px;">
+    <button type="button" class="adm-btn" onclick="javascript:history.back();">
+        <?php echo Loc::getMessage('BITRIX_MIGRATOR_RETURN_MODULES'); ?>
     </button>
 </div>
