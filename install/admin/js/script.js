@@ -82,21 +82,26 @@
 
         setButtonLoading('btn-save-connection', true);
 
-        BX.ajax.runAction('bitrix_migrator:migrator.saveConnection', {
+        BX.ajax({
+            url: '/local/modules/bitrix_migrator/ajax/save_connection.php',
             data: {
                 webhookUrl: webhookUrl,
                 sessid: window.BITRIX_MIGRATOR.sessid
+            },
+            method: 'POST',
+            dataType: 'json',
+            onsuccess: function(response) {
+                setButtonLoading('btn-save-connection', false);
+                if (response.success) {
+                    showMessage('success', 'Настройки сохранены');
+                } else {
+                    showMessage('error', response.error || 'Ошибка сохранения');
+                }
+            },
+            onfailure: function(error) {
+                setButtonLoading('btn-save-connection', false);
+                showMessage('error', 'Ошибка сохранения');
             }
-        }).then(function(response) {
-            setButtonLoading('btn-save-connection', false);
-            if (response.data.success) {
-                showMessage('success', 'Настройки сохранены');
-            } else {
-                showMessage('error', response.data.error || 'Ошибка сохранения');
-            }
-        }).catch(function(error) {
-            setButtonLoading('btn-save-connection', false);
-            showMessage('error', error.message || 'Ошибка сохранения');
         });
     }
 
@@ -114,25 +119,30 @@
         setButtonLoading('btn-check-connection', true);
         setConnectionStatus('loading', 'Проверка подключения...');
 
-        BX.ajax.runAction('bitrix_migrator:migrator.checkConnection', {
+        BX.ajax({
+            url: '/local/modules/bitrix_migrator/ajax/check_connection.php',
             data: {
                 webhookUrl: webhookUrl,
                 sessid: window.BITRIX_MIGRATOR.sessid
-            }
-        }).then(function(response) {
-            setButtonLoading('btn-check-connection', false);
-            if (response.data.success) {
-                setConnectionStatus('success', 'Подключение успешно');
-                showMessage('success', 'Подключение установлено');
-                document.getElementById('btn-run-dryrun').disabled = false;
-            } else {
+            },
+            method: 'POST',
+            dataType: 'json',
+            onsuccess: function(response) {
+                setButtonLoading('btn-check-connection', false);
+                if (response.success) {
+                    setConnectionStatus('success', 'Подключение успешно');
+                    showMessage('success', 'Подключение установлено');
+                    document.getElementById('btn-run-dryrun').disabled = false;
+                } else {
+                    setConnectionStatus('error', 'Ошибка подключения');
+                    showMessage('error', response.error || 'Ошибка подключения');
+                }
+            },
+            onfailure: function(error) {
+                setButtonLoading('btn-check-connection', false);
                 setConnectionStatus('error', 'Ошибка подключения');
-                showMessage('error', response.data.error || 'Ошибка подключения');
+                showMessage('error', 'Ошибка подключения');
             }
-        }).catch(function(error) {
-            setButtonLoading('btn-check-connection', false);
-            setConnectionStatus('error', 'Ошибка подключения');
-            showMessage('error', error.message || 'Ошибка подключения');
         });
     }
 
@@ -147,24 +157,29 @@
         setButtonLoading('btn-run-dryrun', true);
         showMessage('info', 'Сухой прогон запущен...');
 
-        BX.ajax.runAction('bitrix_migrator:migrator.startDryRun', {
+        BX.ajax({
+            url: '/local/modules/bitrix_migrator/ajax/start_dryrun.php',
             data: {
                 sessid: window.BITRIX_MIGRATOR.sessid
+            },
+            method: 'POST',
+            dataType: 'json',
+            onsuccess: function(response) {
+                setButtonLoading('btn-run-dryrun', false);
+                if (response.success) {
+                    showMessage('success', 'Сухой прогон завершён');
+                    // Switch to Dry Run tab
+                    setTimeout(function() {
+                        document.querySelector('[data-tab="dryrun"]').click();
+                    }, 1000);
+                } else {
+                    showMessage('error', response.error || 'Ошибка');
+                }
+            },
+            onfailure: function(error) {
+                setButtonLoading('btn-run-dryrun', false);
+                showMessage('error', 'Ошибка');
             }
-        }).then(function(response) {
-            setButtonLoading('btn-run-dryrun', false);
-            if (response.data.success) {
-                showMessage('success', 'Сухой прогон завершён');
-                // Switch to Dry Run tab
-                setTimeout(function() {
-                    document.querySelector('[data-tab="dryrun"]').click();
-                }, 1000);
-            } else {
-                showMessage('error', response.data.error || 'Ошибка');
-            }
-        }).catch(function(error) {
-            setButtonLoading('btn-run-dryrun', false);
-            showMessage('error', error.message || 'Ошибка');
         });
     }
 
