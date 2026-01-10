@@ -654,14 +654,19 @@ class bitrix_migrator extends CModule
         }
         
         // Copy AJAX files to /local/ajax/bitrix_migrator/
-        $ajaxSourceDir = $moduleDir . '/ajax';
+        $ajaxSourceDir = __DIR__ . '/ajax';
         $ajaxTargetDir = $docRoot . '/local/ajax/' . $this->MODULE_ID;
 
-        if (is_dir($ajaxSourceDir)) {
-            if (!is_dir($ajaxTargetDir)) {
-                Directory::createDirectory($ajaxTargetDir);
-            }
+        // Delete old files before copying to force overwrite
+        if (is_dir($ajaxTargetDir)) {
+            Directory::deleteDirectory($ajaxTargetDir);
+        }
+        
+        // Create directory
+        Directory::createDirectory($ajaxTargetDir);
 
+        // Copy all files
+        if (is_dir($ajaxSourceDir)) {
             CopyDirFiles($ajaxSourceDir, $ajaxTargetDir, true, true);
         }
     }
