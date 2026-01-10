@@ -14,6 +14,22 @@ class StateService
     {
         if (self::$hlblockId === null) {
             self::$hlblockId = (int) Option::get('bitrix_migrator', 'state_hlblock_id');
+            
+            // If not found in Option, search by name
+            if (!self::$hlblockId) {
+                if (!Loader::includeModule('highloadblock')) {
+                    throw new \Exception('HighloadBlock module not loaded');
+                }
+                
+                $hlblock = \Bitrix\Highloadblock\HighloadBlockTable::getList([
+                    'filter' => ['=NAME' => 'MigratorState']
+                ])->fetch();
+                
+                if ($hlblock) {
+                    self::$hlblockId = $hlblock['ID'];
+                    Option::set('bitrix_migrator', 'state_hlblock_id', self::$hlblockId);
+                }
+            }
         }
         return self::$hlblockId;
     }
