@@ -540,27 +540,66 @@ class bitrix_migrator extends CModule
 
     public function InstallFiles()
     {
-        // Copy admin files to /bitrix/admin/
+        $docRoot = Application::getDocumentRoot();
+        $moduleDir = dirname(__DIR__);
+        
+        // Copy admin files from install/admin/ to /local/admin/
         CopyDirFiles(
             __DIR__ . '/admin/',
-            Application::getDocumentRoot() . '/bitrix/admin/',
+            $docRoot . '/local/admin/',
             true,
             true
         );
+        
+        // Copy language files from lang/*/admin/ to /local/admin/lang/*/
+        $languages = ['ru', 'en'];
+        foreach ($languages as $lang) {
+            $sourceLangDir = $moduleDir . '/lang/' . $lang . '/admin/';
+            $targetLangDir = $docRoot . '/local/admin/lang/' . $lang . '/';
+            
+            if (is_dir($sourceLangDir)) {
+                if (!is_dir($targetLangDir)) {
+                    mkdir($targetLangDir, 0755, true);
+                }
+                
+                CopyDirFiles(
+                    $sourceLangDir,
+                    $targetLangDir,
+                    true,
+                    true
+                );
+            }
+        }
     }
 
     public function UninstallFiles()
     {
-        // Remove admin files from /bitrix/admin/
+        $docRoot = Application::getDocumentRoot();
+        
+        // Remove admin files from /local/admin/
         $adminFiles = [
             'bitrix_migrator.php',
             'bitrix_migrator_menu.php'
         ];
 
         foreach ($adminFiles as $file) {
-            $filePath = Application::getDocumentRoot() . '/bitrix/admin/' . $file;
+            $filePath = $docRoot . '/local/admin/' . $file;
             if (file_exists($filePath)) {
                 @unlink($filePath);
+            }
+        }
+        
+        // Remove language files from /local/admin/lang/*/
+        $languages = ['ru', 'en'];
+        foreach ($languages as $lang) {
+            $langDir = $docRoot . '/local/admin/lang/' . $lang . '/';
+            if (is_dir($langDir)) {
+                $files = scandir($langDir);
+                foreach ($files as $file) {
+                    if (strpos($file, 'bitrix_migrator') === 0) {
+                        @unlink($langDir . $file);
+                    }
+                }
             }
         }
     }
