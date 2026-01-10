@@ -25,24 +25,24 @@ $MESS['BITRIX_MIGRATOR_BTN_CANCEL'] = 'Cancel';
 $MESS['BITRIX_MIGRATOR_BTN_CHECK_CONNECTION'] = 'Check Connection';
 $MESS['BITRIX_MIGRATOR_BTN_RUN_DRYRUN'] = 'Run Dry Run';
 
-$MESS['BITRIX_MIGRATOR_SETTINGS_SAVED'] = 'Settings saved successfully';
-$MESS['BITRIX_MIGRATOR_CONNECTION_SUCCESS'] = 'Connection to cloud established successfully';
-$MESS['BITRIX_MIGRATOR_CONNECTION_ERROR'] = 'Failed to connect to cloud. Please check settings.';
-
-$MESS['BITRIX_MIGRATOR_ERROR_EMPTY_FIELDS'] = 'Please fill in all required fields';
-$MESS['BITRIX_MIGRATOR_ERROR_SAVE'] = 'Error saving settings';
-
 // Dry Run Tab
 $MESS['BITRIX_MIGRATOR_DRYRUN_TITLE'] = 'Dry Run - Data Analysis';
-$MESS['BITRIX_MIGRATOR_DRYRUN_INFO'] = 'Data analysis results from cloud will be displayed here';
-$MESS['BITRIX_MIGRATOR_DRYRUN_CONFIRM'] = 'Start data analysis from cloud?';
-$MESS['BITRIX_MIGRATOR_DRYRUN_STARTED'] = 'Dry Run started. Data analysis may take some time.';
-$MESS['BITRIX_MIGRATOR_DRYRUN_SUCCESS'] = 'Dry Run completed successfully';
-$MESS['BITRIX_MIGRATOR_DRYRUN_ERROR'] = 'Error during Dry Run execution';
+$MESS['BITRIX_MIGRATOR_DRYRUN_INFO'] = 'Analyze cloud data to determine migration scope';
+$MESS['BITRIX_MIGRATOR_DRYRUN_RESULTS_TITLE'] = 'Analysis Results';
+$MESS['BITRIX_MIGRATOR_BTN_GOTO_PLAN'] = 'Go to Migration Plan';
+
+$MESS['BITRIX_MIGRATOR_TABLE_ENTITY'] = 'Entity';
+$MESS['BITRIX_MIGRATOR_TABLE_COUNT'] = 'Count';
+$MESS['BITRIX_MIGRATOR_TABLE_STATUS'] = 'Status';
 
 // Plan Tab
 $MESS['BITRIX_MIGRATOR_PLAN_TITLE'] = 'Migration Plan';
 $MESS['BITRIX_MIGRATOR_PLAN_INFO'] = 'Configure migration parameters';
+$MESS['BITRIX_MIGRATOR_PLAN_ENTITIES'] = 'Select entities to migrate';
+$MESS['BITRIX_MIGRATOR_PLAN_BATCH_SIZE'] = 'Batch size';
+$MESS['BITRIX_MIGRATOR_PLAN_BATCH_SIZE_HINT'] = 'Number of records per batch during migration';
+$MESS['BITRIX_MIGRATOR_BTN_SAVE_PLAN'] = 'Save Plan';
+$MESS['BITRIX_MIGRATOR_BTN_GOTO_MIGRATION'] = 'Go to Migration';
 
 // Migration Tab
 $MESS['BITRIX_MIGRATOR_MIGRATION_TITLE'] = 'Migration Execution';

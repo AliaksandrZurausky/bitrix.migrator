@@ -25,6 +25,9 @@ require($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_a
 // Get current settings
 $webhookUrl = Option::get($MODULE_ID, 'webhook_url', '');
 $connectionStatus = Option::get($MODULE_ID, 'connection_status', 'not_checked');
+$dryrunStatus = Option::get($MODULE_ID, 'dryrun_status', 'idle');
+$migrationPlan = Option::get($MODULE_ID, 'migration_plan', '');
+$plan = $migrationPlan ? json_decode($migrationPlan, true) : [];
 ?>
 
 <div class="migrator-container">
@@ -52,7 +55,6 @@ $connectionStatus = Option::get($MODULE_ID, 'connection_status', 'not_checked');
         <div class="adm-detail-content">
             <h2><?= Loc::getMessage('BITRIX_MIGRATOR_CONNECTION_TITLE') ?></h2>
             
-            <!-- Connection Status -->
             <div class="migrator-status-block" id="connection-status-block">
                 <div class="migrator-status migrator-status-<?= htmlspecialcharsbx($connectionStatus) ?>">
                     <span class="migrator-status-icon"></span>
@@ -73,7 +75,6 @@ $connectionStatus = Option::get($MODULE_ID, 'connection_status', 'not_checked');
                 </div>
             </div>
 
-            <!-- Settings Form -->
             <form id="connection-form" class="migrator-form">
                 <?= bitrix_sessid_post() ?>
                 
@@ -114,6 +115,34 @@ $connectionStatus = Option::get($MODULE_ID, 'connection_status', 'not_checked');
         <div class="adm-detail-content">
             <h2><?= Loc::getMessage('BITRIX_MIGRATOR_DRYRUN_TITLE') ?></h2>
             <p><?= Loc::getMessage('BITRIX_MIGRATOR_DRYRUN_INFO') ?></p>
+
+            <div id="dryrun-progress-block" class="migrator-progress-block" style="display:none;">
+                <div class="migrator-progress-bar">
+                    <div id="dryrun-progress-fill" class="migrator-progress-fill" style="width:0%"></div>
+                </div>
+                <div id="dryrun-progress-text" class="migrator-progress-text">0%</div>
+            </div>
+
+            <div id="dryrun-results-block" style="display:none;">
+                <h3><?= Loc::getMessage('BITRIX_MIGRATOR_DRYRUN_RESULTS_TITLE') ?></h3>
+                <table class="migrator-results-table" id="dryrun-results-table">
+                    <thead>
+                        <tr>
+                            <th><?= Loc::getMessage('BITRIX_MIGRATOR_TABLE_ENTITY') ?></th>
+                            <th><?= Loc::getMessage('BITRIX_MIGRATOR_TABLE_COUNT') ?></th>
+                            <th><?= Loc::getMessage('BITRIX_MIGRATOR_TABLE_STATUS') ?></th>
+                        </tr>
+                    </thead>
+                    <tbody id="dryrun-results-tbody">
+                    </tbody>
+                </table>
+
+                <div class="migrator-form-actions">
+                    <button type="button" id="btn-goto-plan" class="adm-btn-save">
+                        <?= Loc::getMessage('BITRIX_MIGRATOR_BTN_GOTO_PLAN') ?>
+                    </button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -122,6 +151,40 @@ $connectionStatus = Option::get($MODULE_ID, 'connection_status', 'not_checked');
         <div class="adm-detail-content">
             <h2><?= Loc::getMessage('BITRIX_MIGRATOR_PLAN_TITLE') ?></h2>
             <p><?= Loc::getMessage('BITRIX_MIGRATOR_PLAN_INFO') ?></p>
+
+            <form id="plan-form" class="migrator-form">
+                <div class="migrator-form-group">
+                    <label class="migrator-label">
+                        <?= Loc::getMessage('BITRIX_MIGRATOR_PLAN_ENTITIES') ?>:
+                    </label>
+                    <div id="plan-entities-list" class="migrator-checkbox-list">
+                        <!-- Will be filled by JS -->
+                    </div>
+                </div>
+
+                <div class="migrator-form-group">
+                    <label for="plan-batch-size" class="migrator-label">
+                        <?= Loc::getMessage('BITRIX_MIGRATOR_PLAN_BATCH_SIZE') ?>:
+                    </label>
+                    <select id="plan-batch-size" name="batchSize" class="migrator-select">
+                        <option value="50" <?= ($plan['batchSize'] ?? 100) == 50 ? 'selected' : '' ?>>50</option>
+                        <option value="100" <?= ($plan['batchSize'] ?? 100) == 100 ? 'selected' : '' ?>>100</option>
+                        <option value="200" <?= ($plan['batchSize'] ?? 100) == 200 ? 'selected' : '' ?>>200</option>
+                    </select>
+                    <div class="migrator-hint">
+                        <?= Loc::getMessage('BITRIX_MIGRATOR_PLAN_BATCH_SIZE_HINT') ?>
+                    </div>
+                </div>
+
+                <div class="migrator-form-actions">
+                    <button type="button" id="btn-save-plan" class="adm-btn-save">
+                        <?= Loc::getMessage('BITRIX_MIGRATOR_BTN_SAVE_PLAN') ?>
+                    </button>
+                    <button type="button" id="btn-goto-migration" class="adm-btn">
+                        <?= Loc::getMessage('BITRIX_MIGRATOR_BTN_GOTO_MIGRATION') ?>
+                    </button>
+                </div>
+            </form>
         </div>
     </div>
 
@@ -143,10 +206,10 @@ $connectionStatus = Option::get($MODULE_ID, 'connection_status', 'not_checked');
 </div>
 
 <script>
-// Initialize module ID for JS
 window.BITRIX_MIGRATOR = {
     moduleId: '<?= $MODULE_ID ?>',
-    sessid: '<?= bitrix_sessid() ?>'
+    sessid: '<?= bitrix_sessid() ?>',
+    dryrunStatus: '<?= $dryrunStatus ?>'
 };
 </script>
 

@@ -25,24 +25,24 @@ $MESS['BITRIX_MIGRATOR_BTN_CANCEL'] = 'Отменить';
 $MESS['BITRIX_MIGRATOR_BTN_CHECK_CONNECTION'] = 'Проверить подключение';
 $MESS['BITRIX_MIGRATOR_BTN_RUN_DRYRUN'] = 'Запустить Dry Run';
 
-$MESS['BITRIX_MIGRATOR_SETTINGS_SAVED'] = 'Настройки успешно сохранены';
-$MESS['BITRIX_MIGRATOR_CONNECTION_SUCCESS'] = 'Подключение к облаку успешно установлено';
-$MESS['BITRIX_MIGRATOR_CONNECTION_ERROR'] = 'Не удалось подключиться к облаку. Проверьте настройки.';
-
-$MESS['BITRIX_MIGRATOR_ERROR_EMPTY_FIELDS'] = 'Заполните все обязательные поля';
-$MESS['BITRIX_MIGRATOR_ERROR_SAVE'] = 'Ошибка сохранения настроек';
-
 // Dry Run Tab
 $MESS['BITRIX_MIGRATOR_DRYRUN_TITLE'] = 'Dry Run - Анализ данных';
-$MESS['BITRIX_MIGRATOR_DRYRUN_INFO'] = 'Здесь будут отображены результаты анализа данных из облака';
-$MESS['BITRIX_MIGRATOR_DRYRUN_CONFIRM'] = 'Запустить анализ данных из облака?';
-$MESS['BITRIX_MIGRATOR_DRYRUN_STARTED'] = 'Dry Run запущен. Анализ данных может занять некоторое время.';
-$MESS['BITRIX_MIGRATOR_DRYRUN_SUCCESS'] = 'Dry Run успешно завершён';
-$MESS['BITRIX_MIGRATOR_DRYRUN_ERROR'] = 'Ошибка при выполнении Dry Run';
+$MESS['BITRIX_MIGRATOR_DRYRUN_INFO'] = 'Анализ данных из облака для определения объёма миграции';
+$MESS['BITRIX_MIGRATOR_DRYRUN_RESULTS_TITLE'] = 'Результаты анализа';
+$MESS['BITRIX_MIGRATOR_BTN_GOTO_PLAN'] = 'Перейти к плану миграции';
+
+$MESS['BITRIX_MIGRATOR_TABLE_ENTITY'] = 'Сущность';
+$MESS['BITRIX_MIGRATOR_TABLE_COUNT'] = 'Количество';
+$MESS['BITRIX_MIGRATOR_TABLE_STATUS'] = 'Статус';
 
 // Plan Tab
 $MESS['BITRIX_MIGRATOR_PLAN_TITLE'] = 'План миграции';
 $MESS['BITRIX_MIGRATOR_PLAN_INFO'] = 'Настройте параметры миграции';
+$MESS['BITRIX_MIGRATOR_PLAN_ENTITIES'] = 'Выберите сущности для миграции';
+$MESS['BITRIX_MIGRATOR_PLAN_BATCH_SIZE'] = 'Размер пакета';
+$MESS['BITRIX_MIGRATOR_PLAN_BATCH_SIZE_HINT'] = 'Количество записей в одном пакете при миграции';
+$MESS['BITRIX_MIGRATOR_BTN_SAVE_PLAN'] = 'Сохранить план';
+$MESS['BITRIX_MIGRATOR_BTN_GOTO_MIGRATION'] = 'Перейти к миграции';
 
 // Migration Tab
 $MESS['BITRIX_MIGRATOR_MIGRATION_TITLE'] = 'Выполнение миграции';

@@ -5,6 +5,8 @@
 (function() {
     'use strict';
 
+    let dryrunPolling = null;
+
     // Wait for DOM ready
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init);
@@ -15,6 +17,8 @@
     function init() {
         initTabs();
         initConnectionForm();
+        initDryRunTab();
+        initPlanTab();
     }
 
     /**
@@ -35,6 +39,11 @@
                 // Add active class to clicked tab
                 this.classList.add('active');
                 document.getElementById('tab-' + tabId).classList.add('active');
+
+                // Special handling for dry run tab
+                if (tabId === 'dryrun') {
+                    checkDryRunStatus();
+                }
             });
         });
     }
@@ -65,6 +74,41 @@
         if (webhookUrl && btnDryRun) {
             webhookUrl.addEventListener('input', function() {
                 btnDryRun.disabled = !webhookUrl.value.trim();
+            });
+        }
+    }
+
+    /**
+     * Initialize Dry Run tab
+     */
+    function initDryRunTab() {
+        const btnGotoPlan = document.getElementById('btn-goto-plan');
+        if (btnGotoPlan) {
+            btnGotoPlan.addEventListener('click', function() {
+                document.querySelector('[data-tab="plan"]').click();
+            });
+        }
+
+        // Check status on init if needed
+        if (window.BITRIX_MIGRATOR.dryrunStatus === 'running') {
+            checkDryRunStatus();
+        }
+    }
+
+    /**
+     * Initialize Plan tab
+     */
+    function initPlanTab() {
+        const btnSavePlan = document.getElementById('btn-save-plan');
+        const btnGotoMigration = document.getElementById('btn-goto-migration');
+
+        if (btnSavePlan) {
+            btnSavePlan.addEventListener('click', saveMigrationPlan);
+        }
+
+        if (btnGotoMigration) {
+            btnGotoMigration.addEventListener('click', function() {
+                document.querySelector('[data-tab="migration"]').click();
             });
         }
     }
@@ -150,12 +194,12 @@
      * Run dry run
      */
     function runDryRun() {
-        if (!confirm('Запустить сухой прогон?')) {
+        if (!confirm('Запустить анализ данных из облака?')) {
             return;
         }
 
         setButtonLoading('btn-run-dryrun', true);
-        showMessage('info', 'Сухой прогон запущен...');
+        showMessage('info', 'Анализ запущен...');
 
         BX.ajax({
             url: '/local/ajax/bitrix_migrator/start_dryrun.php',
@@ -167,18 +211,179 @@
             onsuccess: function(response) {
                 setButtonLoading('btn-run-dryrun', false);
                 if (response.success) {
-                    showMessage('success', 'Сухой прогон завершён');
-                    // Switch to Dry Run tab
+                    showMessage('success', 'Анализ запущен, переключаемся на вкладку Dry Run');
                     setTimeout(function() {
                         document.querySelector('[data-tab="dryrun"]').click();
+                        startDryRunPolling();
                     }, 1000);
                 } else {
-                    showMessage('error', response.error || 'Ошибка');
+                    showMessage('error', response.error || 'Ошибка запуска');
                 }
             },
             onfailure: function(error) {
                 setButtonLoading('btn-run-dryrun', false);
-                showMessage('error', 'Ошибка');
+                showMessage('error', 'Ошибка запуска');
+            }
+        });
+    }
+
+    /**
+     * Check dry run status
+     */
+    function checkDryRunStatus() {
+        BX.ajax({
+            url: '/local/ajax/bitrix_migrator/get_dryrun_status.php',
+            data: {
+                sessid: window.BITRIX_MIGRATOR.sessid
+            },
+            method: 'POST',
+            dataType: 'json',
+            onsuccess: function(response) {
+                if (!response.success) return;
+
+                const status = response.status;
+                const progress = response.progress;
+
+                if (status === 'running') {
+                    showDryRunProgress(progress);
+                    startDryRunPolling();
+                } else if (status === 'completed') {
+                    hideDryRunProgress();
+                    showDryRunResults(response.results);
+                    stopDryRunPolling();
+                } else if (status === 'error') {
+                    hideDryRunProgress();
+                    showMessage('error', response.error || 'Ошибка анализа');
+                    stopDryRunPolling();
+                }
+            }
+        });
+    }
+
+    /**
+     * Start polling for dry run status
+     */
+    function startDryRunPolling() {
+        if (dryrunPolling) return;
+        dryrunPolling = setInterval(checkDryRunStatus, 3000);
+    }
+
+    /**
+     * Stop polling
+     */
+    function stopDryRunPolling() {
+        if (dryrunPolling) {
+            clearInterval(dryrunPolling);
+            dryrunPolling = null;
+        }
+    }
+
+    /**
+     * Show dry run progress
+     */
+    function showDryRunProgress(progress) {
+        const block = document.getElementById('dryrun-progress-block');
+        const fill = document.getElementById('dryrun-progress-fill');
+        const text = document.getElementById('dryrun-progress-text');
+
+        if (block) block.style.display = 'block';
+        if (fill) fill.style.width = progress + '%';
+        if (text) text.textContent = progress + '%';
+    }
+
+    /**
+     * Hide dry run progress
+     */
+    function hideDryRunProgress() {
+        const block = document.getElementById('dryrun-progress-block');
+        if (block) block.style.display = 'none';
+    }
+
+    /**
+     * Show dry run results
+     */
+    function showDryRunResults(results) {
+        const block = document.getElementById('dryrun-results-block');
+        const tbody = document.getElementById('dryrun-results-tbody');
+
+        if (!block || !tbody) return;
+
+        tbody.innerHTML = '';
+
+        results.forEach(function(item) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = 
+                '<td>' + item.name + '</td>' +
+                '<td>' + item.count + '</td>' +
+                '<td><span class="migrator-status-badge migrator-status-badge-' + item.status + '">' + 
+                (item.status === 'ready' ? 'Готово' : item.status === 'empty' ? 'Пусто' : 'Ошибка') +
+                '</span></td>';
+            tbody.appendChild(tr);
+        });
+
+        block.style.display = 'block';
+
+        // Fill plan entities
+        fillPlanEntities(results);
+    }
+
+    /**
+     * Fill plan entities checkboxes
+     */
+    function fillPlanEntities(results) {
+        const container = document.getElementById('plan-entities-list');
+        if (!container) return;
+
+        container.innerHTML = '';
+
+        results.forEach(function(item) {
+            if (item.count > 0 && item.status === 'ready') {
+                const label = document.createElement('label');
+                label.className = 'migrator-checkbox-label';
+                label.innerHTML = 
+                    '<input type="checkbox" name="entities[]" value="' + item.key + '" checked> ' +
+                    item.name + ' (' + item.count + ')';
+                container.appendChild(label);
+            }
+        });
+    }
+
+    /**
+     * Save migration plan
+     */
+    function saveMigrationPlan() {
+        const checkboxes = document.querySelectorAll('input[name="entities[]"]:checked');
+        const entities = Array.from(checkboxes).map(cb => cb.value);
+        const batchSize = document.getElementById('plan-batch-size').value;
+
+        if (entities.length === 0) {
+            showMessage('error', 'Выберите хотя бы одну сущность');
+            return;
+        }
+
+        setButtonLoading('btn-save-plan', true);
+
+        BX.ajax({
+            url: '/local/ajax/bitrix_migrator/save_migration_plan.php',
+            data: {
+                entities: entities,
+                batchSize: batchSize,
+                priority: entities,
+                sessid: window.BITRIX_MIGRATOR.sessid
+            },
+            method: 'POST',
+            dataType: 'json',
+            onsuccess: function(response) {
+                setButtonLoading('btn-save-plan', false);
+                if (response.success) {
+                    showMessage('success', 'План миграции сохранён');
+                } else {
+                    showMessage('error', response.error || 'Ошибка сохранения');
+                }
+            },
+            onfailure: function(error) {
+                setButtonLoading('btn-save-plan', false);
+                showMessage('error', 'Ошибка сохранения');
             }
         });
     }
@@ -200,23 +405,19 @@
      * Show message
      */
     function showMessage(type, text) {
-        // Remove existing messages
         const existingMessages = document.querySelectorAll('.migrator-message');
         existingMessages.forEach(function(msg) {
             msg.remove();
         });
 
-        // Create new message
         const message = document.createElement('div');
         message.className = 'migrator-message migrator-message-' + type;
         message.textContent = text;
 
-        // Insert message
         const container = document.querySelector('.migrator-tab-content.active .adm-detail-content');
         if (container) {
             container.insertBefore(message, container.firstChild);
 
-            // Auto-hide after 5 seconds
             setTimeout(function() {
                 message.remove();
             }, 5000);

@@ -1,61 +1,92 @@
-/* Bitrix Migrator - Main Styles */
+/* Bitrix Migrator Styles */
 
 .migrator-container {
-    background: #fff;
-    border: 1px solid #e0e8ea;
-    border-radius: 4px;
-    margin: 20px 0;
+    max-width: 1200px;
+    margin: 0 auto;
 }
 
 /* Tabs Navigation */
 .migrator-tabs-nav {
     display: flex;
-    background: #f5f9fa;
+    gap: 2px;
     border-bottom: 1px solid #e0e8ea;
-    padding: 0;
-    margin: 0;
+    margin-bottom: 20px;
 }
 
 .migrator-tab-btn {
-    flex: 1;
-    padding: 12px 20px;
-    background: transparent;
+    padding: 12px 24px;
+    background: #f5f9fa;
     border: none;
     border-bottom: 3px solid transparent;
     cursor: pointer;
     font-size: 14px;
-    font-weight: 500;
-    color: #525c69;
-    transition: all 0.2s ease;
-    outline: none;
+    color: #535c69;
+    transition: all 0.2s;
 }
 
 .migrator-tab-btn:hover {
-    background: #e8f1f4;
-    color: #2fc6f6;
+    background: #e8f2f4;
+    color: #2fc7f7;
 }
 
 .migrator-tab-btn.active {
     background: #fff;
-    border-bottom-color: #2fc6f6;
-    color: #2fc6f6;
+    border-bottom-color: #2fc7f7;
+    color: #2fc7f7;
+    font-weight: 600;
 }
 
 /* Tab Content */
 .migrator-tab-content {
     display: none;
-    padding: 20px;
 }
 
 .migrator-tab-content.active {
     display: block;
 }
 
-.migrator-tab-content h2 {
-    margin: 0 0 20px 0;
-    font-size: 18px;
+/* Form Elements */
+.migrator-form-group {
+    margin-bottom: 20px;
+}
+
+.migrator-label {
+    display: block;
     font-weight: 600;
-    color: #525c69;
+    margin-bottom: 8px;
+    color: #535c69;
+}
+
+.migrator-required {
+    color: #ff5752;
+}
+
+.migrator-input,
+.migrator-select {
+    width: 100%;
+    max-width: 600px;
+    padding: 10px 12px;
+    border: 1px solid #d5dce0;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+.migrator-input:focus,
+.migrator-select:focus {
+    outline: none;
+    border-color: #2fc7f7;
+}
+
+.migrator-hint {
+    margin-top: 6px;
+    font-size: 12px;
+    color: #828b95;
+}
+
+.migrator-form-actions {
+    margin-top: 20px;
+    display: flex;
+    gap: 10px;
 }
 
 /* Status Block */
@@ -66,54 +97,95 @@
 .migrator-status {
     display: inline-flex;
     align-items: center;
+    gap: 8px;
     padding: 10px 16px;
     border-radius: 4px;
     font-size: 14px;
-    font-weight: 500;
 }
 
 .migrator-status-icon {
-    width: 16px;
-    height: 16px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
-    margin-right: 8px;
 }
 
 .migrator-status-not_checked {
-    background: #f0f0f0;
-    color: #525c69;
+    background: #f5f9fa;
+    color: #828b95;
 }
 
 .migrator-status-not_checked .migrator-status-icon {
-    background: #a8adb4;
-}
-
-.migrator-status-success {
-    background: #d4edda;
-    color: #155724;
-}
-
-.migrator-status-success .migrator-status-icon {
-    background: #28a745;
-}
-
-.migrator-status-error {
-    background: #f8d7da;
-    color: #721c24;
-}
-
-.migrator-status-error .migrator-status-icon {
-    background: #dc3545;
+    background: #828b95;
 }
 
 .migrator-status-loading {
-    background: #d1ecf1;
-    color: #0c5460;
+    background: #fff4e6;
+    color: #ff9800;
 }
 
 .migrator-status-loading .migrator-status-icon {
-    background: #17a2b8;
-    animation: pulse 1.5s ease-in-out infinite;
+    background: #ff9800;
+    animation: pulse 1.5s infinite;
+}
+
+.migrator-status-success {
+    background: #e8f5e9;
+    color: #4caf50;
+}
+
+.migrator-status-success .migrator-status-icon {
+    background: #4caf50;
+}
+
+.migrator-status-error {
+    background: #ffebee;
+    color: #f44336;
+}
+
+.migrator-status-error .migrator-status-icon {
+    background: #f44336;
+}
+
+/* Messages */
+.migrator-message {
+    padding: 12px 16px;
+    border-radius: 4px;
+    margin-bottom: 16px;
+    font-size: 14px;
+}
+
+.migrator-message-success {
+    background: #e8f5e9;
+    color: #4caf50;
+    border-left: 4px solid #4caf50;
+}
+
+.migrator-message-error {
+    background: #ffebee;
+    color: #f44336;
+    border-left: 4px solid #f44336;
+}
+
+.migrator-message-info {
+    background: #e3f2fd;
+    color: #2196f3;
+    border-left: 4px solid #2196f3;
+}
+
+/* Loader */
+.migrator-loader {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid #f3f3f3;
+    border-top: 2px solid #2fc7f7;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
 }
 
 @keyframes pulse {
@@ -121,101 +193,105 @@
     50% { opacity: 0.5; }
 }
 
-/* Form Styles */
-.migrator-form {
-    max-width: 800px;
+/* Progress Bar */
+.migrator-progress-block {
+    margin: 20px 0;
 }
 
-.migrator-form-group {
-    margin-bottom: 20px;
-}
-
-.migrator-label {
-    display: block;
-    margin-bottom: 6px;
-    font-size: 14px;
-    font-weight: 500;
-    color: #525c69;
-}
-
-.migrator-required {
-    color: #ff5752;
-}
-
-.migrator-input,
-.migrator-select,
-.migrator-textarea {
+.migrator-progress-bar {
     width: 100%;
-    padding: 8px 12px;
-    font-size: 14px;
-    border: 1px solid #c6d0da;
+    height: 30px;
+    background: #f5f9fa;
     border-radius: 4px;
-    box-sizing: border-box;
-    transition: border-color 0.2s ease;
+    overflow: hidden;
+    position: relative;
 }
 
-.migrator-input:focus,
-.migrator-select:focus,
-.migrator-textarea:focus {
-    outline: none;
-    border-color: #2fc6f6;
+.migrator-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #2fc7f7, #1a9bd7);
+    transition: width 0.3s;
 }
 
-.migrator-hint {
-    margin-top: 6px;
+.migrator-progress-text {
+    text-align: center;
+    margin-top: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #535c69;
+}
+
+/* Results Table */
+.migrator-results-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 20px 0;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.migrator-results-table th,
+.migrator-results-table td {
+    padding: 12px 16px;
+    text-align: left;
+    border-bottom: 1px solid #e0e8ea;
+}
+
+.migrator-results-table th {
+    background: #f5f9fa;
+    font-weight: 600;
+    color: #535c69;
+}
+
+.migrator-results-table tr:hover {
+    background: #f5f9fa;
+}
+
+.migrator-status-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 12px;
     font-size: 12px;
+    font-weight: 600;
+}
+
+.migrator-status-badge-ready {
+    background: #e8f5e9;
+    color: #4caf50;
+}
+
+.migrator-status-badge-empty {
+    background: #f5f9fa;
     color: #828b95;
 }
 
-.migrator-form-actions {
+.migrator-status-badge-error {
+    background: #ffebee;
+    color: #f44336;
+}
+
+/* Checkbox List */
+.migrator-checkbox-list {
     display: flex;
+    flex-direction: column;
     gap: 10px;
-    margin-top: 30px;
 }
 
-.migrator-form-actions button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
-
-/* Messages */
-.migrator-message {
-    padding: 12px 16px;
-    margin-bottom: 20px;
+.migrator-checkbox-label {
+    display: flex;
+    align-items: center;
+    padding: 10px;
+    background: #f5f9fa;
     border-radius: 4px;
-    font-size: 14px;
+    cursor: pointer;
+    transition: background 0.2s;
 }
 
-.migrator-message-success {
-    background: #d4edda;
-    color: #155724;
-    border: 1px solid #c3e6cb;
+.migrator-checkbox-label:hover {
+    background: #e8f2f4;
 }
 
-.migrator-message-error {
-    background: #f8d7da;
-    color: #721c24;
-    border: 1px solid #f5c6cb;
-}
-
-.migrator-message-info {
-    background: #d1ecf1;
-    color: #0c5460;
-    border: 1px solid #bee5eb;
-}
-
-/* Loader */
-.migrator-loader {
-    display: inline-block;
-    width: 20px;
-    height: 20px;
-    border: 3px solid #f3f3f3;
-    border-top: 3px solid #2fc6f6;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-    0% { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
+.migrator-checkbox-label input[type="checkbox"] {
+    margin-right: 10px;
+    cursor: pointer;
 }
