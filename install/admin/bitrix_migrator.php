@@ -22,7 +22,7 @@ require($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_a
 
 // Handle form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && check_bitrix_sessid()) {
-    if (isset($_POST['save'])) {
+    if (isset($_POST['save']) || isset($_POST['apply'])) {
         Option::set($MODULE_ID, 'cloud_url', $_POST['cloud_url'] ?? '');
         Option::set($MODULE_ID, 'cloud_webhook', $_POST['cloud_webhook'] ?? '');
         
@@ -54,7 +54,7 @@ $tabControl = new CAdminTabControl('bitrix_migrator_tabs', [
 ]);
 ?>
 
-<form method="POST" action="<?= $APPLICATION->GetCurPage() ?>">
+<form method="POST" action="<?= $APPLICATION->GetCurPage() ?>" name="bitrix_migrator_form">
     <?= bitrix_sessid_post() ?>
     
     <?php $tabControl->Begin(); ?>
@@ -110,9 +110,10 @@ $tabControl = new CAdminTabControl('bitrix_migrator_tabs', [
         </td>
     </tr>
     
-    <?php $tabControl->Buttons(['back_url' => '/bitrix/admin/module_admin.php']); ?>
+    <?php $tabControl->Buttons(); ?>
     
     <input type="submit" name="save" value="<?= Loc::getMessage('BITRIX_MIGRATOR_BTN_SAVE') ?>" class="adm-btn-save">
+    <input type="reset" name="reset" value="<?= Loc::getMessage('BITRIX_MIGRATOR_BTN_CANCEL') ?>" onclick="window.location.reload();">
     
     <?php $tabControl->End(); ?>
 </form>
