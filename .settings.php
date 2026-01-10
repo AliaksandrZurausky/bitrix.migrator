@@ -10,7 +10,4 @@ return [
         ],
         'readonly' => true,
     ],
-    'js' => [],
-    'css' => [],
-    'php' => [],
 ];
