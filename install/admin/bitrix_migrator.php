@@ -17,106 +17,153 @@ if (!Loader::includeModule($MODULE_ID)) {
 }
 
 $APPLICATION->SetTitle(Loc::getMessage('BITRIX_MIGRATOR_PAGE_TITLE'));
+$APPLICATION->AddHeadScript('/local/modules/bitrix_migrator/install/admin/js/script.js');
+$APPLICATION->SetAdditionalCSS('/local/modules/bitrix_migrator/install/admin/css/styles.css');
 
 require($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_after.php');
-
-// Handle form submission
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && check_bitrix_sessid()) {
-    if (isset($_POST['save']) || isset($_POST['apply'])) {
-        Option::set($MODULE_ID, 'cloud_url', $_POST['cloud_url'] ?? '');
-        Option::set($MODULE_ID, 'cloud_webhook', $_POST['cloud_webhook'] ?? '');
-        
-        CAdminMessage::ShowNote(Loc::getMessage('BITRIX_MIGRATOR_SETTINGS_SAVED'));
-    }
-}
 
 // Get current settings
 $cloudUrl = Option::get($MODULE_ID, 'cloud_url', '');
 $cloudWebhook = Option::get($MODULE_ID, 'cloud_webhook', '');
-
-// Tab control
-$tabControl = new CAdminTabControl('bitrix_migrator_tabs', [
-    [
-        'DIV' => 'settings',
-        'TAB' => Loc::getMessage('BITRIX_MIGRATOR_TAB_SETTINGS'),
-        'TITLE' => Loc::getMessage('BITRIX_MIGRATOR_TAB_SETTINGS_TITLE')
-    ],
-    [
-        'DIV' => 'state',
-        'TAB' => Loc::getMessage('BITRIX_MIGRATOR_TAB_STATE'),
-        'TITLE' => Loc::getMessage('BITRIX_MIGRATOR_TAB_STATE_TITLE')
-    ],
-    [
-        'DIV' => 'logs',
-        'TAB' => Loc::getMessage('BITRIX_MIGRATOR_TAB_LOGS'),
-        'TITLE' => Loc::getMessage('BITRIX_MIGRATOR_TAB_LOGS_TITLE')
-    ]
-]);
+$connectionStatus = Option::get($MODULE_ID, 'connection_status', 'not_checked');
 ?>
 
-<form method="POST" action="<?= $APPLICATION->GetCurPage() ?>" name="bitrix_migrator_form">
-    <?= bitrix_sessid_post() ?>
-    
-    <?php $tabControl->Begin(); ?>
-    
-    <?php $tabControl->BeginNextTab(); ?>
-    
-    <tr>
-        <td width="40%">
-            <label for="cloud_url"><?= Loc::getMessage('BITRIX_MIGRATOR_CLOUD_URL') ?>:</label>
-        </td>
-        <td width="60%">
-            <input type="text" 
-                   id="cloud_url" 
-                   name="cloud_url" 
-                   value="<?= htmlspecialcharsbx($cloudUrl) ?>" 
-                   size="50" 
-                   placeholder="https://your-portal.bitrix24.ru">
-        </td>
-    </tr>
-    
-    <tr>
-        <td>
-            <label for="cloud_webhook"><?= Loc::getMessage('BITRIX_MIGRATOR_CLOUD_WEBHOOK') ?>:</label>
-        </td>
-        <td>
-            <input type="text" 
-                   id="cloud_webhook" 
-                   name="cloud_webhook" 
-                   value="<?= htmlspecialcharsbx($cloudWebhook) ?>" 
-                   size="50" 
-                   placeholder="1/abc123def456">
-            <br>
-            <small><?= Loc::getMessage('BITRIX_MIGRATOR_CLOUD_WEBHOOK_HINT') ?></small>
-        </td>
-    </tr>
-    
-    <?php $tabControl->BeginNextTab(); ?>
-    
-    <tr>
-        <td colspan="2">
-            <p><?= Loc::getMessage('BITRIX_MIGRATOR_STATE_INFO') ?></p>
-            <p><strong><?= Loc::getMessage('BITRIX_MIGRATOR_STATE_STATUS') ?>:</strong> 
-                <?= Loc::getMessage('BITRIX_MIGRATOR_STATE_NOT_STARTED') ?>
-            </p>
-        </td>
-    </tr>
-    
-    <?php $tabControl->BeginNextTab(); ?>
-    
-    <tr>
-        <td colspan="2">
+<div class="migrator-container">
+    <!-- Tabs Navigation -->
+    <div class="migrator-tabs-nav">
+        <button class="migrator-tab-btn active" data-tab="connection">
+            <?= Loc::getMessage('BITRIX_MIGRATOR_TAB_CONNECTION') ?>
+        </button>
+        <button class="migrator-tab-btn" data-tab="dryrun">
+            <?= Loc::getMessage('BITRIX_MIGRATOR_TAB_DRYRUN') ?>
+        </button>
+        <button class="migrator-tab-btn" data-tab="plan">
+            <?= Loc::getMessage('BITRIX_MIGRATOR_TAB_PLAN') ?>
+        </button>
+        <button class="migrator-tab-btn" data-tab="migration">
+            <?= Loc::getMessage('BITRIX_MIGRATOR_TAB_MIGRATION') ?>
+        </button>
+        <button class="migrator-tab-btn" data-tab="logs">
+            <?= Loc::getMessage('BITRIX_MIGRATOR_TAB_LOGS') ?>
+        </button>
+    </div>
+
+    <!-- Tab: Connection -->
+    <div id="tab-connection" class="migrator-tab-content active">
+        <div class="adm-detail-content">
+            <h2><?= Loc::getMessage('BITRIX_MIGRATOR_CONNECTION_TITLE') ?></h2>
+            
+            <!-- Connection Status -->
+            <div class="migrator-status-block" id="connection-status-block">
+                <div class="migrator-status migrator-status-<?= htmlspecialcharsbx($connectionStatus) ?>">
+                    <span class="migrator-status-icon"></span>
+                    <span class="migrator-status-text" id="connection-status-text">
+                        <?php
+                        switch ($connectionStatus) {
+                            case 'success':
+                                echo Loc::getMessage('BITRIX_MIGRATOR_CONNECTION_STATUS_SUCCESS');
+                                break;
+                            case 'error':
+                                echo Loc::getMessage('BITRIX_MIGRATOR_CONNECTION_STATUS_ERROR');
+                                break;
+                            default:
+                                echo Loc::getMessage('BITRIX_MIGRATOR_CONNECTION_STATUS_NOT_CHECKED');
+                        }
+                        ?>
+                    </span>
+                </div>
+            </div>
+
+            <!-- Settings Form -->
+            <form id="connection-form" class="migrator-form">
+                <?= bitrix_sessid_post() ?>
+                
+                <div class="migrator-form-group">
+                    <label for="cloud_url" class="migrator-label">
+                        <?= Loc::getMessage('BITRIX_MIGRATOR_CLOUD_URL') ?>:
+                        <span class="migrator-required">*</span>
+                    </label>
+                    <input type="text" 
+                           id="cloud_url" 
+                           name="cloud_url" 
+                           class="migrator-input"
+                           value="<?= htmlspecialcharsbx($cloudUrl) ?>" 
+                           placeholder="https://your-portal.bitrix24.ru"
+                           required>
+                </div>
+
+                <div class="migrator-form-group">
+                    <label for="cloud_webhook" class="migrator-label">
+                        <?= Loc::getMessage('BITRIX_MIGRATOR_CLOUD_WEBHOOK') ?>:
+                        <span class="migrator-required">*</span>
+                    </label>
+                    <input type="text" 
+                           id="cloud_webhook" 
+                           name="cloud_webhook" 
+                           class="migrator-input"
+                           value="<?= htmlspecialcharsbx($cloudWebhook) ?>" 
+                           placeholder="1/abc123def456"
+                           required>
+                    <div class="migrator-hint">
+                        <?= Loc::getMessage('BITRIX_MIGRATOR_CLOUD_WEBHOOK_HINT') ?>
+                    </div>
+                </div>
+
+                <div class="migrator-form-actions">
+                    <button type="button" id="btn-save-connection" class="adm-btn-save">
+                        <?= Loc::getMessage('BITRIX_MIGRATOR_BTN_SAVE') ?>
+                    </button>
+                    <button type="button" id="btn-check-connection" class="adm-btn">
+                        <?= Loc::getMessage('BITRIX_MIGRATOR_BTN_CHECK_CONNECTION') ?>
+                    </button>
+                    <button type="button" id="btn-run-dryrun" class="adm-btn" <?= empty($cloudUrl) || empty($cloudWebhook) ? 'disabled' : '' ?>>
+                        <?= Loc::getMessage('BITRIX_MIGRATOR_BTN_RUN_DRYRUN') ?>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Tab: Dry Run -->
+    <div id="tab-dryrun" class="migrator-tab-content">
+        <div class="adm-detail-content">
+            <h2><?= Loc::getMessage('BITRIX_MIGRATOR_DRYRUN_TITLE') ?></h2>
+            <p><?= Loc::getMessage('BITRIX_MIGRATOR_DRYRUN_INFO') ?></p>
+        </div>
+    </div>
+
+    <!-- Tab: Migration Plan -->
+    <div id="tab-plan" class="migrator-tab-content">
+        <div class="adm-detail-content">
+            <h2><?= Loc::getMessage('BITRIX_MIGRATOR_PLAN_TITLE') ?></h2>
+            <p><?= Loc::getMessage('BITRIX_MIGRATOR_PLAN_INFO') ?></p>
+        </div>
+    </div>
+
+    <!-- Tab: Migration -->
+    <div id="tab-migration" class="migrator-tab-content">
+        <div class="adm-detail-content">
+            <h2><?= Loc::getMessage('BITRIX_MIGRATOR_MIGRATION_TITLE') ?></h2>
+            <p><?= Loc::getMessage('BITRIX_MIGRATOR_MIGRATION_INFO') ?></p>
+        </div>
+    </div>
+
+    <!-- Tab: Logs -->
+    <div id="tab-logs" class="migrator-tab-content">
+        <div class="adm-detail-content">
+            <h2><?= Loc::getMessage('BITRIX_MIGRATOR_LOGS_TITLE') ?></h2>
             <p><?= Loc::getMessage('BITRIX_MIGRATOR_LOGS_INFO') ?></p>
-        </td>
-    </tr>
-    
-    <?php $tabControl->Buttons(); ?>
-    
-    <input type="submit" name="save" value="<?= Loc::getMessage('BITRIX_MIGRATOR_BTN_SAVE') ?>" class="adm-btn-save">
-    <input type="reset" name="reset" value="<?= Loc::getMessage('BITRIX_MIGRATOR_BTN_CANCEL') ?>" onclick="window.location.reload();">
-    
-    <?php $tabControl->End(); ?>
-</form>
+        </div>
+    </div>
+</div>
+
+<script>
+// Initialize module ID for JS
+window.BITRIX_MIGRATOR = {
+    moduleId: '<?= $MODULE_ID ?>',
+    sessid: '<?= bitrix_sessid() ?>'
+};
+</script>
 
 <?php
 require($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/epilog_admin.php');

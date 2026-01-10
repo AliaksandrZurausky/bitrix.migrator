@@ -1,0 +1,221 @@
+/* Bitrix Migrator - Main Styles */
+
+.migrator-container {
+    background: #fff;
+    border: 1px solid #e0e8ea;
+    border-radius: 4px;
+    margin: 20px 0;
+}
+
+/* Tabs Navigation */
+.migrator-tabs-nav {
+    display: flex;
+    background: #f5f9fa;
+    border-bottom: 1px solid #e0e8ea;
+    padding: 0;
+    margin: 0;
+}
+
+.migrator-tab-btn {
+    flex: 1;
+    padding: 12px 20px;
+    background: transparent;
+    border: none;
+    border-bottom: 3px solid transparent;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    color: #525c69;
+    transition: all 0.2s ease;
+    outline: none;
+}
+
+.migrator-tab-btn:hover {
+    background: #e8f1f4;
+    color: #2fc6f6;
+}
+
+.migrator-tab-btn.active {
+    background: #fff;
+    border-bottom-color: #2fc6f6;
+    color: #2fc6f6;
+}
+
+/* Tab Content */
+.migrator-tab-content {
+    display: none;
+    padding: 20px;
+}
+
+.migrator-tab-content.active {
+    display: block;
+}
+
+.migrator-tab-content h2 {
+    margin: 0 0 20px 0;
+    font-size: 18px;
+    font-weight: 600;
+    color: #525c69;
+}
+
+/* Status Block */
+.migrator-status-block {
+    margin-bottom: 20px;
+}
+
+.migrator-status {
+    display: inline-flex;
+    align-items: center;
+    padding: 10px 16px;
+    border-radius: 4px;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.migrator-status-icon {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    margin-right: 8px;
+}
+
+.migrator-status-not_checked {
+    background: #f0f0f0;
+    color: #525c69;
+}
+
+.migrator-status-not_checked .migrator-status-icon {
+    background: #a8adb4;
+}
+
+.migrator-status-success {
+    background: #d4edda;
+    color: #155724;
+}
+
+.migrator-status-success .migrator-status-icon {
+    background: #28a745;
+}
+
+.migrator-status-error {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+.migrator-status-error .migrator-status-icon {
+    background: #dc3545;
+}
+
+.migrator-status-loading {
+    background: #d1ecf1;
+    color: #0c5460;
+}
+
+.migrator-status-loading .migrator-status-icon {
+    background: #17a2b8;
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+/* Form Styles */
+.migrator-form {
+    max-width: 800px;
+}
+
+.migrator-form-group {
+    margin-bottom: 20px;
+}
+
+.migrator-label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    color: #525c69;
+}
+
+.migrator-required {
+    color: #ff5752;
+}
+
+.migrator-input,
+.migrator-select,
+.migrator-textarea {
+    width: 100%;
+    padding: 8px 12px;
+    font-size: 14px;
+    border: 1px solid #c6d0da;
+    border-radius: 4px;
+    box-sizing: border-box;
+    transition: border-color 0.2s ease;
+}
+
+.migrator-input:focus,
+.migrator-select:focus,
+.migrator-textarea:focus {
+    outline: none;
+    border-color: #2fc6f6;
+}
+
+.migrator-hint {
+    margin-top: 6px;
+    font-size: 12px;
+    color: #828b95;
+}
+
+.migrator-form-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 30px;
+}
+
+.migrator-form-actions button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Messages */
+.migrator-message {
+    padding: 12px 16px;
+    margin-bottom: 20px;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+.migrator-message-success {
+    background: #d4edda;
+    color: #155724;
+    border: 1px solid #c3e6cb;
+}
+
+.migrator-message-error {
+    background: #f8d7da;
+    color: #721c24;
+    border: 1px solid #f5c6cb;
+}
+
+.migrator-message-info {
+    background: #d1ecf1;
+    color: #0c5460;
+    border: 1px solid #bee5eb;
+}
+
+/* Loader */
+.migrator-loader {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border: 3px solid #f3f3f3;
+    border-top: 3px solid #2fc6f6;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
