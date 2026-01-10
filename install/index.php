@@ -42,6 +42,7 @@ class bitrix_migrator extends CModule
         try {
             $this->InstallDB();
             $this->InstallEvents();
+            $this->InstallFiles();
             ModuleManager::registerModule($this->MODULE_ID);
 
             $APPLICATION->IncludeAdminFile(
@@ -74,6 +75,7 @@ class bitrix_migrator extends CModule
             $deleteData = $_REQUEST['delete_data'] === 'Y';
 
             $this->UninstallEvents();
+            $this->UninstallFiles();
 
             if ($deleteData) {
                 $this->UninstallDB();
@@ -501,7 +503,7 @@ class bitrix_migrator extends CModule
 
     public function InstallEvents()
     {
-        // Регистрируем агент
+        // Register agent
         if (class_exists('CAgent')) {
             \CAgent::AddAgent(
                 "\\BitrixMigrator\\Agent\\MigratorAgent::run();",
@@ -510,12 +512,56 @@ class bitrix_migrator extends CModule
                 60
             );
         }
+
+        // Register admin menu
+        EventManager::getInstance()->registerEventHandler(
+            'main',
+            'OnBuildGlobalMenu',
+            $this->MODULE_ID,
+            '\\BitrixMigrator\\EventHandlers',
+            'OnBuildGlobalMenu'
+        );
     }
 
     public function UninstallEvents()
     {
         if (class_exists('CAgent')) {
             \CAgent::RemoveModuleAgents($this->MODULE_ID);
+        }
+
+        EventManager::getInstance()->unRegisterEventHandler(
+            'main',
+            'OnBuildGlobalMenu',
+            $this->MODULE_ID,
+            '\\BitrixMigrator\\EventHandlers',
+            'OnBuildGlobalMenu'
+        );
+    }
+
+    public function InstallFiles()
+    {
+        // Copy admin files to /bitrix/admin/
+        CopyDirFiles(
+            __DIR__ . '/admin/',
+            Application::getDocumentRoot() . '/bitrix/admin/',
+            true,
+            true
+        );
+    }
+
+    public function UninstallFiles()
+    {
+        // Remove admin files from /bitrix/admin/
+        $adminFiles = [
+            'bitrix_migrator.php',
+            'bitrix_migrator_menu.php'
+        ];
+
+        foreach ($adminFiles as $file) {
+            $filePath = Application::getDocumentRoot() . '/bitrix/admin/' . $file;
+            if (file_exists($filePath)) {
+                @unlink($filePath);
+            }
         }
     }
 }
