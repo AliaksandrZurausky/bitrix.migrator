@@ -16,42 +16,39 @@ class bitrix_migrator extends CModule
     public $MODULE_VERSION_DATE;
     public $MODULE_NAME;
     public $MODULE_DESCRIPTION;
-    public $PARTNER_NAME = 'Aliaksandr Zurausky';
-    public $PARTNER_URI = 'https://github.com/AliaksandrZurausky/bitrix.migrator';
 
     public function __construct()
     {
-        if (file_exists(__DIR__ . '/version.php')) {
-            include_once(__DIR__ . '/version.php');
-            $this->MODULE_VERSION = $arModuleVersion['VERSION'];
-            $this->MODULE_VERSION_DATE = $arModuleVersion['VERSION_DATE'];
-            $this->MODULE_NAME = Loc::getMessage('BITRIX_MIGRATOR_NAME');
-            $this->MODULE_DESCRIPTION = Loc::getMessage('BITRIX_MIGRATOR_DESCRIPTION');
-        }
+        $arModuleVersion = [];
+        include(__DIR__ . '/version.php');
+
+        $this->MODULE_VERSION = $arModuleVersion['VERSION'];
+        $this->MODULE_VERSION_DATE = $arModuleVersion['VERSION_DATE'];
+        $this->MODULE_NAME = Loc::getMessage('BITRIX_MIGRATOR_MODULE_NAME');
+        $this->MODULE_DESCRIPTION = Loc::getMessage('BITRIX_MIGRATOR_MODULE_DESC');
+        $this->PARTNER_NAME = Loc::getMessage('BITRIX_MIGRATOR_PARTNER_NAME');
+        $this->PARTNER_URI = Loc::getMessage('BITRIX_MIGRATOR_PARTNER_URI');
     }
 
     public function DoInstall()
     {
         global $APPLICATION;
 
-        if (!CheckVersion(ModuleManager::getVersion('main'), '19.00.00')) {
-            $APPLICATION->ThrowException(Loc::getMessage('BITRIX_MIGRATOR_MIN_VERSION_ERROR'));
-            return false;
-        }
-
-        try {
-            ModuleManager::registerModule($this->MODULE_ID);
+        if (CheckVersion(ModuleManager::getVersion('main'), '14.00.00')) {
+            $this->InstallFiles();
             $this->InstallDB();
             $this->InstallEvents();
-            $this->InstallFiles();
+
+            ModuleManager::registerModule($this->MODULE_ID);
 
             $APPLICATION->IncludeAdminFile(
                 Loc::getMessage('BITRIX_MIGRATOR_INSTALL_TITLE'),
-                __DIR__ . '/install_success.php'
+                __DIR__ . '/step.php'
             );
-        } catch (Exception $e) {
-            $APPLICATION->ThrowException($e->getMessage());
-            return false;
+        } else {
+            $APPLICATION->ThrowException(
+                Loc::getMessage('BITRIX_MIGRATOR_INSTALL_ERROR_VERSION')
+            );
         }
 
         return true;
@@ -61,546 +58,82 @@ class bitrix_migrator extends CModule
     {
         global $APPLICATION;
 
-        try {
-            $uninstallStep = $_REQUEST['uninstall_step'] ?? null;
+        $this->UnInstallEvents();
+        $this->UnInstallDB();
+        $this->UnInstallFiles();
 
-            if ($uninstallStep !== 'final') {
-                $APPLICATION->IncludeAdminFile(
-                    Loc::getMessage('BITRIX_MIGRATOR_UNINSTALL_TITLE'),
-                    __DIR__ . '/uninstall_confirm.php'
-                );
-                return true;
-            }
+        ModuleManager::unRegisterModule($this->MODULE_ID);
 
-            $deleteData = $_REQUEST['delete_data'] === 'Y';
-
-            $this->UninstallEvents();
-            $this->UninstallFiles();
-
-            if ($deleteData) {
-                $this->UninstallDB();
-            }
-
-            Option::delete($this->MODULE_ID);
-            ModuleManager::unregisterModule($this->MODULE_ID);
-
-            $APPLICATION->IncludeAdminFile(
-                Loc::getMessage('BITRIX_MIGRATOR_UNINSTALL_TITLE'),
-                __DIR__ . '/uninstall_success.php'
-            );
-        } catch (Exception $e) {
-            $APPLICATION->ThrowException($e->getMessage());
-            return false;
-        }
+        $APPLICATION->IncludeAdminFile(
+            Loc::getMessage('BITRIX_MIGRATOR_UNINSTALL_TITLE'),
+            __DIR__ . '/unstep.php'
+        );
 
         return true;
     }
 
     public function InstallDB()
     {
-        if (!\Bitrix\Main\Loader::includeModule('highloadblock')) {
-            throw new Exception(Loc::getMessage('BITRIX_MIGRATOR_HL_REQUIRED'));
-        }
-
-        $this->createStateTable();
-        $this->createQueueTable();
-        $this->createMapTable();
-        $this->createLogsTable();
+        return true;
     }
 
-    public function createStateTable()
+    public function UnInstallDB()
     {
-        $hlblock = \Bitrix\Highloadblock\HighloadBlockTable::getList([
-            'filter' => ['=NAME' => 'MigratorState']
-        ])->fetch();
-
-        if (!$hlblock) {
-            $result = \Bitrix\Highloadblock\HighloadBlockTable::add([
-                'NAME' => 'MigratorState',
-                'TABLE_NAME' => 'b_migrator_state'
-            ]);
-
-            if (!$result->isSuccess()) {
-                throw new Exception('Error creating MigratorState table: ' . implode(', ', $result->getErrorMessages()));
-            }
-
-            $blockId = $result->getId();
-            $userTypeEntity = new \CUserTypeEntity();
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_STATUS',
-                'USER_TYPE_ID' => 'string',
-                'XML_ID' => 'UF_STATUS',
-                'MANDATORY' => 'Y',
-                'EDIT_FORM_LABEL' => ['ru' => 'Статус миграции'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Статус'],
-                'SETTINGS' => ['SIZE' => 50]
-            ]);
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_CURRENT_PHASE',
-                'USER_TYPE_ID' => 'string',
-                'XML_ID' => 'UF_CURRENT_PHASE',
-                'MANDATORY' => 'N',
-                'EDIT_FORM_LABEL' => ['ru' => 'Текущая фаза'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Фаза'],
-                'SETTINGS' => ['SIZE' => 50]
-            ]);
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_PAUSE_FLAG',
-                'USER_TYPE_ID' => 'boolean',
-                'XML_ID' => 'UF_PAUSE_FLAG',
-                'MANDATORY' => 'N',
-                'EDIT_FORM_LABEL' => ['ru' => 'Флаг паузы'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'На паузе']
-            ]);
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_SETTINGS_JSON',
-                'USER_TYPE_ID' => 'string',
-                'XML_ID' => 'UF_SETTINGS_JSON',
-                'MANDATORY' => 'N',
-                'EDIT_FORM_LABEL' => ['ru' => 'Настройки (JSON)'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Настройки'],
-                'SETTINGS' => ['SIZE' => 0, 'ROWS' => 5]
-            ]);
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_LAST_ERROR',
-                'USER_TYPE_ID' => 'string',
-                'XML_ID' => 'UF_LAST_ERROR',
-                'MANDATORY' => 'N',
-                'EDIT_FORM_LABEL' => ['ru' => 'Последняя ошибка'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Ошибка'],
-                'SETTINGS' => ['SIZE' => 0, 'ROWS' => 3]
-            ]);
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_STARTED_AT',
-                'USER_TYPE_ID' => 'datetime',
-                'XML_ID' => 'UF_STARTED_AT',
-                'MANDATORY' => 'N',
-                'EDIT_FORM_LABEL' => ['ru' => 'Начало миграции'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Начало']
-            ]);
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_UPDATED_AT',
-                'USER_TYPE_ID' => 'datetime',
-                'XML_ID' => 'UF_UPDATED_AT',
-                'MANDATORY' => 'N',
-                'EDIT_FORM_LABEL' => ['ru' => 'Обновлено'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Обновлено']
-            ]);
-
-            Option::set($this->MODULE_ID, 'state_hlblock_id', $blockId);
-        }
-    }
-
-    public function createQueueTable()
-    {
-        $hlblock = \Bitrix\Highloadblock\HighloadBlockTable::getList([
-            'filter' => ['=NAME' => 'MigratorQueue']
-        ])->fetch();
-
-        if (!$hlblock) {
-            $result = \Bitrix\Highloadblock\HighloadBlockTable::add([
-                'NAME' => 'MigratorQueue',
-                'TABLE_NAME' => 'b_migrator_queue'
-            ]);
-
-            if (!$result->isSuccess()) {
-                throw new Exception('Error creating MigratorQueue table: ' . implode(', ', $result->getErrorMessages()));
-            }
-
-            $blockId = $result->getId();
-            $userTypeEntity = new \CUserTypeEntity();
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_ENTITY_TYPE',
-                'USER_TYPE_ID' => 'string',
-                'XML_ID' => 'UF_ENTITY_TYPE',
-                'MANDATORY' => 'Y',
-                'EDIT_FORM_LABEL' => ['ru' => 'Тип сущности'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Тип'],
-                'SETTINGS' => ['SIZE' => 50]
-            ]);
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_CLOUD_ID',
-                'USER_TYPE_ID' => 'string',
-                'XML_ID' => 'UF_CLOUD_ID',
-                'MANDATORY' => 'Y',
-                'EDIT_FORM_LABEL' => ['ru' => 'Cloud ID'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Cloud ID'],
-                'SETTINGS' => ['SIZE' => 100]
-            ]);
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_LOCAL_ID',
-                'USER_TYPE_ID' => 'integer',
-                'XML_ID' => 'UF_LOCAL_ID',
-                'MANDATORY' => 'N',
-                'EDIT_FORM_LABEL' => ['ru' => 'Local ID'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Local ID']
-            ]);
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_STATUS',
-                'USER_TYPE_ID' => 'string',
-                'XML_ID' => 'UF_STATUS',
-                'MANDATORY' => 'Y',
-                'EDIT_FORM_LABEL' => ['ru' => 'Статус'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Статус'],
-                'SETTINGS' => ['SIZE' => 20]
-            ]);
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_RETRIES',
-                'USER_TYPE_ID' => 'integer',
-                'XML_ID' => 'UF_RETRIES',
-                'MANDATORY' => 'N',
-                'EDIT_FORM_LABEL' => ['ru' => 'Попытки'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Попытки']
-            ]);
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_LAST_ERROR',
-                'USER_TYPE_ID' => 'string',
-                'XML_ID' => 'UF_LAST_ERROR',
-                'MANDATORY' => 'N',
-                'EDIT_FORM_LABEL' => ['ru' => 'Последняя ошибка'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Ошибка'],
-                'SETTINGS' => ['SIZE' => 0, 'ROWS' => 3]
-            ]);
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_PRIORITY',
-                'USER_TYPE_ID' => 'integer',
-                'XML_ID' => 'UF_PRIORITY',
-                'MANDATORY' => 'N',
-                'EDIT_FORM_LABEL' => ['ru' => 'Приоритет'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Приоритет']
-            ]);
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_DEPENDS_ON',
-                'USER_TYPE_ID' => 'string',
-                'XML_ID' => 'UF_DEPENDS_ON',
-                'MANDATORY' => 'N',
-                'EDIT_FORM_LABEL' => ['ru' => 'Зависит от'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Зависит от'],
-                'SETTINGS' => ['SIZE' => 100]
-            ]);
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_UPDATED_AT',
-                'USER_TYPE_ID' => 'datetime',
-                'XML_ID' => 'UF_UPDATED_AT',
-                'MANDATORY' => 'N',
-                'EDIT_FORM_LABEL' => ['ru' => 'Обновлено'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Обновлено']
-            ]);
-
-            Option::set($this->MODULE_ID, 'queue_hlblock_id', $blockId);
-        }
-    }
-
-    public function createMapTable()
-    {
-        $hlblock = \Bitrix\Highloadblock\HighloadBlockTable::getList([
-            'filter' => ['=NAME' => 'MigratorMap']
-        ])->fetch();
-
-        if (!$hlblock) {
-            $result = \Bitrix\Highloadblock\HighloadBlockTable::add([
-                'NAME' => 'MigratorMap',
-                'TABLE_NAME' => 'b_migrator_map'
-            ]);
-
-            if (!$result->isSuccess()) {
-                throw new Exception('Error creating MigratorMap table: ' . implode(', ', $result->getErrorMessages()));
-            }
-
-            $blockId = $result->getId();
-            $userTypeEntity = new \CUserTypeEntity();
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_ENTITY_TYPE',
-                'USER_TYPE_ID' => 'string',
-                'XML_ID' => 'UF_ENTITY_TYPE',
-                'MANDATORY' => 'Y',
-                'EDIT_FORM_LABEL' => ['ru' => 'Тип сущности'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Тип'],
-                'SETTINGS' => ['SIZE' => 50]
-            ]);
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_CLOUD_ID',
-                'USER_TYPE_ID' => 'string',
-                'XML_ID' => 'UF_CLOUD_ID',
-                'MANDATORY' => 'Y',
-                'EDIT_FORM_LABEL' => ['ru' => 'Cloud ID'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Cloud ID'],
-                'SETTINGS' => ['SIZE' => 100]
-            ]);
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_LOCAL_ID',
-                'USER_TYPE_ID' => 'string',
-                'XML_ID' => 'UF_LOCAL_ID',
-                'MANDATORY' => 'Y',
-                'EDIT_FORM_LABEL' => ['ru' => 'Local ID'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Local ID'],
-                'SETTINGS' => ['SIZE' => 100]
-            ]);
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_CLOUD_URL',
-                'USER_TYPE_ID' => 'string',
-                'XML_ID' => 'UF_CLOUD_URL',
-                'MANDATORY' => 'N',
-                'EDIT_FORM_LABEL' => ['ru' => 'Cloud URL'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Cloud URL'],
-                'SETTINGS' => ['SIZE' => 255]
-            ]);
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_META_JSON',
-                'USER_TYPE_ID' => 'string',
-                'XML_ID' => 'UF_META_JSON',
-                'MANDATORY' => 'N',
-                'EDIT_FORM_LABEL' => ['ru' => 'Метаданные (JSON)'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Метаданные'],
-                'SETTINGS' => ['SIZE' => 0, 'ROWS' => 3]
-            ]);
-
-            Option::set($this->MODULE_ID, 'map_hlblock_id', $blockId);
-        }
-    }
-
-    public function createLogsTable()
-    {
-        $hlblock = \Bitrix\Highloadblock\HighloadBlockTable::getList([
-            'filter' => ['=NAME' => 'MigratorLogs']
-        ])->fetch();
-
-        if (!$hlblock) {
-            $result = \Bitrix\Highloadblock\HighloadBlockTable::add([
-                'NAME' => 'MigratorLogs',
-                'TABLE_NAME' => 'b_migrator_logs'
-            ]);
-
-            if (!$result->isSuccess()) {
-                throw new Exception('Error creating MigratorLogs table: ' . implode(', ', $result->getErrorMessages()));
-            }
-
-            $blockId = $result->getId();
-            $userTypeEntity = new \CUserTypeEntity();
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_LEVEL',
-                'USER_TYPE_ID' => 'string',
-                'XML_ID' => 'UF_LEVEL',
-                'MANDATORY' => 'Y',
-                'EDIT_FORM_LABEL' => ['ru' => 'Уровень'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Уровень'],
-                'SETTINGS' => ['SIZE' => 20]
-            ]);
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_MESSAGE',
-                'USER_TYPE_ID' => 'string',
-                'XML_ID' => 'UF_MESSAGE',
-                'MANDATORY' => 'Y',
-                'EDIT_FORM_LABEL' => ['ru' => 'Сообщение'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Сообщение'],
-                'SETTINGS' => ['SIZE' => 0, 'ROWS' => 5]
-            ]);
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_CONTEXT',
-                'USER_TYPE_ID' => 'string',
-                'XML_ID' => 'UF_CONTEXT',
-                'MANDATORY' => 'N',
-                'EDIT_FORM_LABEL' => ['ru' => 'Контекст'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Контекст'],
-                'SETTINGS' => ['SIZE' => 500]
-            ]);
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_PAYLOAD',
-                'USER_TYPE_ID' => 'string',
-                'XML_ID' => 'UF_PAYLOAD',
-                'MANDATORY' => 'N',
-                'EDIT_FORM_LABEL' => ['ru' => 'Данные (JSON)'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Данные'],
-                'SETTINGS' => ['SIZE' => 0, 'ROWS' => 3]
-            ]);
-
-            $userTypeEntity->Add([
-                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
-                'FIELD_NAME' => 'UF_CREATED_AT',
-                'USER_TYPE_ID' => 'datetime',
-                'XML_ID' => 'UF_CREATED_AT',
-                'MANDATORY' => 'N',
-                'EDIT_FORM_LABEL' => ['ru' => 'Создано'],
-                'LIST_COLUMN_LABEL' => ['ru' => 'Создано']
-            ]);
-
-            Option::set($this->MODULE_ID, 'logs_hlblock_id', $blockId);
-        }
-    }
-
-    public function UninstallDB()
-    {
-        if (!\Bitrix\Main\Loader::includeModule('highloadblock')) {
-            return;
-        }
-
-        $tables = ['MigratorState', 'MigratorQueue', 'MigratorMap', 'MigratorLogs'];
-
-        foreach ($tables as $tableName) {
-            $hlblock = \Bitrix\Highloadblock\HighloadBlockTable::getList([
-                'filter' => ['=NAME' => $tableName]
-            ])->fetch();
-
-            if ($hlblock) {
-                try {
-                    \Bitrix\Highloadblock\HighloadBlockTable::delete($hlblock['ID']);
-                } catch (Exception $e) {
-                    // Log but don't fail
-                }
-            }
-        }
+        Option::delete($this->MODULE_ID);
+        return true;
     }
 
     public function InstallEvents()
     {
-        // Register agent
-        if (class_exists('CAgent')) {
-            \CAgent::AddAgent(
-                "\\BitrixMigrator\\Agent\\MigratorAgent::run();",
-                $this->MODULE_ID,
-                "N",
-                60
-            );
-        }
-
-        // Register admin menu
-        EventManager::getInstance()->registerEventHandler(
-            'main',
-            'OnBuildGlobalMenu',
-            $this->MODULE_ID,
-            '\\BitrixMigrator\\EventHandlers',
-            'OnBuildGlobalMenu'
-        );
+        $eventManager = EventManager::getInstance();
+        return true;
     }
 
-    public function UninstallEvents()
+    public function UnInstallEvents()
     {
-        if (class_exists('CAgent')) {
-            \CAgent::RemoveModuleAgents($this->MODULE_ID);
-        }
-
-        EventManager::getInstance()->unRegisterEventHandler(
-            'main',
-            'OnBuildGlobalMenu',
-            $this->MODULE_ID,
-            '\\BitrixMigrator\\EventHandlers',
-            'OnBuildGlobalMenu'
-        );
+        $eventManager = EventManager::getInstance();
+        return true;
     }
 
     public function InstallFiles()
     {
-        $docRoot = Application::getDocumentRoot();
-        $localAdminDir = $docRoot . '/local/admin/';
-        
-        // Create /local/admin/ if not exists
-        if (!is_dir($localAdminDir)) {
-            mkdir($localAdminDir, 0755, true);
-        }
-        
-        // Copy admin page file to /local/admin/
+        // Copy admin menu file
         CopyDirFiles(
-            __DIR__ . '/admin/bitrix_migrator.php',
-            $localAdminDir . 'bitrix_migrator.php',
+            __DIR__ . '/admin/',
+            Application::getDocumentRoot() . '/bitrix/admin/',
             true,
             true
         );
-        
-        // Copy language files to /local/admin/lang/
-        $moduleDir = dirname(__DIR__);
-        $languages = ['ru', 'en'];
-        
-        foreach ($languages as $lang) {
-            $sourceLangDir = $moduleDir . '/lang/' . $lang . '/admin/';
-            $targetLangDir = $localAdminDir . 'lang/' . $lang . '/';
-            
-            if (is_dir($sourceLangDir)) {
-                if (!is_dir($targetLangDir)) {
-                    mkdir($targetLangDir, 0755, true);
-                }
-                
-                CopyDirFiles(
-                    $sourceLangDir,
-                    $targetLangDir,
-                    true,
-                    true
-                );
+
+        // Copy AJAX files to /local/ajax/bitrix_migrator/
+        $ajaxSourceDir = dirname(__DIR__) . '/ajax';
+        $ajaxTargetDir = Application::getDocumentRoot() . '/local/ajax/' . $this->MODULE_ID;
+
+        if (is_dir($ajaxSourceDir)) {
+            if (!is_dir($ajaxTargetDir)) {
+                Directory::createDirectory($ajaxTargetDir);
             }
+
+            CopyDirFiles($ajaxSourceDir, $ajaxTargetDir, true, true);
         }
+
+        return true;
     }
 
-    public function UninstallFiles()
+    public function UnInstallFiles()
     {
-        $docRoot = Application::getDocumentRoot();
-        
-        // Remove admin file from /local/admin/
-        $adminFile = $docRoot . '/local/admin/bitrix_migrator.php';
-        if (file_exists($adminFile)) {
-            @unlink($adminFile);
+        // Remove admin menu file
+        DeleteDirFiles(
+            __DIR__ . '/admin/',
+            Application::getDocumentRoot() . '/bitrix/admin/'
+        );
+
+        // Remove AJAX files
+        $ajaxTargetDir = Application::getDocumentRoot() . '/local/ajax/' . $this->MODULE_ID;
+        if (is_dir($ajaxTargetDir)) {
+            Directory::deleteDirectory($ajaxTargetDir);
         }
-        
-        // Remove language files from /local/admin/lang/
-        $languages = ['ru', 'en'];
-        foreach ($languages as $lang) {
-            $langDir = $docRoot . '/local/admin/lang/' . $lang . '/';
-            if (is_dir($langDir)) {
-                $files = scandir($langDir);
-                foreach ($files as $file) {
-                    if (strpos($file, 'bitrix_migrator') === 0) {
-                        @unlink($langDir . $file);
-                    }
-                }
-            }
-        }
+
+        return true;
     }
 }

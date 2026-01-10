@@ -83,7 +83,7 @@
         setButtonLoading('btn-save-connection', true);
 
         BX.ajax({
-            url: '/local/modules/bitrix_migrator/ajax/save_connection.php',
+            url: '/local/ajax/bitrix_migrator/save_connection.php',
             data: {
                 webhookUrl: webhookUrl,
                 sessid: window.BITRIX_MIGRATOR.sessid
@@ -120,7 +120,7 @@
         setConnectionStatus('loading', 'Проверка подключения...');
 
         BX.ajax({
-            url: '/local/modules/bitrix_migrator/ajax/check_connection.php',
+            url: '/local/ajax/bitrix_migrator/check_connection.php',
             data: {
                 webhookUrl: webhookUrl,
                 sessid: window.BITRIX_MIGRATOR.sessid
@@ -158,7 +158,7 @@
         showMessage('info', 'Сухой прогон запущен...');
 
         BX.ajax({
-            url: '/local/modules/bitrix_migrator/ajax/start_dryrun.php',
+            url: '/local/ajax/bitrix_migrator/start_dryrun.php',
             data: {
                 sessid: window.BITRIX_MIGRATOR.sessid
             },
