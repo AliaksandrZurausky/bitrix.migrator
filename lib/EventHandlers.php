@@ -22,7 +22,7 @@ class EventHandlers
             'sort' => 100,
             'text' => Loc::getMessage('BITRIX_MIGRATOR_MENU_TEXT'),
             'title' => Loc::getMessage('BITRIX_MIGRATOR_MENU_TITLE'),
-            'url' => 'bitrix_migrator.php',
+            'url' => '/local/admin/bitrix_migrator.php?lang=' . LANGUAGE_ID,
             'icon' => 'sys_menu_icon',
             'page_icon' => 'sys_page_icon',
             'items_id' => $moduleId . '_menu',

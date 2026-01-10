@@ -541,21 +541,28 @@ class bitrix_migrator extends CModule
     public function InstallFiles()
     {
         $docRoot = Application::getDocumentRoot();
-        $moduleDir = dirname(__DIR__);
+        $localAdminDir = $docRoot . '/local/admin/';
         
-        // Copy admin files from install/admin/ to /local/admin/
+        // Create /local/admin/ if not exists
+        if (!is_dir($localAdminDir)) {
+            mkdir($localAdminDir, 0755, true);
+        }
+        
+        // Copy admin page file to /local/admin/
         CopyDirFiles(
-            __DIR__ . '/admin/',
-            $docRoot . '/local/admin/',
+            __DIR__ . '/admin/bitrix_migrator.php',
+            $localAdminDir . 'bitrix_migrator.php',
             true,
             true
         );
         
-        // Copy language files from lang/*/admin/ to /local/admin/lang/*/
+        // Copy language files to /local/admin/lang/
+        $moduleDir = dirname(__DIR__);
         $languages = ['ru', 'en'];
+        
         foreach ($languages as $lang) {
             $sourceLangDir = $moduleDir . '/lang/' . $lang . '/admin/';
-            $targetLangDir = $docRoot . '/local/admin/lang/' . $lang . '/';
+            $targetLangDir = $localAdminDir . 'lang/' . $lang . '/';
             
             if (is_dir($sourceLangDir)) {
                 if (!is_dir($targetLangDir)) {
@@ -576,20 +583,13 @@ class bitrix_migrator extends CModule
     {
         $docRoot = Application::getDocumentRoot();
         
-        // Remove admin files from /local/admin/
-        $adminFiles = [
-            'bitrix_migrator.php',
-            'bitrix_migrator_menu.php'
-        ];
-
-        foreach ($adminFiles as $file) {
-            $filePath = $docRoot . '/local/admin/' . $file;
-            if (file_exists($filePath)) {
-                @unlink($filePath);
-            }
+        // Remove admin file from /local/admin/
+        $adminFile = $docRoot . '/local/admin/bitrix_migrator.php';
+        if (file_exists($adminFile)) {
+            @unlink($adminFile);
         }
         
-        // Remove language files from /local/admin/lang/*/
+        // Remove language files from /local/admin/lang/
         $languages = ['ru', 'en'];
         foreach ($languages as $lang) {
             $langDir = $docRoot . '/local/admin/lang/' . $lang . '/';
