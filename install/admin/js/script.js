@@ -82,7 +82,7 @@
 
         setButtonLoading('btn-save-connection', true);
 
-        BX.ajax.runAction('bitrix:migrator.api.connection.save', {
+        BX.ajax.runAction('bitrix_migrator:api.migrator.saveConnection', {
             data: {
                 webhookUrl: webhookUrl
             }
@@ -113,7 +113,7 @@
         setButtonLoading('btn-check-connection', true);
         setConnectionStatus('loading', BX.message('BITRIX_MIGRATOR_CONNECTION_STATUS_CHECKING'));
 
-        BX.ajax.runAction('bitrix:migrator.api.connection.check', {
+        BX.ajax.runAction('bitrix_migrator:api.migrator.checkConnection', {
             data: {
                 webhookUrl: webhookUrl
             }
@@ -145,7 +145,7 @@
         setButtonLoading('btn-run-dryrun', true);
         showMessage('info', BX.message('BITRIX_MIGRATOR_DRYRUN_STARTED'));
 
-        BX.ajax.runAction('bitrix:migrator.api.dryrun.start', {
+        BX.ajax.runAction('bitrix_migrator:api.migrator.startDryRun', {
             data: {}
         }).then(function(response) {
             setButtonLoading('btn-run-dryrun', false);

@@ -12,5 +12,6 @@ Loader::registerAutoloadClasses(
         'BitrixMigrator\\Service\\LogService' => 'lib/Service/LogService.php',
         'BitrixMigrator\\Integration\\CloudAPI' => 'lib/Integration/CloudAPI.php',
         'BitrixMigrator\\EventHandlers' => 'lib/EventHandlers.php',
+        'Bitrix\\Migrator\\Controller\\Migrator' => 'lib/Controller/Migrator.php',
     )
 );
