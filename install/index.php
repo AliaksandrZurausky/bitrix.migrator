@@ -6,6 +6,7 @@ use Bitrix\Main\Config\Option;
 use Bitrix\Main\EventManager;
 use Bitrix\Main\Application;
 use Bitrix\Main\IO\Directory;
+use Bitrix\Main\Config\Configuration;
 
 Loc::loadMessages(__FILE__);
 
@@ -106,6 +107,26 @@ class bitrix_migrator extends CModule
         $this->createQueueTable();
         $this->createMapTable();
         $this->createLogsTable();
+        
+        // Register controllers configuration
+        $this->registerControllers();
+    }
+    
+    /**
+     * Register REST controllers configuration
+     */
+    private function registerControllers()
+    {
+        $config = Configuration::getInstance();
+        $config->add('controllers', [
+            'value' => [
+                'defaultNamespace' => '\\Bitrix\\Migrator\\Controller',
+                'namespaces' => [
+                    '\\Bitrix\\Migrator\\Controller' => 'api',
+                ],
+            ],
+            'readonly' => false,
+        ]);
     }
 
     public function createStateTable()

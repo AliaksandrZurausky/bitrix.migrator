@@ -76,7 +76,7 @@
         const webhookUrl = document.getElementById('webhook_url').value.trim();
 
         if (!webhookUrl) {
-            showMessage('error', BX.message('BITRIX_MIGRATOR_ERROR_EMPTY_FIELDS'));
+            showMessage('error', 'Заполните URL webhook');
             return;
         }
 
@@ -84,18 +84,19 @@
 
         BX.ajax.runAction('bitrix_migrator:api.migrator.saveConnection', {
             data: {
-                webhookUrl: webhookUrl
+                webhookUrl: webhookUrl,
+                sessid: window.BITRIX_MIGRATOR.sessid
             }
         }).then(function(response) {
             setButtonLoading('btn-save-connection', false);
             if (response.data.success) {
-                showMessage('success', BX.message('BITRIX_MIGRATOR_SETTINGS_SAVED'));
+                showMessage('success', 'Настройки сохранены');
             } else {
-                showMessage('error', response.data.error || BX.message('BITRIX_MIGRATOR_ERROR_SAVE'));
+                showMessage('error', response.data.error || 'Ошибка сохранения');
             }
         }).catch(function(error) {
             setButtonLoading('btn-save-connection', false);
-            showMessage('error', error.message || BX.message('BITRIX_MIGRATOR_ERROR_SAVE'));
+            showMessage('error', error.message || 'Ошибка сохранения');
         });
     }
 
@@ -106,31 +107,32 @@
         const webhookUrl = document.getElementById('webhook_url').value.trim();
 
         if (!webhookUrl) {
-            showMessage('error', BX.message('BITRIX_MIGRATOR_ERROR_EMPTY_FIELDS'));
+            showMessage('error', 'Заполните URL webhook');
             return;
         }
 
         setButtonLoading('btn-check-connection', true);
-        setConnectionStatus('loading', BX.message('BITRIX_MIGRATOR_CONNECTION_STATUS_CHECKING'));
+        setConnectionStatus('loading', 'Проверка подключения...');
 
         BX.ajax.runAction('bitrix_migrator:api.migrator.checkConnection', {
             data: {
-                webhookUrl: webhookUrl
+                webhookUrl: webhookUrl,
+                sessid: window.BITRIX_MIGRATOR.sessid
             }
         }).then(function(response) {
             setButtonLoading('btn-check-connection', false);
             if (response.data.success) {
-                setConnectionStatus('success', BX.message('BITRIX_MIGRATOR_CONNECTION_STATUS_SUCCESS'));
-                showMessage('success', BX.message('BITRIX_MIGRATOR_CONNECTION_SUCCESS'));
+                setConnectionStatus('success', 'Подключение успешно');
+                showMessage('success', 'Подключение установлено');
                 document.getElementById('btn-run-dryrun').disabled = false;
             } else {
-                setConnectionStatus('error', response.data.error || BX.message('BITRIX_MIGRATOR_CONNECTION_STATUS_ERROR'));
-                showMessage('error', response.data.error || BX.message('BITRIX_MIGRATOR_CONNECTION_ERROR'));
+                setConnectionStatus('error', 'Ошибка подключения');
+                showMessage('error', response.data.error || 'Ошибка подключения');
             }
         }).catch(function(error) {
             setButtonLoading('btn-check-connection', false);
-            setConnectionStatus('error', BX.message('BITRIX_MIGRATOR_CONNECTION_STATUS_ERROR'));
-            showMessage('error', error.message || BX.message('BITRIX_MIGRATOR_CONNECTION_ERROR'));
+            setConnectionStatus('error', 'Ошибка подключения');
+            showMessage('error', error.message || 'Ошибка подключения');
         });
     }
 
@@ -138,29 +140,31 @@
      * Run dry run
      */
     function runDryRun() {
-        if (!confirm(BX.message('BITRIX_MIGRATOR_DRYRUN_CONFIRM'))) {
+        if (!confirm('Запустить сухой прогон?')) {
             return;
         }
 
         setButtonLoading('btn-run-dryrun', true);
-        showMessage('info', BX.message('BITRIX_MIGRATOR_DRYRUN_STARTED'));
+        showMessage('info', 'Сухой прогон запущен...');
 
         BX.ajax.runAction('bitrix_migrator:api.migrator.startDryRun', {
-            data: {}
+            data: {
+                sessid: window.BITRIX_MIGRATOR.sessid
+            }
         }).then(function(response) {
             setButtonLoading('btn-run-dryrun', false);
             if (response.data.success) {
-                showMessage('success', BX.message('BITRIX_MIGRATOR_DRYRUN_SUCCESS'));
+                showMessage('success', 'Сухой прогон завершён');
                 // Switch to Dry Run tab
                 setTimeout(function() {
                     document.querySelector('[data-tab="dryrun"]').click();
                 }, 1000);
             } else {
-                showMessage('error', response.data.error || BX.message('BITRIX_MIGRATOR_DRYRUN_ERROR'));
+                showMessage('error', response.data.error || 'Ошибка');
             }
         }).catch(function(error) {
             setButtonLoading('btn-run-dryrun', false);
-            showMessage('error', error.message || BX.message('BITRIX_MIGRATOR_DRYRUN_ERROR'));
+            showMessage('error', error.message || 'Ошибка');
         });
     }
 
