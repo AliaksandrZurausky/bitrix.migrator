@@ -12,20 +12,22 @@ class CloudAPI
     }
 
     /**
-     * Make API request
+     * Make API request with JSON body
      */
     private function request($method, $params = [])
     {
         $url = $this->webhookUrl . '/' . $method . '.json';
 
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($params));
-        curl_setopt($ch, CURLOPT_TIMEOUT, 60);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST           => true,
+            CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
+            CURLOPT_POSTFIELDS     => json_encode($params),
+            CURLOPT_TIMEOUT        => 60,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => false,
+        ]);
 
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -41,15 +43,51 @@ class CloudAPI
         }
 
         $data = json_decode($response, true);
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            throw new \Exception('JSON decode error: ' . json_last_error_msg());
+        if (!is_array($data)) {
+            throw new \Exception('Bad JSON response');
         }
 
         if (isset($data['error'])) {
-            throw new \Exception($data['error_description'] ?? 'API error');
+            throw new \Exception($data['error_description'] ?? $data['error']);
         }
 
-        return $data['result'] ?? $data;
+        return $data;
+    }
+
+    /**
+     * Get entity count (uses 'total' from first request)
+     */
+    public function getCount($method, $params = [])
+    {
+        $params['start'] = 0;
+        $result = $this->request($method, $params);
+        return (int)($result['total'] ?? 0);
+    }
+
+    /**
+     * Fetch all entities with pagination
+     */
+    public function fetchAll($method, $params = [])
+    {
+        $items = [];
+        $next = 0;
+
+        do {
+            $params['start'] = $next;
+            $result = $this->request($method, $params);
+
+            if (isset($result['result']) && is_array($result['result'])) {
+                $items = array_merge($items, $result['result']);
+            }
+
+            $next = $result['next'] ?? null;
+            
+            if ($next !== null) {
+                usleep(320000); // 0.32s delay between requests
+            }
+        } while ($next !== null);
+
+        return $items;
     }
 
     /**
@@ -57,8 +95,7 @@ class CloudAPI
      */
     public function getUsersCount()
     {
-        $result = $this->request('user.get', ['start' => -1]);
-        return (int)($result['total'] ?? 0);
+        return $this->getCount('user.get');
     }
 
     /**
@@ -66,8 +103,7 @@ class CloudAPI
      */
     public function getCompaniesCount()
     {
-        $result = $this->request('crm.company.list', ['start' => -1]);
-        return (int)($result['total'] ?? 0);
+        return $this->getCount('crm.company.list');
     }
 
     /**
@@ -75,8 +111,7 @@ class CloudAPI
      */
     public function getContactsCount()
     {
-        $result = $this->request('crm.contact.list', ['start' => -1]);
-        return (int)($result['total'] ?? 0);
+        return $this->getCount('crm.contact.list');
     }
 
     /**
@@ -84,8 +119,7 @@ class CloudAPI
      */
     public function getDealsCount()
     {
-        $result = $this->request('crm.deal.list', ['start' => -1]);
-        return (int)($result['total'] ?? 0);
+        return $this->getCount('crm.deal.list');
     }
 
     /**
@@ -93,8 +127,7 @@ class CloudAPI
      */
     public function getLeadsCount()
     {
-        $result = $this->request('crm.lead.list', ['start' => -1]);
-        return (int)($result['total'] ?? 0);
+        return $this->getCount('crm.lead.list');
     }
 
     /**
@@ -102,7 +135,54 @@ class CloudAPI
      */
     public function getTasksCount()
     {
-        $result = $this->request('tasks.task.list', ['start' => -1]);
-        return (int)($result['total'] ?? 0);
+        return $this->getCount('tasks.task.list');
+    }
+
+    /**
+     * Get all users
+     */
+    public function getUsers($select = ['ID', 'NAME', 'LAST_NAME', 'EMAIL'])
+    {
+        return $this->fetchAll('user.get', ['select' => $select]);
+    }
+
+    /**
+     * Get all companies
+     */
+    public function getCompanies($select = ['ID', 'TITLE'])
+    {
+        return $this->fetchAll('crm.company.list', ['select' => $select]);
+    }
+
+    /**
+     * Get all contacts
+     */
+    public function getContacts($select = ['ID', 'NAME', 'LAST_NAME'])
+    {
+        return $this->fetchAll('crm.contact.list', ['select' => $select]);
+    }
+
+    /**
+     * Get all deals
+     */
+    public function getDeals($select = ['ID', 'TITLE'])
+    {
+        return $this->fetchAll('crm.deal.list', ['select' => $select]);
+    }
+
+    /**
+     * Get all leads
+     */
+    public function getLeads($select = ['ID', 'TITLE'])
+    {
+        return $this->fetchAll('crm.lead.list', ['select' => $select]);
+    }
+
+    /**
+     * Get all tasks
+     */
+    public function getTasks($select = ['ID', 'TITLE'])
+    {
+        return $this->fetchAll('tasks.task.list', ['select' => $select]);
     }
 }
