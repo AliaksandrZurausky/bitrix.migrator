@@ -82,7 +82,7 @@
 
         setButtonLoading('btn-save-connection', true);
 
-        BX.ajax.runAction('bitrix_migrator:api.migrator.saveConnection', {
+        BX.ajax.runAction('bitrix_migrator:migrator.saveConnection', {
             data: {
                 webhookUrl: webhookUrl,
                 sessid: window.BITRIX_MIGRATOR.sessid
@@ -114,7 +114,7 @@
         setButtonLoading('btn-check-connection', true);
         setConnectionStatus('loading', 'Проверка подключения...');
 
-        BX.ajax.runAction('bitrix_migrator:api.migrator.checkConnection', {
+        BX.ajax.runAction('bitrix_migrator:migrator.checkConnection', {
             data: {
                 webhookUrl: webhookUrl,
                 sessid: window.BITRIX_MIGRATOR.sessid
@@ -147,7 +147,7 @@
         setButtonLoading('btn-run-dryrun', true);
         showMessage('info', 'Сухой прогон запущен...');
 
-        BX.ajax.runAction('bitrix_migrator:api.migrator.startDryRun', {
+        BX.ajax.runAction('bitrix_migrator:migrator.startDryRun', {
             data: {
                 sessid: window.BITRIX_MIGRATOR.sessid
             }
