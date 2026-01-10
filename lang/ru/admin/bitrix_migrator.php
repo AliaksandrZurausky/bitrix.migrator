@@ -21,4 +21,5 @@ $MESS['BITRIX_MIGRATOR_STATE_NOT_STARTED'] = 'Не запущена';
 $MESS['BITRIX_MIGRATOR_LOGS_INFO'] = 'Здесь будут отображаться логи миграции';
 
 $MESS['BITRIX_MIGRATOR_BTN_SAVE'] = 'Сохранить';
+$MESS['BITRIX_MIGRATOR_BTN_CANCEL'] = 'Отменить';
 $MESS['BITRIX_MIGRATOR_SETTINGS_SAVED'] = 'Настройки успешно сохранены';
