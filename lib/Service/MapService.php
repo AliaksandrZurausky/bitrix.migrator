@@ -14,6 +14,22 @@ class MapService
     {
         if (self::$hlblockId === null) {
             self::$hlblockId = (int) Option::get('bitrix_migrator', 'map_hlblock_id');
+            
+            // If not found in Option, search by name
+            if (!self::$hlblockId) {
+                if (!Loader::includeModule('highloadblock')) {
+                    throw new \Exception('HighloadBlock module not loaded');
+                }
+                
+                $hlblock = \Bitrix\Highloadblock\HighloadBlockTable::getList([
+                    'filter' => ['=NAME' => 'MigratorMap']
+                ])->fetch();
+                
+                if ($hlblock) {
+                    self::$hlblockId = $hlblock['ID'];
+                    Option::set('bitrix_migrator', 'map_hlblock_id', self::$hlblockId);
+                }
+            }
         }
         return self::$hlblockId;
     }
@@ -27,7 +43,7 @@ class MapService
 
             $hlblockId = self::getHLBlockId();
             if (!$hlblockId) {
-                throw new \Exception('MigratorMap HL-block not found');
+                throw new \Exception('MigratorMap HL-block not found (0)');
             }
 
             $hlblock = \Bitrix\Highloadblock\HighloadBlockTable::getById($hlblockId)->fetch();
