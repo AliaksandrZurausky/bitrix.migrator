@@ -59,17 +59,13 @@
             btnDryRun.addEventListener('click', runDryRun);
         }
 
-        // Enable/disable Dry Run button based on form inputs
-        const cloudUrl = document.getElementById('cloud_url');
-        const cloudWebhook = document.getElementById('cloud_webhook');
+        // Enable/disable Dry Run button based on form input
+        const webhookUrl = document.getElementById('webhook_url');
 
-        if (cloudUrl && cloudWebhook && btnDryRun) {
-            const checkInputs = () => {
-                btnDryRun.disabled = !cloudUrl.value.trim() || !cloudWebhook.value.trim();
-            };
-
-            cloudUrl.addEventListener('input', checkInputs);
-            cloudWebhook.addEventListener('input', checkInputs);
+        if (webhookUrl && btnDryRun) {
+            webhookUrl.addEventListener('input', function() {
+                btnDryRun.disabled = !webhookUrl.value.trim();
+            });
         }
     }
 
@@ -77,10 +73,9 @@
      * Save connection settings
      */
     function saveConnection() {
-        const cloudUrl = document.getElementById('cloud_url').value.trim();
-        const cloudWebhook = document.getElementById('cloud_webhook').value.trim();
+        const webhookUrl = document.getElementById('webhook_url').value.trim();
 
-        if (!cloudUrl || !cloudWebhook) {
+        if (!webhookUrl) {
             showMessage('error', BX.message('BITRIX_MIGRATOR_ERROR_EMPTY_FIELDS'));
             return;
         }
@@ -89,19 +84,18 @@
 
         BX.ajax.runAction('bitrix:migrator.api.connection.save', {
             data: {
-                cloudUrl: cloudUrl,
-                cloudWebhook: cloudWebhook
+                webhookUrl: webhookUrl
             }
         }).then(function(response) {
+            setButtonLoading('btn-save-connection', false);
             if (response.data.success) {
                 showMessage('success', BX.message('BITRIX_MIGRATOR_SETTINGS_SAVED'));
             } else {
                 showMessage('error', response.data.error || BX.message('BITRIX_MIGRATOR_ERROR_SAVE'));
             }
         }).catch(function(error) {
-            showMessage('error', error.message || BX.message('BITRIX_MIGRATOR_ERROR_SAVE'));
-        }).finally(function() {
             setButtonLoading('btn-save-connection', false);
+            showMessage('error', error.message || BX.message('BITRIX_MIGRATOR_ERROR_SAVE'));
         });
     }
 
@@ -109,10 +103,9 @@
      * Check connection to cloud
      */
     function checkConnection() {
-        const cloudUrl = document.getElementById('cloud_url').value.trim();
-        const cloudWebhook = document.getElementById('cloud_webhook').value.trim();
+        const webhookUrl = document.getElementById('webhook_url').value.trim();
 
-        if (!cloudUrl || !cloudWebhook) {
+        if (!webhookUrl) {
             showMessage('error', BX.message('BITRIX_MIGRATOR_ERROR_EMPTY_FIELDS'));
             return;
         }
@@ -122,10 +115,10 @@
 
         BX.ajax.runAction('bitrix:migrator.api.connection.check', {
             data: {
-                cloudUrl: cloudUrl,
-                cloudWebhook: cloudWebhook
+                webhookUrl: webhookUrl
             }
         }).then(function(response) {
+            setButtonLoading('btn-check-connection', false);
             if (response.data.success) {
                 setConnectionStatus('success', BX.message('BITRIX_MIGRATOR_CONNECTION_STATUS_SUCCESS'));
                 showMessage('success', BX.message('BITRIX_MIGRATOR_CONNECTION_SUCCESS'));
@@ -135,10 +128,9 @@
                 showMessage('error', response.data.error || BX.message('BITRIX_MIGRATOR_CONNECTION_ERROR'));
             }
         }).catch(function(error) {
+            setButtonLoading('btn-check-connection', false);
             setConnectionStatus('error', BX.message('BITRIX_MIGRATOR_CONNECTION_STATUS_ERROR'));
             showMessage('error', error.message || BX.message('BITRIX_MIGRATOR_CONNECTION_ERROR'));
-        }).finally(function() {
-            setButtonLoading('btn-check-connection', false);
         });
     }
 
@@ -156,19 +148,19 @@
         BX.ajax.runAction('bitrix:migrator.api.dryrun.start', {
             data: {}
         }).then(function(response) {
+            setButtonLoading('btn-run-dryrun', false);
             if (response.data.success) {
                 showMessage('success', BX.message('BITRIX_MIGRATOR_DRYRUN_SUCCESS'));
                 // Switch to Dry Run tab
-                setTimeout(() => {
+                setTimeout(function() {
                     document.querySelector('[data-tab="dryrun"]').click();
                 }, 1000);
             } else {
                 showMessage('error', response.data.error || BX.message('BITRIX_MIGRATOR_DRYRUN_ERROR'));
             }
         }).catch(function(error) {
-            showMessage('error', error.message || BX.message('BITRIX_MIGRATOR_DRYRUN_ERROR'));
-        }).finally(function() {
             setButtonLoading('btn-run-dryrun', false);
+            showMessage('error', error.message || BX.message('BITRIX_MIGRATOR_DRYRUN_ERROR'));
         });
     }
 
@@ -191,7 +183,9 @@
     function showMessage(type, text) {
         // Remove existing messages
         const existingMessages = document.querySelectorAll('.migrator-message');
-        existingMessages.forEach(msg => msg.remove());
+        existingMessages.forEach(function(msg) {
+            msg.remove();
+        });
 
         // Create new message
         const message = document.createElement('div');
@@ -204,7 +198,7 @@
             container.insertBefore(message, container.firstChild);
 
             // Auto-hide after 5 seconds
-            setTimeout(() => {
+            setTimeout(function() {
                 message.remove();
             }, 5000);
         }

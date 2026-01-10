@@ -23,8 +23,7 @@ $APPLICATION->SetAdditionalCSS('/local/modules/bitrix_migrator/install/admin/css
 require($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_after.php');
 
 // Get current settings
-$cloudUrl = Option::get($MODULE_ID, 'cloud_url', '');
-$cloudWebhook = Option::get($MODULE_ID, 'cloud_webhook', '');
+$webhookUrl = Option::get($MODULE_ID, 'webhook_url', '');
 $connectionStatus = Option::get($MODULE_ID, 'connection_status', 'not_checked');
 ?>
 
@@ -79,33 +78,19 @@ $connectionStatus = Option::get($MODULE_ID, 'connection_status', 'not_checked');
                 <?= bitrix_sessid_post() ?>
                 
                 <div class="migrator-form-group">
-                    <label for="cloud_url" class="migrator-label">
-                        <?= Loc::getMessage('BITRIX_MIGRATOR_CLOUD_URL') ?>:
+                    <label for="webhook_url" class="migrator-label">
+                        <?= Loc::getMessage('BITRIX_MIGRATOR_WEBHOOK_URL') ?>:
                         <span class="migrator-required">*</span>
                     </label>
                     <input type="text" 
-                           id="cloud_url" 
-                           name="cloud_url" 
+                           id="webhook_url" 
+                           name="webhook_url" 
                            class="migrator-input"
-                           value="<?= htmlspecialcharsbx($cloudUrl) ?>" 
-                           placeholder="https://your-portal.bitrix24.ru"
-                           required>
-                </div>
-
-                <div class="migrator-form-group">
-                    <label for="cloud_webhook" class="migrator-label">
-                        <?= Loc::getMessage('BITRIX_MIGRATOR_CLOUD_WEBHOOK') ?>:
-                        <span class="migrator-required">*</span>
-                    </label>
-                    <input type="text" 
-                           id="cloud_webhook" 
-                           name="cloud_webhook" 
-                           class="migrator-input"
-                           value="<?= htmlspecialcharsbx($cloudWebhook) ?>" 
-                           placeholder="1/abc123def456"
+                           value="<?= htmlspecialcharsbx($webhookUrl) ?>" 
+                           placeholder="https://your-portal.bitrix24.ru/rest/1/abc123def456/"
                            required>
                     <div class="migrator-hint">
-                        <?= Loc::getMessage('BITRIX_MIGRATOR_CLOUD_WEBHOOK_HINT') ?>
+                        <?= Loc::getMessage('BITRIX_MIGRATOR_WEBHOOK_URL_HINT') ?>
                     </div>
                 </div>
 
@@ -116,7 +101,7 @@ $connectionStatus = Option::get($MODULE_ID, 'connection_status', 'not_checked');
                     <button type="button" id="btn-check-connection" class="adm-btn">
                         <?= Loc::getMessage('BITRIX_MIGRATOR_BTN_CHECK_CONNECTION') ?>
                     </button>
-                    <button type="button" id="btn-run-dryrun" class="adm-btn" <?= empty($cloudUrl) || empty($cloudWebhook) ? 'disabled' : '' ?>>
+                    <button type="button" id="btn-run-dryrun" class="adm-btn" <?= empty($webhookUrl) ? 'disabled' : '' ?>>
                         <?= Loc::getMessage('BITRIX_MIGRATOR_BTN_RUN_DRYRUN') ?>
                     </button>
                 </div>

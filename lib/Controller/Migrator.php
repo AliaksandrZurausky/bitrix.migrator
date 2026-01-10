@@ -42,25 +42,29 @@ class Migrator extends Controller
     /**
      * Save connection settings
      */
-    public function saveConnectionAction($cloudUrl, $cloudWebhook)
+    public function saveConnectionAction($webhookUrl)
     {
-        $cloudUrl = trim($cloudUrl);
-        $cloudWebhook = trim($cloudWebhook);
+        $webhookUrl = trim($webhookUrl);
 
-        if (empty($cloudUrl) || empty($cloudWebhook)) {
-            $this->addError(new Error('Empty URL or webhook'));
-            return ['success' => false, 'error' => 'Empty URL or webhook'];
+        if (empty($webhookUrl)) {
+            $this->addError(new Error('Empty webhook URL'));
+            return ['success' => false, 'error' => 'Empty webhook URL'];
         }
 
         // Validate URL
-        if (!filter_var($cloudUrl, FILTER_VALIDATE_URL)) {
+        if (!filter_var($webhookUrl, FILTER_VALIDATE_URL)) {
             $this->addError(new Error('Invalid URL format'));
             return ['success' => false, 'error' => 'Invalid URL format'];
         }
 
+        // Validate that it's a Bitrix24 webhook URL
+        if (!preg_match('#^https?://[^/]+/rest/\d+/[a-zA-Z0-9]+/?$#', $webhookUrl)) {
+            $this->addError(new Error('Invalid webhook format. Expected: https://portal.bitrix24.ru/rest/1/abc123/'));
+            return ['success' => false, 'error' => 'Invalid webhook format'];
+        }
+
         // Save to options
-        Option::set('bitrix_migrator', 'cloud_url', $cloudUrl);
-        Option::set('bitrix_migrator', 'cloud_webhook', $cloudWebhook);
+        Option::set('bitrix_migrator', 'webhook_url', rtrim($webhookUrl, '/'));
 
         return ['success' => true];
     }
@@ -68,17 +72,16 @@ class Migrator extends Controller
     /**
      * Check connection to cloud Bitrix24
      */
-    public function checkConnectionAction($cloudUrl, $cloudWebhook)
+    public function checkConnectionAction($webhookUrl)
     {
-        $cloudUrl = trim($cloudUrl);
-        $cloudWebhook = trim($cloudWebhook);
+        $webhookUrl = trim($webhookUrl);
 
-        if (empty($cloudUrl) || empty($cloudWebhook)) {
-            return ['success' => false, 'error' => 'Empty URL or webhook'];
+        if (empty($webhookUrl)) {
+            return ['success' => false, 'error' => 'Empty webhook URL'];
         }
 
         // Build REST API URL
-        $apiUrl = rtrim($cloudUrl, '/') . '/rest/' . $cloudWebhook . '/user.current.json';
+        $apiUrl = rtrim($webhookUrl, '/') . '/user.current.json';
 
         try {
             // Make request
@@ -105,10 +108,9 @@ class Migrator extends Controller
      */
     public function startDryRunAction()
     {
-        $cloudUrl = Option::get('bitrix_migrator', 'cloud_url', '');
-        $cloudWebhook = Option::get('bitrix_migrator', 'cloud_webhook', '');
+        $webhookUrl = Option::get('bitrix_migrator', 'webhook_url', '');
 
-        if (empty($cloudUrl) || empty($cloudWebhook)) {
+        if (empty($webhookUrl)) {
             return ['success' => false, 'error' => 'Connection not configured'];
         }
 

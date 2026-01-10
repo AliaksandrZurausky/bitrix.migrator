@@ -12,9 +12,8 @@ $MESS['BITRIX_MIGRATOR_TAB_LOGS'] = 'Logs';
 
 // Connection Tab
 $MESS['BITRIX_MIGRATOR_CONNECTION_TITLE'] = 'Cloud connection settings';
-$MESS['BITRIX_MIGRATOR_CLOUD_URL'] = 'Cloud portal URL';
-$MESS['BITRIX_MIGRATOR_CLOUD_WEBHOOK'] = 'Incoming webhook';
-$MESS['BITRIX_MIGRATOR_CLOUD_WEBHOOK_HINT'] = 'Format: 1/abc123def456 (without https://your-portal.bitrix24.ru/rest/)';
+$MESS['BITRIX_MIGRATOR_WEBHOOK_URL'] = 'Incoming Webhook URL';
+$MESS['BITRIX_MIGRATOR_WEBHOOK_URL_HINT'] = 'Full webhook URL, for example: https://your-portal.bitrix24.ru/rest/1/abc123def456/';
 
 $MESS['BITRIX_MIGRATOR_CONNECTION_STATUS_NOT_CHECKED'] = 'Connection not checked';
 $MESS['BITRIX_MIGRATOR_CONNECTION_STATUS_CHECKING'] = 'Checking connection...';

@@ -12,9 +12,8 @@ $MESS['BITRIX_MIGRATOR_TAB_LOGS'] = 'Логи';
 
 // Connection Tab
 $MESS['BITRIX_MIGRATOR_CONNECTION_TITLE'] = 'Настройки подключения к облаку';
-$MESS['BITRIX_MIGRATOR_CLOUD_URL'] = 'URL облачного портала';
-$MESS['BITRIX_MIGRATOR_CLOUD_WEBHOOK'] = 'Входящий вебхук';
-$MESS['BITRIX_MIGRATOR_CLOUD_WEBHOOK_HINT'] = 'Формат: 1/abc123def456 (без https://your-portal.bitrix24.ru/rest/)';
+$MESS['BITRIX_MIGRATOR_WEBHOOK_URL'] = 'Входящий вебхук (Webhook URL)';
+$MESS['BITRIX_MIGRATOR_WEBHOOK_URL_HINT'] = 'Полный URL вебхука, например: https://your-portal.bitrix24.ru/rest/1/abc123def456/';
 
 $MESS['BITRIX_MIGRATOR_CONNECTION_STATUS_NOT_CHECKED'] = 'Подключение не проверено';
 $MESS['BITRIX_MIGRATOR_CONNECTION_STATUS_CHECKING'] = 'Проверка подключения...';
