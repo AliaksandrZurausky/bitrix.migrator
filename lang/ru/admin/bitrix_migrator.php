@@ -12,6 +12,10 @@ $MESS['BITRIX_MIGRATOR_TAB_LOGS'] = 'Логи';
 
 // Connection Tab
 $MESS['BITRIX_MIGRATOR_CONNECTION_TITLE'] = 'Настройки подключения к облаку';
+$MESS['BITRIX_MIGRATOR_CLOUD_WEBHOOK_URL'] = 'Входящий вебхук облака (Cloud)';
+$MESS['BITRIX_MIGRATOR_CLOUD_WEBHOOK_URL_HINT'] = 'Полный URL вебхука облачного портала, например: https://your-portal.bitrix24.ru/rest/1/abc123/';
+$MESS['BITRIX_MIGRATOR_BOX_WEBHOOK_URL'] = 'Входящий вебхук коробки (Box)';
+$MESS['BITRIX_MIGRATOR_BOX_WEBHOOK_URL_HINT'] = 'Полный URL вебхука коробочного портала, например: https://your-box.bitrix24.ru/rest/1/xyz789/';
 $MESS['BITRIX_MIGRATOR_WEBHOOK_URL'] = 'Входящий вебхук (Webhook URL)';
 $MESS['BITRIX_MIGRATOR_WEBHOOK_URL_HINT'] = 'Полный URL вебхука, например: https://your-portal.bitrix24.ru/rest/1/abc123def456/';
 
@@ -29,6 +33,9 @@ $MESS['BITRIX_MIGRATOR_BTN_RUN_DRYRUN'] = 'Запустить Dry Run';
 $MESS['BITRIX_MIGRATOR_DRYRUN_TITLE'] = 'Dry Run - Анализ данных';
 $MESS['BITRIX_MIGRATOR_DRYRUN_INFO'] = 'Анализ данных из облака для определения объёма миграции';
 $MESS['BITRIX_MIGRATOR_DRYRUN_RESULTS_TITLE'] = 'Результаты анализа';
+$MESS['BITRIX_MIGRATOR_DRYRUN_NO_RESULTS'] = 'Результаты анализа отсутствуют. Запустите Dry Run на вкладке "Подключение".';
+$MESS['BITRIX_MIGRATOR_DRYRUN_DEPARTMENTS_FOUND'] = 'Найдено подразделений';
+$MESS['BITRIX_MIGRATOR_BTN_SHOW_STRUCTURE'] = 'Показать структуру департаментов';
 $MESS['BITRIX_MIGRATOR_BTN_GOTO_PLAN'] = 'Перейти к плану миграции';
 
 $MESS['BITRIX_MIGRATOR_TABLE_ENTITY'] = 'Сущность';
@@ -51,3 +58,7 @@ $MESS['BITRIX_MIGRATOR_MIGRATION_INFO'] = 'Управление процессо
 // Logs Tab
 $MESS['BITRIX_MIGRATOR_LOGS_TITLE'] = 'Журнал миграции';
 $MESS['BITRIX_MIGRATOR_LOGS_INFO'] = 'Здесь будут отображаться логи миграции';
+
+// Structure Slider
+$MESS['BITRIX_MIGRATOR_SLIDER_STRUCTURE_TITLE'] = 'Структура департаментов';
+$MESS['BITRIX_MIGRATOR_SLIDER_CLOSE'] = 'Закрыть';
