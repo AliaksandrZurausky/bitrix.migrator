@@ -145,12 +145,6 @@ $plan = $migrationPlan ? json_decode($migrationPlan, true) : [];
                     </button>
                 </div>
             </form>
-
-            <!-- Dry Run Results -->
-            <div id="dryrun-results" style="display:none; margin-top:20px;">
-                <h3>Результаты анализа:</h3>
-                <pre id="dryrun-results-pre" style="background:#f5f5f5; padding:10px; border:1px solid #ddd; max-height:400px; overflow:auto;"></pre>
-            </div>
         </div>
     </div>
 
@@ -159,6 +153,34 @@ $plan = $migrationPlan ? json_decode($migrationPlan, true) : [];
         <div class="adm-detail-content">
             <h2><?= Loc::getMessage('BITRIX_MIGRATOR_DRYRUN_TITLE') ?></h2>
             <p><?= Loc::getMessage('BITRIX_MIGRATOR_DRYRUN_INFO') ?></p>
+
+            <!-- Dry Run Results -->
+            <div id="dryrun-results" style="margin-top:20px;">
+                <div id="dryrun-summary" style="display:none;">
+                    <h3><?= Loc::getMessage('BITRIX_MIGRATOR_DRYRUN_RESULTS_TITLE') ?></h3>
+                    <div class="migrator-stats">
+                        <div class="migrator-stat-card">
+                            <div class="migrator-stat-value" id="departments-count">0</div>
+                            <div class="migrator-stat-label"><?= Loc::getMessage('BITRIX_MIGRATOR_DRYRUN_DEPARTMENTS_FOUND') ?></div>
+                        </div>
+                    </div>
+                    <div style="margin:20px 0;">
+                        <button type="button" id="btn-show-structure" class="adm-btn">
+                            <?= Loc::getMessage('BITRIX_MIGRATOR_BTN_SHOW_STRUCTURE') ?>
+                        </button>
+                    </div>
+                </div>
+
+                <div id="dryrun-no-results" style="display:block;">
+                    <p><?= Loc::getMessage('BITRIX_MIGRATOR_DRYRUN_NO_RESULTS') ?></p>
+                </div>
+
+                <!-- Department Tree -->
+                <div id="department-tree-container" style="display:none; margin-top:20px;">
+                    <h3>Структура департаментов:</h3>
+                    <div id="department-tree"></div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -183,6 +205,20 @@ $plan = $migrationPlan ? json_decode($migrationPlan, true) : [];
         <div class="adm-detail-content">
             <h2><?= Loc::getMessage('BITRIX_MIGRATOR_LOGS_TITLE') ?></h2>
             <p><?= Loc::getMessage('BITRIX_MIGRATOR_LOGS_INFO') ?></p>
+        </div>
+    </div>
+</div>
+
+<!-- Structure Slider -->
+<div id="structure-slider" class="migrator-slider">
+    <div class="migrator-slider-overlay"></div>
+    <div class="migrator-slider-content">
+        <div class="migrator-slider-header">
+            <h3><?= Loc::getMessage('BITRIX_MIGRATOR_SLIDER_STRUCTURE_TITLE') ?></h3>
+            <button type="button" class="migrator-slider-close">&times;</button>
+        </div>
+        <div class="migrator-slider-body">
+            <div id="slider-department-tree"></div>
         </div>
     </div>
 </div>

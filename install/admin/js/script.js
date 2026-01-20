@@ -1,293 +1,267 @@
-/**
- * Bitrix Migrator - Main JavaScript
- */
-
 (function() {
     'use strict';
 
-    let dryrunPolling = null;
+    let departmentsData = [];
 
-    // Wait for DOM ready
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
-    } else {
-        init();
-    }
-
-    function init() {
+    document.addEventListener('DOMContentLoaded', function() {
         initTabs();
-        initConnectionForm();
-    }
+        initConnectionHandlers();
+        initDryRunHandlers();
+        loadDryRunResults();
+    });
 
-    /**
-     * Initialize tabs functionality
-     */
     function initTabs() {
         const tabButtons = document.querySelectorAll('.migrator-tab-btn');
         const tabContents = document.querySelectorAll('.migrator-tab-content');
 
         tabButtons.forEach(button => {
             button.addEventListener('click', function() {
-                const tabId = this.getAttribute('data-tab');
+                const targetTab = this.getAttribute('data-tab');
 
-                // Remove active class from all tabs
                 tabButtons.forEach(btn => btn.classList.remove('active'));
                 tabContents.forEach(content => content.classList.remove('active'));
 
-                // Add active class to clicked tab
                 this.classList.add('active');
-                document.getElementById('tab-' + tabId).classList.add('active');
+                document.getElementById('tab-' + targetTab).classList.add('active');
             });
         });
     }
 
-    /**
-     * Initialize connection form
-     */
-    function initConnectionForm() {
-        const btnSave = document.getElementById('btn-save-connection');
-        const btnCheckCloud = document.getElementById('btn-check-connection-cloud');
-        const btnCheckBox = document.getElementById('btn-check-connection-box');
-        const btnDryRun = document.getElementById('btn-run-dryrun');
+    function initConnectionHandlers() {
+        document.getElementById('btn-save-connection')?.addEventListener('click', saveConnection);
+        document.getElementById('btn-check-connection-cloud')?.addEventListener('click', () => checkConnection('cloud'));
+        document.getElementById('btn-check-connection-box')?.addEventListener('click', () => checkConnection('box'));
+        document.getElementById('btn-run-dryrun')?.addEventListener('click', runDryRun);
+    }
 
-        if (btnSave) {
-            btnSave.addEventListener('click', saveConnection);
+    function initDryRunHandlers() {
+        document.getElementById('btn-show-structure')?.addEventListener('click', showStructureSlider);
+        
+        // Close slider
+        const closeBtn = document.querySelector('.migrator-slider-close');
+        const overlay = document.querySelector('.migrator-slider-overlay');
+        
+        if (closeBtn) {
+            closeBtn.addEventListener('click', closeStructureSlider);
         }
-
-        if (btnCheckCloud) {
-            btnCheckCloud.addEventListener('click', function() {
-                checkConnection('cloud');
-            });
-        }
-
-        if (btnCheckBox) {
-            btnCheckBox.addEventListener('click', function() {
-                checkConnection('box');
-            });
-        }
-
-        if (btnDryRun) {
-            btnDryRun.addEventListener('click', runDryRun);
-        }
-
-        // Enable/disable Dry Run button based on cloud webhook
-        const cloudWebhookUrl = document.getElementById('cloud_webhook_url');
-
-        if (cloudWebhookUrl && btnDryRun) {
-            cloudWebhookUrl.addEventListener('input', function() {
-                btnDryRun.disabled = !cloudWebhookUrl.value.trim();
-            });
+        if (overlay) {
+            overlay.addEventListener('click', closeStructureSlider);
         }
     }
 
-    /**
-     * Save connection settings
-     */
     function saveConnection() {
-        const cloudWebhookUrl = document.getElementById('cloud_webhook_url').value.trim();
-        const boxWebhookUrl = document.getElementById('box_webhook_url').value.trim();
+        const cloudUrl = document.getElementById('cloud_webhook_url').value.trim();
+        const boxUrl = document.getElementById('box_webhook_url').value.trim();
 
-        if (!cloudWebhookUrl && !boxWebhookUrl) {
-            showMessage('error', 'Заполните хотя бы один webhook URL');
+        if (!cloudUrl && !boxUrl) {
+            alert('Укажите хотя бы один вебхук (cloud или box)');
             return;
         }
 
-        setButtonLoading('btn-save-connection', true);
+        const formData = new FormData();
+        formData.append('sessid', window.BITRIX_MIGRATOR.sessid);
+        formData.append('cloud_webhook_url', cloudUrl);
+        formData.append('box_webhook_url', boxUrl);
 
-        BX.ajax({
-            url: '/local/ajax/bitrix_migrator/save_connection.php',
-            data: {
-                cloudWebhookUrl: cloudWebhookUrl,
-                boxWebhookUrl: boxWebhookUrl,
-                sessid: window.BITRIX_MIGRATOR.sessid
-            },
+        fetch('/local/ajax/bitrix_migrator/save_connection.php', {
             method: 'POST',
-            dataType: 'json',
-            onsuccess: function(response) {
-                setButtonLoading('btn-save-connection', false);
-                if (response.success) {
-                    showMessage('success', 'Настройки сохранены');
-                } else {
-                    showMessage('error', response.error || 'Ошибка сохранения');
-                }
-            },
-            onfailure: function(error) {
-                setButtonLoading('btn-save-connection', false);
-                showMessage('error', 'Ошибка сохранения');
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert('Настройки сохранены');
+                location.reload();
+            } else {
+                alert('Ошибка: ' + (data.error || 'Unknown error'));
             }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Ошибка сохранения');
         });
     }
 
-    /**
-     * Check connection to cloud or box
-     */
     function checkConnection(type) {
-        const inputId = type === 'cloud' ? 'cloud_webhook_url' : 'box_webhook_url';
-        const btnId = type === 'cloud' ? 'btn-check-connection-cloud' : 'btn-check-connection-box';
-        const webhookUrl = document.getElementById(inputId).value.trim();
-
-        if (!webhookUrl) {
-            showMessage('error', 'Заполните URL webhook');
-            return;
-        }
-
-        setButtonLoading(btnId, true);
-        setConnectionStatus(type, 'loading', 'Проверка подключения...');
-
-        BX.ajax({
-            url: '/local/ajax/bitrix_migrator/check_connection.php',
-            data: {
-                type: type,
-                webhookUrl: webhookUrl,
-                sessid: window.BITRIX_MIGRATOR.sessid
-            },
-            method: 'POST',
-            dataType: 'json',
-            onsuccess: function(response) {
-                setButtonLoading(btnId, false);
-                if (response.success) {
-                    setConnectionStatus(type, 'success', 'Подключение успешно');
-                    showMessage('success', 'Подключение ' + (type === 'cloud' ? 'к облаку' : 'к box') + ' установлено');
-                    if (type === 'cloud') {
-                        document.getElementById('btn-run-dryrun').disabled = false;
-                    }
-                } else {
-                    setConnectionStatus(type, 'error', 'Ошибка подключения');
-                    showMessage('error', response.error || 'Ошибка подключения');
-                }
-            },
-            onfailure: function(error) {
-                setButtonLoading(btnId, false);
-                setConnectionStatus(type, 'error', 'Ошибка подключения');
-                showMessage('error', 'Ошибка подключения');
-            }
-        });
-    }
-
-    /**
-     * Run dry run
-     */
-    function runDryRun() {
-        if (!confirm('Запустить анализ данных из облака?')) {
-            return;
-        }
-
-        setButtonLoading('btn-run-dryrun', true);
-        showMessage('info', 'Анализ запущен...');
-
-        BX.ajax({
-            url: '/local/ajax/bitrix_migrator/start_dryrun.php',
-            data: {
-                sessid: window.BITRIX_MIGRATOR.sessid
-            },
-            method: 'POST',
-            dataType: 'json',
-            onsuccess: function(response) {
-                setButtonLoading('btn-run-dryrun', false);
-                if (response.success) {
-                    showMessage('success', 'Анализ выполнен');
-                    // Get results
-                    setTimeout(function() {
-                        getDryRunResults();
-                    }, 1000);
-                } else {
-                    showMessage('error', response.error || 'Ошибка запуска');
-                }
-            },
-            onfailure: function(error) {
-                setButtonLoading('btn-run-dryrun', false);
-                showMessage('error', 'Ошибка запуска');
-            }
-        });
-    }
-
-    /**
-     * Get dry run results
-     */
-    function getDryRunResults() {
-        BX.ajax({
-            url: '/local/ajax/bitrix_migrator/get_dryrun_status.php',
-            data: {
-                sessid: window.BITRIX_MIGRATOR.sessid
-            },
-            method: 'POST',
-            dataType: 'json',
-            onsuccess: function(response) {
-                if (response.success && response.result) {
-                    const resultsDiv = document.getElementById('dryrun-results');
-                    const resultsPre = document.getElementById('dryrun-results-pre');
-                    
-                    if (resultsDiv && resultsPre) {
-                        resultsDiv.style.display = 'block';
-                        
-                        // Format departments list
-                        let output = 'Всего подразделений: ' + response.result.count + '\n\n';
-                        
-                        if (response.result.departments && response.result.departments.length > 0) {
-                            output += 'Список подразделений:\n';
-                            response.result.departments.forEach(function(dept) {
-                                output += '  - ID: ' + dept.ID + ', Название: ' + dept.NAME + ', Родитель: ' + (dept.PARENT || 'нет') + '\n';
-                            });
-                        }
-                        
-                        resultsPre.textContent = output;
-                    }
-                }
-            }
-        });
-    }
-
-    /**
-     * Set connection status
-     */
-    function setConnectionStatus(type, status, text) {
-        const statusBlock = document.querySelector('#connection-status-block-' + type + ' .migrator-status');
         const statusText = document.getElementById('connection-status-text-' + type);
+        const statusBlock = document.getElementById('connection-status-block-' + type).querySelector('.migrator-status');
+        
+        statusBlock.className = 'migrator-status migrator-status-checking';
+        statusText.textContent = 'Проверка подключения...';
 
-        if (statusBlock && statusText) {
-            statusBlock.className = 'migrator-status migrator-status-' + status;
-            statusText.textContent = text;
-        }
+        const formData = new FormData();
+        formData.append('sessid', window.BITRIX_MIGRATOR.sessid);
+        formData.append('type', type);
+
+        fetch('/local/ajax/bitrix_migrator/check_connection.php', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                statusBlock.className = 'migrator-status migrator-status-success';
+                statusText.textContent = 'Подключение успешно установлено';
+            } else {
+                statusBlock.className = 'migrator-status migrator-status-error';
+                statusText.textContent = 'Ошибка: ' + (data.error || 'Unknown error');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            statusBlock.className = 'migrator-status migrator-status-error';
+            statusText.textContent = 'Ошибка проверки подключения';
+        });
     }
 
-    /**
-     * Show message
-     */
-    function showMessage(type, text) {
-        const existingMessages = document.querySelectorAll('.migrator-message');
-        existingMessages.forEach(function(msg) {
-            msg.remove();
+    function runDryRun() {
+        const btn = document.getElementById('btn-run-dryrun');
+        btn.disabled = true;
+        btn.textContent = 'Анализ выполняется...';
+
+        const formData = new FormData();
+        formData.append('sessid', window.BITRIX_MIGRATOR.sessid);
+
+        fetch('/local/ajax/bitrix_migrator/start_dryrun.php', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert('Анализ завершён');
+                loadDryRunResults();
+                // Switch to Dry Run tab
+                document.querySelector('[data-tab="dryrun"]').click();
+            } else {
+                alert('Ошибка: ' + (data.error || 'Unknown error'));
+            }
+            btn.disabled = false;
+            btn.textContent = 'Запустить Dry Run';
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Ошибка запуска анализа');
+            btn.disabled = false;
+            btn.textContent = 'Запустить Dry Run';
+        });
+    }
+
+    function loadDryRunResults() {
+        fetch('/local/ajax/bitrix_migrator/get_dryrun_status.php')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success && data.data && data.data.departments) {
+                    departmentsData = data.data.departments;
+                    displayDryRunResults(departmentsData);
+                } else {
+                    document.getElementById('dryrun-summary').style.display = 'none';
+                    document.getElementById('dryrun-no-results').style.display = 'block';
+                }
+            })
+            .catch(error => {
+                console.error('Error loading dry run results:', error);
+            });
+    }
+
+    function displayDryRunResults(departments) {
+        if (!departments || departments.length === 0) {
+            document.getElementById('dryrun-summary').style.display = 'none';
+            document.getElementById('dryrun-no-results').style.display = 'block';
+            return;
+        }
+
+        document.getElementById('dryrun-summary').style.display = 'block';
+        document.getElementById('dryrun-no-results').style.display = 'none';
+        document.getElementById('departments-count').textContent = departments.length;
+
+        // Build tree in the tab
+        const treeContainer = document.getElementById('department-tree');
+        treeContainer.innerHTML = '';
+        buildDepartmentTree(departments, treeContainer);
+        document.getElementById('department-tree-container').style.display = 'block';
+    }
+
+    function buildDepartmentTree(departments, container) {
+        const depMap = {};
+        const rootDeps = [];
+
+        // Create map
+        departments.forEach(dep => {
+            depMap[dep.ID] = { ...dep, children: [] };
         });
 
-        const message = document.createElement('div');
-        message.className = 'migrator-message migrator-message-' + type;
-        message.textContent = text;
+        // Build hierarchy
+        departments.forEach(dep => {
+            if (dep.PARENT && depMap[dep.PARENT]) {
+                depMap[dep.PARENT].children.push(depMap[dep.ID]);
+            } else {
+                rootDeps.push(depMap[dep.ID]);
+            }
+        });
 
-        const container = document.querySelector('.migrator-tab-content.active .adm-detail-content');
-        if (container) {
-            container.insertBefore(message, container.firstChild);
-
-            setTimeout(function() {
-                message.remove();
-            }, 5000);
-        }
+        // Render tree
+        const ul = document.createElement('ul');
+        ul.className = 'migrator-tree';
+        rootDeps.forEach(dep => {
+            ul.appendChild(createTreeNode(dep));
+        });
+        container.appendChild(ul);
     }
 
-    /**
-     * Set button loading state
-     */
-    function setButtonLoading(buttonId, isLoading) {
-        const button = document.getElementById(buttonId);
-        if (!button) return;
+    function createTreeNode(department) {
+        const li = document.createElement('li');
+        li.className = 'migrator-tree-item';
 
-        if (isLoading) {
-            button.disabled = true;
-            button.dataset.originalText = button.textContent;
-            button.innerHTML = '<span class="migrator-loader"></span>';
+        const nodeContent = document.createElement('div');
+        nodeContent.className = 'migrator-tree-node';
+
+        if (department.children && department.children.length > 0) {
+            const toggle = document.createElement('span');
+            toggle.className = 'migrator-tree-toggle';
+            toggle.textContent = '▶';
+            toggle.addEventListener('click', function() {
+                li.classList.toggle('expanded');
+                toggle.textContent = li.classList.contains('expanded') ? '▼' : '▶';
+            });
+            nodeContent.appendChild(toggle);
         } else {
-            button.disabled = false;
-            button.textContent = button.dataset.originalText || button.textContent;
+            const spacer = document.createElement('span');
+            spacer.className = 'migrator-tree-spacer';
+            nodeContent.appendChild(spacer);
         }
+
+        const label = document.createElement('span');
+        label.className = 'migrator-tree-label';
+        label.textContent = `${department.NAME} (ID: ${department.ID})`;
+        nodeContent.appendChild(label);
+
+        li.appendChild(nodeContent);
+
+        if (department.children && department.children.length > 0) {
+            const childUl = document.createElement('ul');
+            childUl.className = 'migrator-tree-children';
+            department.children.forEach(child => {
+                childUl.appendChild(createTreeNode(child));
+            });
+            li.appendChild(childUl);
+        }
+
+        return li;
     }
 
+    function showStructureSlider() {
+        const slider = document.getElementById('structure-slider');
+        slider.classList.add('active');
+
+        // Build tree in slider
+        const sliderTree = document.getElementById('slider-department-tree');
+        sliderTree.innerHTML = '';
+        buildDepartmentTree(departmentsData, sliderTree);
+    }
+
+    function closeStructureSlider() {
+        const slider = document.getElementById('structure-slider');
+        slider.classList.remove('active');
+    }
 })();
