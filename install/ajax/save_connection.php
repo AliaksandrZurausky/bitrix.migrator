@@ -23,8 +23,8 @@ if (!check_bitrix_sessid()) {
     die();
 }
 
-$cloudWebhookUrl = trim($request->getPost('cloudWebhookUrl'));
-$boxWebhookUrl = trim($request->getPost('boxWebhookUrl'));
+$cloudWebhookUrl = trim($request->getPost('cloud_webhook_url'));
+$boxWebhookUrl = trim($request->getPost('box_webhook_url'));
 
 if (empty($cloudWebhookUrl) && empty($boxWebhookUrl)) {
     echo json_encode(['success' => false, 'error' => 'At least one webhook URL required']);

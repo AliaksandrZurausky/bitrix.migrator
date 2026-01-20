@@ -24,15 +24,17 @@ if (!check_bitrix_sessid()) {
 }
 
 $type = trim($request->getPost('type'));
-$webhookUrl = trim($request->getPost('webhookUrl'));
 
 if (!in_array($type, ['cloud', 'box'], true)) {
     echo json_encode(['success' => false, 'error' => 'Invalid type parameter']);
     die();
 }
 
+// Get webhook URL from settings
+$webhookUrl = Option::get('bitrix_migrator', $type . '_webhook_url', '');
+
 if (empty($webhookUrl)) {
-    echo json_encode(['success' => false, 'error' => 'Empty webhook URL']);
+    echo json_encode(['success' => false, 'error' => 'Webhook URL not configured']);
     die();
 }
 
@@ -74,5 +76,4 @@ try {
     }
 } catch (Exception $e) {
     Option::set('bitrix_migrator', 'connection_status_' . $type, 'error');
-    echo json_encode(['success' => false, 'error' => $e->getMessage()]);
-}
+    echo json_encode(['success' => false, 'error' => $e->getMessage()]);}
