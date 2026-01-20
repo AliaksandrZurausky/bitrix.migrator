@@ -23,7 +23,13 @@ if (!check_bitrix_sessid()) {
     die();
 }
 
+$type = trim($request->getPost('type'));
 $webhookUrl = trim($request->getPost('webhookUrl'));
+
+if (!in_array($type, ['cloud', 'box'], true)) {
+    echo json_encode(['success' => false, 'error' => 'Invalid type parameter']);
+    die();
+}
 
 if (empty($webhookUrl)) {
     echo json_encode(['success' => false, 'error' => 'Empty webhook URL']);
@@ -59,14 +65,14 @@ try {
     }
 
     if (isset($data['result']) && isset($data['result']['ID'])) {
-        Option::set('bitrix_migrator', 'connection_status', 'success');
+        Option::set('bitrix_migrator', 'connection_status_' . $type, 'success');
         echo json_encode(['success' => true, 'user' => $data['result']]);
     } else {
-        Option::set('bitrix_migrator', 'connection_status', 'error');
+        Option::set('bitrix_migrator', 'connection_status_' . $type, 'error');
         $errorMsg = $data['error_description'] ?? 'Unknown error';
         echo json_encode(['success' => false, 'error' => $errorMsg]);
     }
 } catch (Exception $e) {
-    Option::set('bitrix_migrator', 'connection_status', 'error');
+    Option::set('bitrix_migrator', 'connection_status_' . $type, 'error');
     echo json_encode(['success' => false, 'error' => $e->getMessage()]);
 }

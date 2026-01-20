@@ -1,47 +1,63 @@
 <?php
 define('NO_KEEP_STATISTIC', true);
 define('NO_AGENT_STATISTIC', true);
-define('NOT_CHECK_PERMISSIONS', true);
+define('DisableEventsCheck', true);
 
-require($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php');
+require_once($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php');
 
-use Bitrix\Main\Loader;
 use Bitrix\Main\Application;
 use Bitrix\Main\Config\Option;
-use Bitrix\Main\Type\DateTime;
+use Bitrix\Main\Loader;
+use Bitrix\Highloadblock\HighloadBlockTable;
 
 header('Content-Type: application/json');
 
+if (!Loader::includeModule('bitrix_migrator') || !Loader::includeModule('highloadblock')) {
+    echo json_encode(['success' => false, 'error' => 'Module not loaded']);
+    die();
+}
+
 $request = Application::getInstance()->getContext()->getRequest();
-$response = ['success' => false];
 
-if (!check_bitrix_sessid() || !$request->isPost()) {
-    $response['error'] = 'Invalid request';
-    echo json_encode($response);
+if (!check_bitrix_sessid()) {
+    echo json_encode(['success' => false, 'error' => 'Invalid session']);
     die();
 }
 
-if (!Loader::includeModule('bitrix_migrator')) {
-    $response['error'] = 'Module not loaded';
-    echo json_encode($response);
+$hlblockId = Option::get('bitrix_migrator', 'dryrun_hlblock_id', 0);
+
+if (!$hlblockId) {
+    echo json_encode(['success' => false, 'error' => 'HL block not found']);
     die();
 }
 
-$status = Option::get('bitrix_migrator', 'dryrun_status', 'idle');
-$progress = (int)Option::get('bitrix_migrator', 'dryrun_progress', 0);
-$error = Option::get('bitrix_migrator', 'dryrun_error', '');
-
-$response['success'] = true;
-$response['status'] = $status;
-$response['progress'] = $progress;
-$response['error'] = $error;
-
-// If completed, get results
-if ($status === 'completed') {
-    $resultsJson = Option::get('bitrix_migrator', 'dryrun_results', '');
-    if ($resultsJson) {
-        $response['results'] = json_decode($resultsJson, true);
+try {
+    $hlblock = HighloadBlockTable::getById($hlblockId)->fetch();
+    if (!$hlblock) {
+        throw new Exception('HL block not found');
     }
-}
 
-echo json_encode($response);
+    $entity = HighloadBlockTable::compileEntity($hlblock);
+    $entityClass = $entity->getDataClass();
+
+    $result = $entityClass::getList([
+        'select' => ['*'],
+        'order' => ['ID' => 'DESC'],
+        'limit' => 1
+    ])->fetch();
+
+    if ($result && !empty($result['UF_DATA_JSON'])) {
+        $data = json_decode($result['UF_DATA_JSON'], true);
+        echo json_encode([
+            'success' => true,
+            'result' => $data
+        ]);
+    } else {
+        echo json_encode([
+            'success' => true,
+            'result' => null
+        ]);
+    }
+} catch (Exception $e) {
+    echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+}

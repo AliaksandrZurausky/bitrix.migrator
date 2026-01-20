@@ -91,6 +91,14 @@ class CloudAPI
     }
 
     /**
+     * Get departments (structure)
+     */
+    public function getDepartments()
+    {
+        return $this->fetchAll('department.get');
+    }
+
+    /**
      * Get users count
      */
     public function getUsersCount()

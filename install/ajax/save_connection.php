@@ -23,23 +23,36 @@ if (!check_bitrix_sessid()) {
     die();
 }
 
-$webhookUrl = trim($request->getPost('webhookUrl'));
+$cloudWebhookUrl = trim($request->getPost('cloudWebhookUrl'));
+$boxWebhookUrl = trim($request->getPost('boxWebhookUrl'));
 
-if (empty($webhookUrl)) {
-    echo json_encode(['success' => false, 'error' => 'Empty webhook URL']);
+if (empty($cloudWebhookUrl) && empty($boxWebhookUrl)) {
+    echo json_encode(['success' => false, 'error' => 'At least one webhook URL required']);
     die();
 }
 
-if (!filter_var($webhookUrl, FILTER_VALIDATE_URL)) {
-    echo json_encode(['success' => false, 'error' => 'Invalid URL format']);
-    die();
+if (!empty($cloudWebhookUrl)) {
+    if (!filter_var($cloudWebhookUrl, FILTER_VALIDATE_URL)) {
+        echo json_encode(['success' => false, 'error' => 'Invalid cloud webhook URL format']);
+        die();
+    }
+    if (!preg_match('#^https?://[^/]+/rest/\d+/[a-zA-Z0-9]+/?$#', $cloudWebhookUrl)) {
+        echo json_encode(['success' => false, 'error' => 'Invalid cloud webhook format. Expected: https://portal.bitrix24.ru/rest/1/abc123/']);
+        die();
+    }
+    Option::set('bitrix_migrator', 'cloud_webhook_url', rtrim($cloudWebhookUrl, '/'));
 }
 
-if (!preg_match('#^https?://[^/]+/rest/\d+/[a-zA-Z0-9]+/?$#', $webhookUrl)) {
-    echo json_encode(['success' => false, 'error' => 'Invalid webhook format. Expected: https://portal.bitrix24.ru/rest/1/abc123/']);
-    die();
+if (!empty($boxWebhookUrl)) {
+    if (!filter_var($boxWebhookUrl, FILTER_VALIDATE_URL)) {
+        echo json_encode(['success' => false, 'error' => 'Invalid box webhook URL format']);
+        die();
+    }
+    if (!preg_match('#^https?://[^/]+/rest/\d+/[a-zA-Z0-9]+/?$#', $boxWebhookUrl)) {
+        echo json_encode(['success' => false, 'error' => 'Invalid box webhook format. Expected: https://portal.bitrix24.ru/rest/1/abc123/']);
+        die();
+    }
+    Option::set('bitrix_migrator', 'box_webhook_url', rtrim($boxWebhookUrl, '/'));
 }
-
-Option::set('bitrix_migrator', 'webhook_url', rtrim($webhookUrl, '/'));
 
 echo json_encode(['success' => true]);

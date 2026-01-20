@@ -126,6 +126,7 @@ class bitrix_migrator extends CModule
         $this->createQueueTable();
         $this->createMapTable();
         $this->createLogsTable();
+        $this->createDryRunResultTable();
     }
 
 
@@ -544,6 +545,50 @@ class bitrix_migrator extends CModule
         }
     }
 
+    public function createDryRunResultTable()
+    {
+        $hlblock = \Bitrix\Highloadblock\HighloadBlockTable::getList([
+            'filter' => ['=NAME' => 'MigratorDryRunResult']
+        ])->fetch();
+
+        if (!$hlblock) {
+            $result = \Bitrix\Highloadblock\HighloadBlockTable::add([
+                'NAME' => 'MigratorDryRunResult',
+                'TABLE_NAME' => 'b_migrator_dryrun_result'
+            ]);
+
+            if (!$result->isSuccess()) {
+                throw new Exception('Error creating MigratorDryRunResult table: ' . implode(', ', $result->getErrorMessages()));
+            }
+
+            $blockId = $result->getId();
+            $userTypeEntity = new \CUserTypeEntity();
+
+            $userTypeEntity->Add([
+                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
+                'FIELD_NAME' => 'UF_DATA_JSON',
+                'USER_TYPE_ID' => 'string',
+                'XML_ID' => 'UF_DATA_JSON',
+                'MANDATORY' => 'N',
+                'EDIT_FORM_LABEL' => ['ru' => 'Данные (JSON)'],
+                'LIST_COLUMN_LABEL' => ['ru' => 'Данные'],
+                'SETTINGS' => ['SIZE' => 0, 'ROWS' => 10]
+            ]);
+
+            $userTypeEntity->Add([
+                'ENTITY_ID' => 'HLBLOCK_' . $blockId,
+                'FIELD_NAME' => 'UF_CREATED_AT',
+                'USER_TYPE_ID' => 'datetime',
+                'XML_ID' => 'UF_CREATED_AT',
+                'MANDATORY' => 'N',
+                'EDIT_FORM_LABEL' => ['ru' => 'Создано'],
+                'LIST_COLUMN_LABEL' => ['ru' => 'Создано']
+            ]);
+
+            Option::set($this->MODULE_ID, 'dryrun_hlblock_id', $blockId);
+        }
+    }
+
 
     public function UninstallDB()
     {
@@ -552,7 +597,7 @@ class bitrix_migrator extends CModule
         }
 
 
-        $tables = ['MigratorState', 'MigratorQueue', 'MigratorMap', 'MigratorLogs'];
+        $tables = ['MigratorState', 'MigratorQueue', 'MigratorMap', 'MigratorLogs', 'MigratorDryRunResult'];
 
 
         foreach ($tables as $tableName) {

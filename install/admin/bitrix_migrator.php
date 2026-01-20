@@ -23,8 +23,10 @@ $APPLICATION->SetAdditionalCSS('/local/modules/bitrix_migrator/install/admin/css
 require($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_after.php');
 
 // Get current settings
-$webhookUrl = Option::get($MODULE_ID, 'webhook_url', '');
-$connectionStatus = Option::get($MODULE_ID, 'connection_status', 'not_checked');
+$cloudWebhookUrl = Option::get($MODULE_ID, 'cloud_webhook_url', '');
+$boxWebhookUrl = Option::get($MODULE_ID, 'box_webhook_url', '');
+$connectionStatusCloud = Option::get($MODULE_ID, 'connection_status_cloud', 'not_checked');
+$connectionStatusBox = Option::get($MODULE_ID, 'connection_status_box', 'not_checked');
 $dryrunStatus = Option::get($MODULE_ID, 'dryrun_status', 'idle');
 $migrationPlan = Option::get($MODULE_ID, 'migration_plan', '');
 $plan = $migrationPlan ? json_decode($migrationPlan, true) : [];
@@ -55,58 +57,100 @@ $plan = $migrationPlan ? json_decode($migrationPlan, true) : [];
         <div class="adm-detail-content">
             <h2><?= Loc::getMessage('BITRIX_MIGRATOR_CONNECTION_TITLE') ?></h2>
             
-            <div class="migrator-status-block" id="connection-status-block">
-                <div class="migrator-status migrator-status-<?= htmlspecialcharsbx($connectionStatus) ?>">
-                    <span class="migrator-status-icon"></span>
-                    <span class="migrator-status-text" id="connection-status-text">
-                        <?php
-                        switch ($connectionStatus) {
-                            case 'success':
-                                echo Loc::getMessage('BITRIX_MIGRATOR_CONNECTION_STATUS_SUCCESS');
-                                break;
-                            case 'error':
-                                echo Loc::getMessage('BITRIX_MIGRATOR_CONNECTION_STATUS_ERROR');
-                                break;
-                            default:
-                                echo Loc::getMessage('BITRIX_MIGRATOR_CONNECTION_STATUS_NOT_CHECKED');
-                        }
-                        ?>
-                    </span>
-                </div>
-            </div>
-
             <form id="connection-form" class="migrator-form">
                 <?= bitrix_sessid_post() ?>
                 
+                <!-- Cloud Webhook -->
                 <div class="migrator-form-group">
-                    <label for="webhook_url" class="migrator-label">
-                        <?= Loc::getMessage('BITRIX_MIGRATOR_WEBHOOK_URL') ?>:
-                        <span class="migrator-required">*</span>
+                    <label for="cloud_webhook_url" class="migrator-label">
+                        <?= Loc::getMessage('BITRIX_MIGRATOR_CLOUD_WEBHOOK_URL') ?>:
                     </label>
                     <input type="text" 
-                           id="webhook_url" 
-                           name="webhook_url" 
+                           id="cloud_webhook_url" 
+                           name="cloud_webhook_url" 
                            class="migrator-input"
-                           value="<?= htmlspecialcharsbx($webhookUrl) ?>" 
-                           placeholder="https://your-portal.bitrix24.ru/rest/1/abc123def456/"
-                           required>
+                           value="<?= htmlspecialcharsbx($cloudWebhookUrl) ?>" 
+                           placeholder="https://your-portal.bitrix24.ru/rest/1/abc123/">
                     <div class="migrator-hint">
-                        <?= Loc::getMessage('BITRIX_MIGRATOR_WEBHOOK_URL_HINT') ?>
+                        <?= Loc::getMessage('BITRIX_MIGRATOR_CLOUD_WEBHOOK_URL_HINT') ?>
                     </div>
+                    <div class="migrator-status-block" id="connection-status-block-cloud">
+                        <div class="migrator-status migrator-status-<?= htmlspecialcharsbx($connectionStatusCloud) ?>">
+                            <span class="migrator-status-icon"></span>
+                            <span class="migrator-status-text" id="connection-status-text-cloud">
+                                <?php
+                                switch ($connectionStatusCloud) {
+                                    case 'success':
+                                        echo Loc::getMessage('BITRIX_MIGRATOR_CONNECTION_STATUS_SUCCESS');
+                                        break;
+                                    case 'error':
+                                        echo Loc::getMessage('BITRIX_MIGRATOR_CONNECTION_STATUS_ERROR');
+                                        break;
+                                    default:
+                                        echo Loc::getMessage('BITRIX_MIGRATOR_CONNECTION_STATUS_NOT_CHECKED');
+                                }
+                                ?>
+                            </span>
+                        </div>
+                    </div>
+                    <button type="button" id="btn-check-connection-cloud" class="adm-btn">
+                        <?= Loc::getMessage('BITRIX_MIGRATOR_BTN_CHECK_CONNECTION') ?>
+                    </button>
+                </div>
+
+                <!-- Box Webhook -->
+                <div class="migrator-form-group">
+                    <label for="box_webhook_url" class="migrator-label">
+                        <?= Loc::getMessage('BITRIX_MIGRATOR_BOX_WEBHOOK_URL') ?>:
+                    </label>
+                    <input type="text" 
+                           id="box_webhook_url" 
+                           name="box_webhook_url" 
+                           class="migrator-input"
+                           value="<?= htmlspecialcharsbx($boxWebhookUrl) ?>" 
+                           placeholder="https://your-box.bitrix24.ru/rest/1/xyz789/">
+                    <div class="migrator-hint">
+                        <?= Loc::getMessage('BITRIX_MIGRATOR_BOX_WEBHOOK_URL_HINT') ?>
+                    </div>
+                    <div class="migrator-status-block" id="connection-status-block-box">
+                        <div class="migrator-status migrator-status-<?= htmlspecialcharsbx($connectionStatusBox) ?>">
+                            <span class="migrator-status-icon"></span>
+                            <span class="migrator-status-text" id="connection-status-text-box">
+                                <?php
+                                switch ($connectionStatusBox) {
+                                    case 'success':
+                                        echo Loc::getMessage('BITRIX_MIGRATOR_CONNECTION_STATUS_SUCCESS');
+                                        break;
+                                    case 'error':
+                                        echo Loc::getMessage('BITRIX_MIGRATOR_CONNECTION_STATUS_ERROR');
+                                        break;
+                                    default:
+                                        echo Loc::getMessage('BITRIX_MIGRATOR_CONNECTION_STATUS_NOT_CHECKED');
+                                }
+                                ?>
+                            </span>
+                        </div>
+                    </div>
+                    <button type="button" id="btn-check-connection-box" class="adm-btn">
+                        <?= Loc::getMessage('BITRIX_MIGRATOR_BTN_CHECK_CONNECTION') ?>
+                    </button>
                 </div>
 
                 <div class="migrator-form-actions">
                     <button type="button" id="btn-save-connection" class="adm-btn-save">
                         <?= Loc::getMessage('BITRIX_MIGRATOR_BTN_SAVE') ?>
                     </button>
-                    <button type="button" id="btn-check-connection" class="adm-btn">
-                        <?= Loc::getMessage('BITRIX_MIGRATOR_BTN_CHECK_CONNECTION') ?>
-                    </button>
-                    <button type="button" id="btn-run-dryrun" class="adm-btn" <?= empty($webhookUrl) ? 'disabled' : '' ?>>
+                    <button type="button" id="btn-run-dryrun" class="adm-btn" <?= empty($cloudWebhookUrl) ? 'disabled' : '' ?>>
                         <?= Loc::getMessage('BITRIX_MIGRATOR_BTN_RUN_DRYRUN') ?>
                     </button>
                 </div>
             </form>
+
+            <!-- Dry Run Results -->
+            <div id="dryrun-results" style="display:none; margin-top:20px;">
+                <h3>Результаты анализа:</h3>
+                <pre id="dryrun-results-pre" style="background:#f5f5f5; padding:10px; border:1px solid #ddd; max-height:400px; overflow:auto;"></pre>
+            </div>
         </div>
     </div>
 
@@ -115,34 +159,6 @@ $plan = $migrationPlan ? json_decode($migrationPlan, true) : [];
         <div class="adm-detail-content">
             <h2><?= Loc::getMessage('BITRIX_MIGRATOR_DRYRUN_TITLE') ?></h2>
             <p><?= Loc::getMessage('BITRIX_MIGRATOR_DRYRUN_INFO') ?></p>
-
-            <div id="dryrun-progress-block" class="migrator-progress-block" style="display:none;">
-                <div class="migrator-progress-bar">
-                    <div id="dryrun-progress-fill" class="migrator-progress-fill" style="width:0%"></div>
-                </div>
-                <div id="dryrun-progress-text" class="migrator-progress-text">0%</div>
-            </div>
-
-            <div id="dryrun-results-block" style="display:none;">
-                <h3><?= Loc::getMessage('BITRIX_MIGRATOR_DRYRUN_RESULTS_TITLE') ?></h3>
-                <table class="migrator-results-table" id="dryrun-results-table">
-                    <thead>
-                        <tr>
-                            <th><?= Loc::getMessage('BITRIX_MIGRATOR_TABLE_ENTITY') ?></th>
-                            <th><?= Loc::getMessage('BITRIX_MIGRATOR_TABLE_COUNT') ?></th>
-                            <th><?= Loc::getMessage('BITRIX_MIGRATOR_TABLE_STATUS') ?></th>
-                        </tr>
-                    </thead>
-                    <tbody id="dryrun-results-tbody">
-                    </tbody>
-                </table>
-
-                <div class="migrator-form-actions">
-                    <button type="button" id="btn-goto-plan" class="adm-btn-save">
-                        <?= Loc::getMessage('BITRIX_MIGRATOR_BTN_GOTO_PLAN') ?>
-                    </button>
-                </div>
-            </div>
         </div>
     </div>
 
@@ -151,40 +167,6 @@ $plan = $migrationPlan ? json_decode($migrationPlan, true) : [];
         <div class="adm-detail-content">
             <h2><?= Loc::getMessage('BITRIX_MIGRATOR_PLAN_TITLE') ?></h2>
             <p><?= Loc::getMessage('BITRIX_MIGRATOR_PLAN_INFO') ?></p>
-
-            <form id="plan-form" class="migrator-form">
-                <div class="migrator-form-group">
-                    <label class="migrator-label">
-                        <?= Loc::getMessage('BITRIX_MIGRATOR_PLAN_ENTITIES') ?>:
-                    </label>
-                    <div id="plan-entities-list" class="migrator-checkbox-list">
-                        <!-- Will be filled by JS -->
-                    </div>
-                </div>
-
-                <div class="migrator-form-group">
-                    <label for="plan-batch-size" class="migrator-label">
-                        <?= Loc::getMessage('BITRIX_MIGRATOR_PLAN_BATCH_SIZE') ?>:
-                    </label>
-                    <select id="plan-batch-size" name="batchSize" class="migrator-select">
-                        <option value="50" <?= ($plan['batchSize'] ?? 100) == 50 ? 'selected' : '' ?>>50</option>
-                        <option value="100" <?= ($plan['batchSize'] ?? 100) == 100 ? 'selected' : '' ?>>100</option>
-                        <option value="200" <?= ($plan['batchSize'] ?? 100) == 200 ? 'selected' : '' ?>>200</option>
-                    </select>
-                    <div class="migrator-hint">
-                        <?= Loc::getMessage('BITRIX_MIGRATOR_PLAN_BATCH_SIZE_HINT') ?>
-                    </div>
-                </div>
-
-                <div class="migrator-form-actions">
-                    <button type="button" id="btn-save-plan" class="adm-btn-save">
-                        <?= Loc::getMessage('BITRIX_MIGRATOR_BTN_SAVE_PLAN') ?>
-                    </button>
-                    <button type="button" id="btn-goto-migration" class="adm-btn">
-                        <?= Loc::getMessage('BITRIX_MIGRATOR_BTN_GOTO_MIGRATION') ?>
-                    </button>
-                </div>
-            </form>
         </div>
     </div>
 

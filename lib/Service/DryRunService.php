@@ -2,83 +2,61 @@
 
 namespace BitrixMigrator\Service;
 
-use Bitrix\Main\Config\Option;
 use BitrixMigrator\Integration\CloudAPI;
+use Bitrix\Main\Config\Option;
+use Bitrix\Main\Loader;
+use Bitrix\Highloadblock\HighloadBlockTable;
 
 class DryRunService
 {
-    private $api;
-
-    public function __construct()
-    {
-        $webhookUrl = Option::get('bitrix_migrator', 'webhook_url', '');
-        $this->api = new CloudAPI($webhookUrl);
-    }
-
     /**
-     * Analyze data from cloud
+     * Simplified analyze: only get departments from cloud
      */
-    public function analyze()
+    public static function analyze()
     {
-        $entities = [
-            'users' => 'Пользователи',
-            'crm.company' => 'Компании',
-            'crm.contact' => 'Контакты',
-            'crm.deal' => 'Сделки',
-            'crm.lead' => 'Лиды',
-            'tasks.task' => 'Задачи',
+        if (!Loader::includeModule('bitrix_migrator') || !Loader::includeModule('highloadblock')) {
+            throw new \Exception('Required modules not loaded');
+        }
+
+        $cloudWebhookUrl = Option::get('bitrix_migrator', 'cloud_webhook_url', '');
+        if (empty($cloudWebhookUrl)) {
+            throw new \Exception('Cloud webhook URL not configured');
+        }
+
+        $cloudAPI = new CloudAPI($cloudWebhookUrl);
+        $departments = $cloudAPI->getDepartments();
+
+        $data = [
+            'departments' => $departments,
+            'count' => count($departments)
         ];
 
-        $results = [];
-        $progress = 0;
-        $step = 100 / count($entities);
-
-        foreach ($entities as $entityKey => $entityName) {
-            try {
-                $count = $this->getEntityCount($entityKey);
-                $results[] = [
-                    'key' => $entityKey,
-                    'name' => $entityName,
-                    'count' => $count,
-                    'status' => $count > 0 ? 'ready' : 'empty',
-                ];
-            } catch (\Exception $e) {
-                $results[] = [
-                    'key' => $entityKey,
-                    'name' => $entityName,
-                    'count' => 0,
-                    'status' => 'error',
-                    'error' => $e->getMessage(),
-                ];
-            }
-
-            $progress += $step;
-            Option::set('bitrix_migrator', 'dryrun_progress', (int)$progress);
+        // Save to HL-block
+        $hlblockId = Option::get('bitrix_migrator', 'dryrun_hlblock_id', 0);
+        if (!$hlblockId) {
+            throw new \Exception('DryRun HL block not found');
         }
 
-        return $results;
-    }
-
-    /**
-     * Get entity count from cloud
-     */
-    private function getEntityCount($entity)
-    {
-        switch ($entity) {
-            case 'users':
-                return $this->api->getUsersCount();
-            case 'crm.company':
-                return $this->api->getCompaniesCount();
-            case 'crm.contact':
-                return $this->api->getContactsCount();
-            case 'crm.deal':
-                return $this->api->getDealsCount();
-            case 'crm.lead':
-                return $this->api->getLeadsCount();
-            case 'tasks.task':
-                return $this->api->getTasksCount();
-            default:
-                return 0;
+        $hlblock = HighloadBlockTable::getById($hlblockId)->fetch();
+        if (!$hlblock) {
+            throw new \Exception('HL block not found');
         }
+
+        $entity = HighloadBlockTable::compileEntity($hlblock);
+        $entityClass = $entity->getDataClass();
+
+        // Delete old records
+        $old = $entityClass::getList(['select' => ['ID']])->fetchAll();
+        foreach ($old as $row) {
+            $entityClass::delete($row['ID']);
+        }
+
+        // Add new record
+        $entityClass::add([
+            'UF_DATA_JSON' => json_encode($data, JSON_UNESCAPED_UNICODE),
+            'UF_CREATED_AT' => new \Bitrix\Main\Type\DateTime()
+        ]);
+
+        return $data;
     }
 }
