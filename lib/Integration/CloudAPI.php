@@ -12,9 +12,9 @@ class CloudAPI
     }
 
     /**
-     * Make API request with JSON body
+     * Make API request with JSON body, retries on HTTP 429
      */
-    private function request($method, $params = [])
+    private function request($method, $params = [], $attempt = 0)
     {
         $url = $this->webhookUrl . '/' . $method . '.json';
 
@@ -25,24 +25,41 @@ class CloudAPI
             CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
             CURLOPT_POSTFIELDS     => json_encode($params),
             CURLOPT_TIMEOUT        => 60,
+            CURLOPT_HEADER         => true,
             CURLOPT_SSL_VERIFYPEER => false,
             CURLOPT_SSL_VERIFYHOST => false,
         ]);
 
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $error = curl_error($ch);
+        $rawResponse = curl_exec($ch);
+        $httpCode    = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $headerSize  = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+        $error       = curl_error($ch);
         curl_close($ch);
 
         if ($error) {
             throw new \Exception('cURL error: ' . $error);
         }
 
+        // Rate limit — wait and retry (max 5 attempts)
+        if ($httpCode === 429) {
+            if ($attempt >= 5) {
+                throw new \Exception('Rate limit exceeded after 5 retries');
+            }
+            $headers  = substr($rawResponse, 0, $headerSize);
+            $retryAfter = 2;
+            if (preg_match('/Retry-After:\s*(\d+)/i', $headers, $m)) {
+                $retryAfter = (int)$m[1];
+            }
+            sleep($retryAfter);
+            return $this->request($method, $params, $attempt + 1);
+        }
+
         if ($httpCode !== 200) {
             throw new \Exception('HTTP error: ' . $httpCode);
         }
 
-        $data = json_decode($response, true);
+        $body = substr($rawResponse, $headerSize);
+        $data = json_decode($body, true);
         if (!is_array($data)) {
             throw new \Exception('Bad JSON response');
         }

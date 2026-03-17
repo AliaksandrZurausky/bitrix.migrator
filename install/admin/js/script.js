@@ -85,13 +85,21 @@
     function checkConnection(type) {
         const statusText = document.getElementById('connection-status-text-' + type);
         const statusBlock = document.getElementById('connection-status-block-' + type).querySelector('.migrator-status');
-        
+        const webhookUrl = document.getElementById(type + '_webhook_url').value.trim();
+
+        if (!webhookUrl) {
+            statusBlock.className = 'migrator-status migrator-status-error';
+            statusText.textContent = 'Укажите URL вебхука';
+            return;
+        }
+
         statusBlock.className = 'migrator-status migrator-status-checking';
         statusText.textContent = 'Проверка подключения...';
 
         const formData = new FormData();
         formData.append('sessid', window.BITRIX_MIGRATOR.sessid);
         formData.append('type', type);
+        formData.append('webhook_url', webhookUrl);
 
         fetch('/local/ajax/bitrix_migrator/check_connection.php', {
             method: 'POST',

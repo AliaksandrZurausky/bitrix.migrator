@@ -30,11 +30,19 @@ if (!in_array($type, ['cloud', 'box'], true)) {
     die();
 }
 
-// Get webhook URL from settings
-$webhookUrl = Option::get('bitrix_migrator', $type . '_webhook_url', '');
+// Use URL from POST if provided, otherwise fall back to saved setting
+$webhookUrl = trim($request->getPost('webhook_url'));
+if (empty($webhookUrl)) {
+    $webhookUrl = Option::get('bitrix_migrator', $type . '_webhook_url', '');
+}
 
 if (empty($webhookUrl)) {
     echo json_encode(['success' => false, 'error' => 'Webhook URL not configured']);
+    die();
+}
+
+if (!preg_match('#^https?://[^/]+/rest/\d+/[a-zA-Z0-9]+/?$#', $webhookUrl)) {
+    echo json_encode(['success' => false, 'error' => 'Invalid webhook URL format']);
     die();
 }
 
