@@ -56,13 +56,8 @@ class DryRunService
 
         // --- 2. Users ---
         try {
-            $cloudUsers = $cloudAPI->getUsers([
-                'ID', 'NAME', 'LAST_NAME', 'SECOND_NAME',
-                'EMAIL', 'WORK_POSITION', 'DEPARTMENT', 'ACTIVE',
-            ]);
-            $activeUsers = array_values(array_filter($cloudUsers, static function ($u) {
-                return ($u['ACTIVE'] ?? '') === 'Y';
-            }));
+            $cloudUsers  = $cloudAPI->getUsers(['ACTIVE' => 'Y']);
+            $activeUsers = array_values($cloudUsers);
 
             $data['users'] = [
                 'cloud_count'        => count($cloudUsers),
@@ -70,13 +65,11 @@ class DryRunService
             ];
 
             if ($boxAPI) {
-                $boxUsers       = $boxAPI->getUsers(['ID', 'EMAIL', 'NAME', 'LAST_NAME', 'ACTIVE']);
-                $boxActiveUsers = array_filter($boxUsers, static function ($u) {
-                    return ($u['ACTIVE'] ?? '') === 'Y';
-                });
+                $boxUsers       = $boxAPI->getUsers(['ACTIVE' => 'Y']);
+                $boxActiveUsers = $boxUsers;
                 $boxEmails = array_filter(array_map(static function ($u) {
                     return strtolower(trim($u['EMAIL'] ?? ''));
-                }, $boxActiveUsers));
+                }, (array)$boxActiveUsers));
 
                 $newUsers     = array_values(array_filter($activeUsers, static function ($u) use ($boxEmails) {
                     return !in_array(strtolower(trim($u['EMAIL'] ?? '')), $boxEmails, true);
@@ -86,7 +79,7 @@ class DryRunService
                 }));
 
                 $data['users']['box_count']        = count($boxUsers);
-                $data['users']['box_active_count']  = count($boxActiveUsers);
+                $data['users']['box_active_count']  = count((array)$boxActiveUsers);
                 $data['users']['new_count']         = count($newUsers);
                 $data['users']['matched_count']     = count($matchedUsers);
                 $data['users']['new_list']          = $newUsers;
@@ -175,6 +168,35 @@ class DryRunService
             $data['crm_custom_fields'] = $customFields;
         } catch (\Exception $e) {
             $data['crm_custom_fields'] = ['error' => $e->getMessage()];
+        }
+
+        // --- 8. Smart processes ---
+        try {
+            $types         = $cloudAPI->getSmartProcessTypes();
+            $smartProcesses = [];
+            foreach ($types as $type) {
+                $entityTypeId     = (int)($type['entityTypeId'] ?? $type['id'] ?? 0);
+                $count            = 0;
+                if ($entityTypeId > 0) {
+                    try {
+                        $count = $cloudAPI->getSmartProcessCount($entityTypeId);
+                    } catch (\Exception $e) {
+                        // count not critical
+                    }
+                }
+                $smartProcesses[] = [
+                    'id'           => $type['id']    ?? 0,
+                    'entityTypeId' => $entityTypeId,
+                    'title'        => $type['title'] ?? '',
+                    'count'        => $count,
+                ];
+            }
+            $data['smart_processes'] = [
+                'list'  => $smartProcesses,
+                'count' => count($smartProcesses),
+            ];
+        } catch (\Exception $e) {
+            $data['smart_processes'] = ['error' => $e->getMessage(), 'count' => 0, 'list' => []];
         }
 
         // --- Save results ---

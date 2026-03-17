@@ -164,11 +164,13 @@ class CloudAPI
     }
 
     /**
-     * Get all users
+     * Get users. Optionally filter by field values (e.g. ['ACTIVE' => 'Y']).
+     * Note: user.get does not support field selection — all fields are returned.
      */
-    public function getUsers($select = ['ID', 'NAME', 'LAST_NAME', 'EMAIL'])
+    public function getUsers(array $filter = [])
     {
-        return $this->fetchAll('user.get', ['select' => $select]);
+        $params = empty($filter) ? [] : ['FILTER' => $filter];
+        return $this->fetchAll('user.get', $params);
     }
 
     /**
@@ -226,7 +228,10 @@ class CloudAPI
      */
     public function getDealCategoryStages($categoryId)
     {
-        $result = $this->request('crm.dealcategory.stages', ['id' => (int)$categoryId]);
+        $entityId = $categoryId === 0 ? 'DEAL_STAGE' : 'DEAL_STAGE_Category' . (int)$categoryId;
+        $result   = $this->request('crm.status.list', [
+            'filter' => ['ENTITY_ID' => $entityId],
+        ]);
         return is_array($result['result']) ? $result['result'] : [];
     }
 
@@ -245,5 +250,23 @@ class CloudAPI
     public function getWorkgroupsCount()
     {
         return $this->getCount('sonet_group.get');
+    }
+
+    /**
+     * Get all smart process types (crm.type.list)
+     */
+    public function getSmartProcessTypes()
+    {
+        $result = $this->request('crm.type.list');
+        $types  = $result['result']['types'] ?? $result['result'] ?? [];
+        return is_array($types) ? array_values($types) : [];
+    }
+
+    /**
+     * Get item count for a smart process entity type
+     */
+    public function getSmartProcessCount($entityTypeId)
+    {
+        return $this->getCount('crm.item.list', ['entityTypeId' => (int)$entityTypeId]);
     }
 }

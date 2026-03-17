@@ -226,11 +226,15 @@ $plan = $migrationPlan ? json_decode($migrationPlan, true) : [];
 
                     <!-- Tasks -->
                     <div class="migrator-stat-group">
-                        <div class="migrator-stat-group-title">Задачи</div>
+                        <div class="migrator-stat-group-title">Задачи и смарт-процессы</div>
                         <div class="migrator-stats">
                             <div class="migrator-stat-card">
                                 <div class="migrator-stat-value" id="tasks-count">—</div>
                                 <div class="migrator-stat-label">Задач</div>
+                            </div>
+                            <div class="migrator-stat-card">
+                                <div class="migrator-stat-value" id="smart-processes-count">—</div>
+                                <div class="migrator-stat-label">Смарт-процессов</div>
                             </div>
                         </div>
                     </div>
@@ -264,6 +268,12 @@ $plan = $migrationPlan ? json_decode($migrationPlan, true) : [];
                     <div id="crm-fields-container" style="display:none; margin-top:20px;">
                         <h4>Пользовательские поля CRM:</h4>
                         <div id="crm-fields-list"></div>
+                    </div>
+
+                    <!-- Smart Processes -->
+                    <div id="smart-processes-container" style="display:none; margin-top:20px;">
+                        <h4>Смарт-процессы:</h4>
+                        <div id="smart-processes-list"></div>
                     </div>
                 </div>
             </div>

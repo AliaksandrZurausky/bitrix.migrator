@@ -178,8 +178,9 @@
         document.getElementById('crm-deals-count').textContent     = crm.deals     !== undefined ? crm.deals     : '—';
         document.getElementById('crm-leads-count').textContent     = crm.leads     !== undefined ? crm.leads     : '—';
 
-        // Tasks
-        document.getElementById('tasks-count').textContent = (data.tasks || {}).count !== undefined ? data.tasks.count : '—';
+        // Tasks & Smart Processes
+        document.getElementById('tasks-count').textContent          = (data.tasks          || {}).count !== undefined ? data.tasks.count          : '—';
+        document.getElementById('smart-processes-count').textContent = (data.smart_processes || {}).count !== undefined ? data.smart_processes.count : '—';
 
         // Department tree
         if (depts.list && depts.list.length > 0) {
@@ -211,6 +212,12 @@
                 buildCrmFieldsList(data.crm_custom_fields);
                 document.getElementById('crm-fields-container').style.display = 'block';
             }
+        }
+
+        // Smart processes
+        if (data.smart_processes && data.smart_processes.list && data.smart_processes.list.length > 0) {
+            buildSmartProcessesList(data.smart_processes.list);
+            document.getElementById('smart-processes-container').style.display = 'block';
         }
     }
 
@@ -385,6 +392,31 @@
 
     function closeStructureSlider() {
         document.getElementById('structure-slider').classList.remove('active');
+    }
+
+    // -------------------------------------------------------------------------
+    // Smart Processes List
+    // -------------------------------------------------------------------------
+    function buildSmartProcessesList(processes) {
+        var container = document.getElementById('smart-processes-list');
+        container.innerHTML = '';
+
+        var table = document.createElement('table');
+        table.className = 'migrator-table';
+        table.innerHTML = '<thead><tr><th>Название</th><th>entityTypeId</th><th>Записей</th></tr></thead>';
+
+        var tbody = document.createElement('tbody');
+        processes.forEach(function(p) {
+            var row = document.createElement('tr');
+            row.innerHTML =
+                '<td>' + escHtml(p.title || '')         + '</td>' +
+                '<td>' + escHtml(String(p.entityTypeId)) + '</td>' +
+                '<td>' + escHtml(String(p.count || 0))  + '</td>';
+            tbody.appendChild(row);
+        });
+
+        table.appendChild(tbody);
+        container.appendChild(table);
     }
 
     // -------------------------------------------------------------------------
