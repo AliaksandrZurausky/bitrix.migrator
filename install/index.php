@@ -661,34 +661,29 @@ class bitrix_migrator extends CModule
     public function InstallFiles()
     {
         $docRoot = Application::getDocumentRoot();
-        $localAdminDir = $docRoot . '/local/admin/';
-        
-        // Create /local/admin/ if not exists
-        if (!is_dir($localAdminDir)) {
-            mkdir($localAdminDir, 0755, true);
-        }
-        
-        // Copy admin page file to /local/admin/
+        $adminDir = $docRoot . '/bitrix/admin/';
+
+        // Copy admin page file to /bitrix/admin/
         CopyDirFiles(
             __DIR__ . '/admin/bitrix_migrator.php',
-            $localAdminDir . 'bitrix_migrator.php',
+            $adminDir . 'bitrix_migrator.php',
             true,
             true
         );
-        
-        // Copy language files to /local/admin/lang/
+
+        // Copy language files to /bitrix/admin/lang/
         $moduleDir = dirname(__DIR__);
         $languages = ['ru', 'en'];
-        
+
         foreach ($languages as $lang) {
             $sourceLangDir = $moduleDir . '/lang/' . $lang . '/admin/';
-            $targetLangDir = $localAdminDir . 'lang/' . $lang . '/';
-            
+            $targetLangDir  = $adminDir . 'lang/' . $lang . '/';
+
             if (is_dir($sourceLangDir)) {
                 if (!is_dir($targetLangDir)) {
                     mkdir($targetLangDir, 0755, true);
                 }
-                
+
                 CopyDirFiles(
                     $sourceLangDir,
                     $targetLangDir,
@@ -720,17 +715,17 @@ class bitrix_migrator extends CModule
     public function UninstallFiles()
     {
         $docRoot = Application::getDocumentRoot();
-        
-        // Remove admin file from /local/admin/
-        $adminFile = $docRoot . '/local/admin/bitrix_migrator.php';
+
+        // Remove admin file from /bitrix/admin/
+        $adminFile = $docRoot . '/bitrix/admin/bitrix_migrator.php';
         if (file_exists($adminFile)) {
             @unlink($adminFile);
         }
-        
-        // Remove language files from /local/admin/lang/
+
+        // Remove language files from /bitrix/admin/lang/
         $languages = ['ru', 'en'];
         foreach ($languages as $lang) {
-            $langDir = $docRoot . '/local/admin/lang/' . $lang . '/';
+            $langDir = $docRoot . '/bitrix/admin/lang/' . $lang . '/';
             if (is_dir($langDir)) {
                 $files = scandir($langDir);
                 foreach ($files as $file) {
