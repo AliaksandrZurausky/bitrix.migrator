@@ -5,59 +5,31 @@ define('DisableEventsCheck', true);
 
 require_once($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php');
 
-use Bitrix\Main\Application;
 use Bitrix\Main\Config\Option;
 use Bitrix\Main\Loader;
-use Bitrix\Highloadblock\HighloadBlockTable;
 
 header('Content-Type: application/json');
 
-if (!Loader::includeModule('bitrix_migrator') || !Loader::includeModule('highloadblock')) {
+if (!Loader::includeModule('bitrix_migrator')) {
     echo json_encode(['success' => false, 'error' => 'Module not loaded']);
     die();
 }
 
-$request = Application::getInstance()->getContext()->getRequest();
+$status = Option::get('bitrix_migrator', 'dryrun_status', 'idle');
 
-if (!check_bitrix_sessid()) {
-    echo json_encode(['success' => false, 'error' => 'Invalid session']);
-    die();
-}
-
-$hlblockId = Option::get('bitrix_migrator', 'dryrun_hlblock_id', 0);
-
-if (!$hlblockId) {
-    echo json_encode(['success' => false, 'error' => 'HL block not found']);
-    die();
-}
-
-try {
-    $hlblock = HighloadBlockTable::getById($hlblockId)->fetch();
-    if (!$hlblock) {
-        throw new Exception('HL block not found');
-    }
-
-    $entity = HighloadBlockTable::compileEntity($hlblock);
-    $entityClass = $entity->getDataClass();
-
-    $result = $entityClass::getList([
-        'select' => ['*'],
-        'order' => ['ID' => 'DESC'],
-        'limit' => 1
-    ])->fetch();
-
-    if ($result && !empty($result['UF_DATA_JSON'])) {
-        $data = json_decode($result['UF_DATA_JSON'], true);
-        echo json_encode([
-            'success' => true,
-            'result' => $data
-        ]);
+if ($status === 'completed') {
+    $resultJson = Option::get('bitrix_migrator', 'dryrun_result_json', '');
+    if ($resultJson) {
+        $data = json_decode($resultJson, true);
+        echo json_encode(['success' => true, 'status' => 'completed', 'data' => $data]);
     } else {
-        echo json_encode([
-            'success' => true,
-            'result' => null
-        ]);
+        echo json_encode(['success' => true, 'status' => 'idle', 'data' => null]);
     }
-} catch (Exception $e) {
-    echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+} elseif ($status === 'error') {
+    $error = Option::get('bitrix_migrator', 'dryrun_error', 'Unknown error');
+    echo json_encode(['success' => false, 'status' => 'error', 'error' => $error]);
+} elseif ($status === 'running') {
+    echo json_encode(['success' => true, 'status' => 'running', 'data' => null]);
+} else {
+    echo json_encode(['success' => true, 'status' => 'idle', 'data' => null]);
 }

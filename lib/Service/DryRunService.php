@@ -5,58 +5,220 @@ namespace BitrixMigrator\Service;
 use BitrixMigrator\Integration\CloudAPI;
 use Bitrix\Main\Config\Option;
 use Bitrix\Main\Loader;
-use Bitrix\Highloadblock\HighloadBlockTable;
 
 class DryRunService
 {
+    const MODULE_ID = 'bitrix_migrator';
+
     /**
-     * Simplified analyze: only get departments from cloud
+     * Full portal analysis: departments, users, CRM, tasks, workgroups, pipelines, custom fields.
+     * Results saved to Options for fast retrieval.
      */
-    public static function analyze()
+    public static function analyze(): array
     {
-        if (!Loader::includeModule('bitrix_migrator') || !Loader::includeModule('highloadblock')) {
-            throw new \Exception('Required modules not loaded');
+        if (!Loader::includeModule('highloadblock')) {
+            throw new \Exception('Module highloadblock is required');
         }
 
-        $cloudWebhookUrl = Option::get('bitrix_migrator', 'cloud_webhook_url', '');
+        $cloudWebhookUrl = Option::get(self::MODULE_ID, 'cloud_webhook_url', '');
         if (empty($cloudWebhookUrl)) {
             throw new \Exception('Cloud webhook URL not configured');
         }
 
         $cloudAPI = new CloudAPI($cloudWebhookUrl);
-        $departments = $cloudAPI->getDepartments();
 
-        $data = [
-            'departments' => $departments,
-            'count' => count($departments)
-        ];
+        $boxWebhookUrl = Option::get(self::MODULE_ID, 'box_webhook_url', '');
+        $boxAPI = !empty($boxWebhookUrl) ? new CloudAPI($boxWebhookUrl) : null;
 
-        // Save to HL-block
-        $hlblockId = Option::get('bitrix_migrator', 'dryrun_hlblock_id', 0);
-        if (!$hlblockId) {
-            throw new \Exception('DryRun HL block not found');
+        $data = ['timestamp' => time()];
+
+        // --- 1. Departments ---
+        try {
+            $cloudDepts = $cloudAPI->getDepartments();
+            $data['departments'] = [
+                'list'      => $cloudDepts,
+                'count'     => count($cloudDepts),
+                'max_depth' => self::calcMaxDepth($cloudDepts),
+            ];
+
+            if ($boxAPI) {
+                $boxDepts    = $boxAPI->getDepartments();
+                $boxNames    = array_column($boxDepts, 'NAME');
+                $conflicting = array_filter($cloudDepts, static function ($d) use ($boxNames) {
+                    return in_array($d['NAME'], $boxNames, true);
+                });
+                $data['departments']['box_count']            = count($boxDepts);
+                $data['departments']['name_conflicts_count'] = count($conflicting);
+            }
+        } catch (\Exception $e) {
+            $data['departments'] = ['error' => $e->getMessage(), 'count' => 0, 'list' => []];
         }
 
-        $hlblock = HighloadBlockTable::getById($hlblockId)->fetch();
-        if (!$hlblock) {
-            throw new \Exception('HL block not found');
+        // --- 2. Users ---
+        try {
+            $cloudUsers = $cloudAPI->getUsers([
+                'ID', 'NAME', 'LAST_NAME', 'SECOND_NAME',
+                'EMAIL', 'WORK_POSITION', 'DEPARTMENT', 'ACTIVE',
+            ]);
+            $activeUsers = array_values(array_filter($cloudUsers, static function ($u) {
+                return ($u['ACTIVE'] ?? '') === 'Y';
+            }));
+
+            $data['users'] = [
+                'cloud_count'        => count($cloudUsers),
+                'cloud_active_count' => count($activeUsers),
+            ];
+
+            if ($boxAPI) {
+                $boxUsers       = $boxAPI->getUsers(['ID', 'EMAIL', 'NAME', 'LAST_NAME', 'ACTIVE']);
+                $boxActiveUsers = array_filter($boxUsers, static function ($u) {
+                    return ($u['ACTIVE'] ?? '') === 'Y';
+                });
+                $boxEmails = array_filter(array_map(static function ($u) {
+                    return strtolower(trim($u['EMAIL'] ?? ''));
+                }, $boxActiveUsers));
+
+                $newUsers     = array_values(array_filter($activeUsers, static function ($u) use ($boxEmails) {
+                    return !in_array(strtolower(trim($u['EMAIL'] ?? '')), $boxEmails, true);
+                }));
+                $matchedUsers = array_values(array_filter($activeUsers, static function ($u) use ($boxEmails) {
+                    return in_array(strtolower(trim($u['EMAIL'] ?? '')), $boxEmails, true);
+                }));
+
+                $data['users']['box_count']        = count($boxUsers);
+                $data['users']['box_active_count']  = count($boxActiveUsers);
+                $data['users']['new_count']         = count($newUsers);
+                $data['users']['matched_count']     = count($matchedUsers);
+                $data['users']['new_list']          = $newUsers;
+            }
+        } catch (\Exception $e) {
+            $data['users'] = ['error' => $e->getMessage(), 'cloud_count' => 0, 'cloud_active_count' => 0];
         }
 
-        $entity = HighloadBlockTable::compileEntity($hlblock);
-        $entityClass = $entity->getDataClass();
-
-        // Delete old records
-        $old = $entityClass::getList(['select' => ['ID']])->fetchAll();
-        foreach ($old as $row) {
-            $entityClass::delete($row['ID']);
+        // --- 3. CRM counts ---
+        try {
+            $data['crm'] = [
+                'companies' => $cloudAPI->getCount('crm.company.list'),
+                'contacts'  => $cloudAPI->getCount('crm.contact.list'),
+                'deals'     => $cloudAPI->getCount('crm.deal.list'),
+                'leads'     => $cloudAPI->getCount('crm.lead.list'),
+            ];
+        } catch (\Exception $e) {
+            $data['crm'] = ['error' => $e->getMessage()];
         }
 
-        // Add new record
-        $entityClass::add([
-            'UF_DATA_JSON' => json_encode($data, JSON_UNESCAPED_UNICODE),
-            'UF_CREATED_AT' => new \Bitrix\Main\Type\DateTime()
-        ]);
+        // --- 4. Tasks ---
+        try {
+            $data['tasks'] = ['count' => $cloudAPI->getCount('tasks.task.list')];
+        } catch (\Exception $e) {
+            $data['tasks'] = ['error' => $e->getMessage(), 'count' => 0];
+        }
+
+        // --- 5. Workgroups ---
+        try {
+            $data['workgroups'] = ['count' => $cloudAPI->getWorkgroupsCount()];
+        } catch (\Exception $e) {
+            $data['workgroups'] = ['error' => $e->getMessage(), 'count' => 0];
+        }
+
+        // --- 6. Deal pipelines + stages ---
+        try {
+            $categories = $cloudAPI->getDealCategories();
+
+            $defaultStages = $cloudAPI->getDealCategoryStages(0);
+            $pipelines     = [[
+                'id'           => 0,
+                'name'         => 'Основная воронка',
+                'stages'       => $defaultStages,
+                'stages_count' => count($defaultStages),
+            ]];
+
+            foreach ($categories as $cat) {
+                $stages      = $cloudAPI->getDealCategoryStages($cat['ID'] ?? 0);
+                $pipelines[] = [
+                    'id'           => (int)($cat['ID'] ?? 0),
+                    'name'         => $cat['NAME'] ?? '',
+                    'stages'       => $stages,
+                    'stages_count' => count($stages),
+                ];
+            }
+
+            $data['pipelines'] = [
+                'list'  => $pipelines,
+                'count' => count($pipelines),
+            ];
+        } catch (\Exception $e) {
+            $data['pipelines'] = ['error' => $e->getMessage(), 'count' => 0, 'list' => []];
+        }
+
+        // --- 7. CRM custom fields ---
+        try {
+            $fieldMethods = [
+                'deal'    => 'crm.deal.fields',
+                'contact' => 'crm.contact.fields',
+                'company' => 'crm.company.fields',
+                'lead'    => 'crm.lead.fields',
+            ];
+            $customFields = [];
+            foreach ($fieldMethods as $entity => $method) {
+                $fields = $cloudAPI->getFields($method);
+                $custom = array_filter($fields, static function ($key) {
+                    return strncmp($key, 'UF_', 3) === 0;
+                }, ARRAY_FILTER_USE_KEY);
+                $customFields[$entity] = array_map(static function ($f) {
+                    return [
+                        'title' => $f['formLabel'] ?? $f['title'] ?? '',
+                        'type'  => $f['type'] ?? '',
+                    ];
+                }, $custom);
+            }
+            $data['crm_custom_fields'] = $customFields;
+        } catch (\Exception $e) {
+            $data['crm_custom_fields'] = ['error' => $e->getMessage()];
+        }
+
+        // --- Save results ---
+        Option::set(self::MODULE_ID, 'dryrun_result_json',   json_encode($data, JSON_UNESCAPED_UNICODE));
+        Option::set(self::MODULE_ID, 'dryrun_status',        'completed');
+        Option::set(self::MODULE_ID, 'dryrun_completed_at',  (string)time());
+        Option::set(self::MODULE_ID, 'dryrun_error',         '');
 
         return $data;
+    }
+
+    /**
+     * Calculate maximum hierarchy depth for a flat list of departments.
+     */
+    private static function calcMaxDepth(array $departments): int
+    {
+        if (empty($departments)) {
+            return 0;
+        }
+
+        $idMap    = [];
+        foreach ($departments as $dept) {
+            $idMap[(string)$dept['ID']] = $dept;
+        }
+
+        $maxDepth = 0;
+        foreach ($departments as $dept) {
+            $depth   = 1;
+            $current = $dept;
+            $visited = [];
+            while (
+                !empty($current['PARENT'])
+                && isset($idMap[(string)$current['PARENT']])
+                && !in_array((string)$current['ID'], $visited, true)
+            ) {
+                $visited[] = (string)$current['ID'];
+                $current   = $idMap[(string)$current['PARENT']];
+                $depth++;
+            }
+            if ($depth > $maxDepth) {
+                $maxDepth = $depth;
+            }
+        }
+
+        return $maxDepth;
     }
 }

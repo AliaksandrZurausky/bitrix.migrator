@@ -210,4 +210,40 @@ class CloudAPI
     {
         return $this->fetchAll('tasks.task.list', ['select' => $select]);
     }
+
+    /**
+     * Get deal pipeline categories
+     */
+    public function getDealCategories()
+    {
+        $result = $this->request('crm.dealcategory.list');
+        $categories = $result['result']['categories'] ?? $result['result'] ?? [];
+        return is_array($categories) ? $categories : [];
+    }
+
+    /**
+     * Get stages for a deal pipeline category (id=0 for default)
+     */
+    public function getDealCategoryStages($categoryId)
+    {
+        $result = $this->request('crm.dealcategory.stages', ['id' => (int)$categoryId]);
+        return is_array($result['result']) ? $result['result'] : [];
+    }
+
+    /**
+     * Get CRM entity field schema (e.g. crm.deal.fields)
+     */
+    public function getFields($method)
+    {
+        $result = $this->request($method);
+        return is_array($result['result']) ? $result['result'] : [];
+    }
+
+    /**
+     * Get workgroups count
+     */
+    public function getWorkgroupsCount()
+    {
+        return $this->getCount('sonet_group.get');
+    }
 }
