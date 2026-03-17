@@ -164,13 +164,12 @@ class CloudAPI
     }
 
     /**
-     * Get users. Optionally filter by field values (e.g. ['ACTIVE' => 'Y']).
-     * Note: user.get does not support field selection — all fields are returned.
+     * Get all users (no API-side filter — filter active/inactive in PHP after).
+     * user.get returns all user fields; field selection is not supported.
      */
-    public function getUsers(array $filter = [])
+    public function getUsers()
     {
-        $params = empty($filter) ? [] : ['FILTER' => $filter];
-        return $this->fetchAll('user.get', $params);
+        return $this->fetchAll('user.get', []);
     }
 
     /**
@@ -226,13 +225,23 @@ class CloudAPI
     /**
      * Get stages for a deal pipeline category (id=0 for default)
      */
-    public function getDealCategoryStages($categoryId)
+    /**
+     * Fetch all deal-related statuses in one request and return them grouped by ENTITY_ID.
+     * Keys: 'DEAL_STAGE', 'DEAL_STAGE_Category1', 'DEAL_STAGE_Category2', …
+     */
+    public function getAllDealStagesGrouped(): array
     {
-        $entityId = $categoryId === 0 ? 'DEAL_STAGE' : 'DEAL_STAGE_Category' . (int)$categoryId;
-        $result   = $this->request('crm.status.list', [
-            'filter' => ['ENTITY_ID' => $entityId],
-        ]);
-        return is_array($result['result']) ? $result['result'] : [];
+        $all = $this->fetchAll('crm.status.list', []);
+
+        $grouped = [];
+        foreach ($all as $status) {
+            $entityId = $status['ENTITY_ID'] ?? '';
+            if ($entityId === 'DEAL_STAGE' || strncmp($entityId, 'DEAL_STAGE_Category', 19) === 0) {
+                $grouped[$entityId][] = $status;
+            }
+        }
+
+        return $grouped;
     }
 
     /**

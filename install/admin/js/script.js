@@ -173,7 +173,13 @@
         document.getElementById('users-new-count').textContent      = users.new_count          !== undefined ? users.new_count          : '—';
 
         // CRM
-        document.getElementById('crm-companies-count').textContent = crm.companies !== undefined ? crm.companies : '—';
+        var companiesVal = crm.companies_regular !== undefined ? crm.companies_regular : (crm.companies !== undefined ? crm.companies : '—');
+        document.getElementById('crm-companies-count').textContent = companiesVal;
+        if (crm.companies_my !== undefined && crm.companies_my > 0) {
+            var note = document.getElementById('crm-companies-my-note');
+            note.textContent = '(+ ' + crm.companies_my + ' Мои)';
+            note.style.display = 'inline';
+        }
         document.getElementById('crm-contacts-count').textContent  = crm.contacts  !== undefined ? crm.contacts  : '—';
         document.getElementById('crm-deals-count').textContent     = crm.deals     !== undefined ? crm.deals     : '—';
         document.getElementById('crm-leads-count').textContent     = crm.leads     !== undefined ? crm.leads     : '—';

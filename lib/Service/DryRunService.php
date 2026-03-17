@@ -56,20 +56,24 @@ class DryRunService
 
         // --- 2. Users ---
         try {
-            $cloudUsers  = $cloudAPI->getUsers(['ACTIVE' => 'Y']);
-            $activeUsers = array_values($cloudUsers);
+            $allCloudUsers = $cloudAPI->getUsers();
+            $activeUsers   = array_values(array_filter($allCloudUsers, static function ($u) {
+                return ($u['ACTIVE'] ?? '') === 'Y' || $u['ACTIVE'] === true;
+            }));
 
             $data['users'] = [
-                'cloud_count'        => count($cloudUsers),
+                'cloud_count'        => count($allCloudUsers),
                 'cloud_active_count' => count($activeUsers),
             ];
 
             if ($boxAPI) {
-                $boxUsers       = $boxAPI->getUsers(['ACTIVE' => 'Y']);
-                $boxActiveUsers = $boxUsers;
+                $allBoxUsers    = $boxAPI->getUsers();
+                $boxActiveUsers = array_filter($allBoxUsers, static function ($u) {
+                    return ($u['ACTIVE'] ?? '') === 'Y' || $u['ACTIVE'] === true;
+                });
                 $boxEmails = array_filter(array_map(static function ($u) {
                     return strtolower(trim($u['EMAIL'] ?? ''));
-                }, (array)$boxActiveUsers));
+                }, $boxActiveUsers));
 
                 $newUsers     = array_values(array_filter($activeUsers, static function ($u) use ($boxEmails) {
                     return !in_array(strtolower(trim($u['EMAIL'] ?? '')), $boxEmails, true);
@@ -78,8 +82,8 @@ class DryRunService
                     return in_array(strtolower(trim($u['EMAIL'] ?? '')), $boxEmails, true);
                 }));
 
-                $data['users']['box_count']        = count($boxUsers);
-                $data['users']['box_active_count']  = count((array)$boxActiveUsers);
+                $data['users']['box_count']        = count($allBoxUsers);
+                $data['users']['box_active_count']  = count($boxActiveUsers);
                 $data['users']['new_count']         = count($newUsers);
                 $data['users']['matched_count']     = count($matchedUsers);
                 $data['users']['new_list']          = $newUsers;
@@ -90,11 +94,16 @@ class DryRunService
 
         // --- 3. CRM counts ---
         try {
+            $companiesTotal   = $cloudAPI->getCount('crm.company.list');
+            // "My Company" system entries are included in the total; subtract them.
+            $myCompaniesCount = $cloudAPI->getCount('crm.company.list', ['filter' => ['IS_MY_COMPANY' => 'Y']]);
             $data['crm'] = [
-                'companies' => $cloudAPI->getCount('crm.company.list'),
-                'contacts'  => $cloudAPI->getCount('crm.contact.list'),
-                'deals'     => $cloudAPI->getCount('crm.deal.list'),
-                'leads'     => $cloudAPI->getCount('crm.lead.list'),
+                'companies'          => $companiesTotal,
+                'companies_my'       => $myCompaniesCount,
+                'companies_regular'  => max(0, $companiesTotal - $myCompaniesCount),
+                'contacts'           => $cloudAPI->getCount('crm.contact.list'),
+                'deals'              => $cloudAPI->getCount('crm.deal.list'),
+                'leads'              => $cloudAPI->getCount('crm.lead.list'),
             ];
         } catch (\Exception $e) {
             $data['crm'] = ['error' => $e->getMessage()];
@@ -115,10 +124,12 @@ class DryRunService
         }
 
         // --- 6. Deal pipelines + stages ---
+        // One crm.status.list call fetches all statuses; we group by ENTITY_ID in PHP.
         try {
-            $categories = $cloudAPI->getDealCategories();
+            $categories   = $cloudAPI->getDealCategories();
+            $stagesByKey  = $cloudAPI->getAllDealStagesGrouped();
 
-            $defaultStages = $cloudAPI->getDealCategoryStages(0);
+            $defaultStages = $stagesByKey['DEAL_STAGE'] ?? [];
             $pipelines     = [[
                 'id'           => 0,
                 'name'         => 'Основная воронка',
@@ -127,9 +138,11 @@ class DryRunService
             ]];
 
             foreach ($categories as $cat) {
-                $stages      = $cloudAPI->getDealCategoryStages($cat['ID'] ?? 0);
+                $catId       = (int)($cat['ID'] ?? 0);
+                $key         = 'DEAL_STAGE_Category' . $catId;
+                $stages      = $stagesByKey[$key] ?? [];
                 $pipelines[] = [
-                    'id'           => (int)($cat['ID'] ?? 0),
+                    'id'           => $catId,
                     'name'         => $cat['NAME'] ?? '',
                     'stages'       => $stages,
                     'stages_count' => count($stages),

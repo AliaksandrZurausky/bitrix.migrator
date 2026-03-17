@@ -207,7 +207,7 @@ $plan = $migrationPlan ? json_decode($migrationPlan, true) : [];
                         <div class="migrator-stats">
                             <div class="migrator-stat-card">
                                 <div class="migrator-stat-value" id="crm-companies-count">—</div>
-                                <div class="migrator-stat-label">Компаний</div>
+                                <div class="migrator-stat-label">Компаний <span id="crm-companies-my-note" style="display:none;font-size:11px;color:#999;"></span></div>
                             </div>
                             <div class="migrator-stat-card">
                                 <div class="migrator-stat-value" id="crm-contacts-count">—</div>
