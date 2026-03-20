@@ -356,9 +356,12 @@
         var section = el('div', { className: 'migrator-accordion' });
 
         var header = el('div', { className: 'migrator-accordion-header' });
-        var arrow  = el('span', { className: 'migrator-accordion-arrow' }, '\u25B6');
+        var arrow = null;
+        if (bodyBuilder) {
+            arrow = el('span', { className: 'migrator-accordion-arrow' }, '\u25B6');
+            header.appendChild(arrow);
+        }
         var titleEl = el('span', { className: 'migrator-accordion-title' }, title);
-        header.appendChild(arrow);
         header.appendChild(titleEl);
 
         // Badges
@@ -380,9 +383,8 @@
             section.appendChild(body);
 
             header.addEventListener('click', function() {
-                var isOpen = section.classList.contains('open');
                 section.classList.toggle('open');
-                arrow.textContent = isOpen ? '\u25B6' : '\u25BC';
+                arrow.textContent = section.classList.contains('open') ? '\u25BC' : '\u25B6';
             });
             header.style.cursor = 'pointer';
         }
