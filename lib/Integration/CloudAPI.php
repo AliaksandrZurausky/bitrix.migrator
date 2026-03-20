@@ -100,7 +100,7 @@ class CloudAPI
             $next = $result['next'] ?? null;
             
             if ($next !== null) {
-                usleep(320000); // 0.32s delay between requests
+                usleep(600000); // 0.6s delay between paginated requests (~1.6 req/s)
             }
         } while ($next !== null);
 
@@ -602,5 +602,433 @@ class CloudAPI
 
         $result = $this->request($method, ['ID' => (int)$id]);
         return $result['result'] ?? [];
+    }
+
+    // =========================================================================
+    // Department management
+    // =========================================================================
+
+    public function addDepartment($fields)
+    {
+        $result = $this->request('department.add', $fields);
+        return $result['result'] ?? null;
+    }
+
+    // =========================================================================
+    // User management
+    // =========================================================================
+
+    public function inviteUser($fields)
+    {
+        $result = $this->request('user.add', $fields);
+        return $result['result'] ?? null;
+    }
+
+    // =========================================================================
+    // CRM Company
+    // =========================================================================
+
+    public function getCompany($id)
+    {
+        $result = $this->request('crm.company.get', ['ID' => (int)$id]);
+        return $result['result'] ?? [];
+    }
+
+    public function addCompany($fields)
+    {
+        $result = $this->request('crm.company.add', ['fields' => $fields]);
+        return $result['result'] ?? null;
+    }
+
+    public function updateCompany($id, $fields)
+    {
+        return $this->request('crm.company.update', ['id' => (int)$id, 'fields' => $fields]);
+    }
+
+    public function findCompanyByField($field, $value)
+    {
+        $result = $this->request('crm.company.list', [
+            'filter' => [$field => $value],
+            'select' => ['ID', 'TITLE'],
+        ]);
+        $items = $result['result'] ?? [];
+        return !empty($items) ? $items[0] : null;
+    }
+
+    // =========================================================================
+    // CRM Contact
+    // =========================================================================
+
+    public function getContact($id)
+    {
+        $result = $this->request('crm.contact.get', ['ID' => (int)$id]);
+        return $result['result'] ?? [];
+    }
+
+    public function addContact($fields)
+    {
+        $result = $this->request('crm.contact.add', ['fields' => $fields]);
+        return $result['result'] ?? null;
+    }
+
+    public function updateContact($id, $fields)
+    {
+        return $this->request('crm.contact.update', ['id' => (int)$id, 'fields' => $fields]);
+    }
+
+    public function findContactByField($field, $value)
+    {
+        $result = $this->request('crm.contact.list', [
+            'filter' => [$field => $value],
+            'select' => ['ID', 'NAME', 'LAST_NAME'],
+        ]);
+        $items = $result['result'] ?? [];
+        return !empty($items) ? $items[0] : null;
+    }
+
+    // =========================================================================
+    // CRM Deal
+    // =========================================================================
+
+    public function getDeal($id)
+    {
+        $result = $this->request('crm.deal.get', ['ID' => (int)$id]);
+        return $result['result'] ?? [];
+    }
+
+    public function addDeal($fields)
+    {
+        $result = $this->request('crm.deal.add', ['fields' => $fields]);
+        return $result['result'] ?? null;
+    }
+
+    public function updateDeal($id, $fields)
+    {
+        return $this->request('crm.deal.update', ['id' => (int)$id, 'fields' => $fields]);
+    }
+
+    // =========================================================================
+    // CRM Lead
+    // =========================================================================
+
+    public function getLead($id)
+    {
+        $result = $this->request('crm.lead.get', ['ID' => (int)$id]);
+        return $result['result'] ?? [];
+    }
+
+    public function addLead($fields)
+    {
+        $result = $this->request('crm.lead.add', ['fields' => $fields]);
+        return $result['result'] ?? null;
+    }
+
+    public function updateLead($id, $fields)
+    {
+        return $this->request('crm.lead.update', ['id' => (int)$id, 'fields' => $fields]);
+    }
+
+    // =========================================================================
+    // CRM Deal Categories (Pipelines)
+    // =========================================================================
+
+    public function addDealCategory($fields)
+    {
+        $result = $this->request('crm.dealcategory.add', ['fields' => $fields]);
+        return $result['result'] ?? null;
+    }
+
+    public function getDealCategoryStages($categoryId)
+    {
+        $result = $this->request('crm.dealcategory.stage.list', ['id' => (int)$categoryId]);
+        return $result['result'] ?? [];
+    }
+
+    public function addDealCategoryStage($fields)
+    {
+        $result = $this->request('crm.status.add', ['fields' => $fields]);
+        return $result['result'] ?? null;
+    }
+
+    // =========================================================================
+    // CRM Status (stages)
+    // =========================================================================
+
+    public function getStatuses()
+    {
+        return $this->fetchAll('crm.status.list', []);
+    }
+
+    public function addStatus($fields)
+    {
+        $result = $this->request('crm.status.add', ['fields' => $fields]);
+        return $result['result'] ?? null;
+    }
+
+    // =========================================================================
+    // CRM Custom Fields (userfields)
+    // =========================================================================
+
+    public function addUserfield($entityType, $fields)
+    {
+        $methodMap = [
+            'deal'    => 'crm.deal.userfield.add',
+            'contact' => 'crm.contact.userfield.add',
+            'company' => 'crm.company.userfield.add',
+            'lead'    => 'crm.lead.userfield.add',
+        ];
+        $method = $methodMap[$entityType] ?? null;
+        if (!$method) throw new \Exception("Unknown entity type for userfield: $entityType");
+
+        $result = $this->request($method, ['fields' => $fields]);
+        return $result['result'] ?? null;
+    }
+
+    public function getUserfields($entityType)
+    {
+        $methodMap = [
+            'deal'    => 'crm.deal.userfield.list',
+            'contact' => 'crm.contact.userfield.list',
+            'company' => 'crm.company.userfield.list',
+            'lead'    => 'crm.lead.userfield.list',
+        ];
+        $method = $methodMap[$entityType] ?? null;
+        if (!$method) return [];
+
+        return $this->fetchAll($method, []);
+    }
+
+    // =========================================================================
+    // Workgroup (sonet_group) management
+    // =========================================================================
+
+    public function createWorkgroup($fields)
+    {
+        $result = $this->request('sonet_group.create', $fields);
+        return $result['result'] ?? null;
+    }
+
+    // =========================================================================
+    // Smart Processes
+    // =========================================================================
+
+    public function addSmartProcessType($fields)
+    {
+        $result = $this->request('crm.type.add', ['fields' => $fields]);
+        return $result['result']['type'] ?? $result['result'] ?? null;
+    }
+
+    public function getSmartProcessItems($entityTypeId, $select = ['*', 'uf_*'])
+    {
+        return $this->fetchAll('crm.item.list', [
+            'entityTypeId' => (int)$entityTypeId,
+            'select' => $select,
+        ]);
+    }
+
+    public function addSmartProcessItem($entityTypeId, $fields)
+    {
+        $result = $this->request('crm.item.add', [
+            'entityTypeId' => (int)$entityTypeId,
+            'fields' => $fields,
+        ]);
+        return $result['result']['item'] ?? $result['result'] ?? null;
+    }
+
+    // =========================================================================
+    // CRM Timeline / Activities
+    // =========================================================================
+
+    public function getActivities($entityTypeId, $entityId)
+    {
+        return $this->fetchAll('crm.activity.list', [
+            'filter' => [
+                'OWNER_TYPE_ID' => (int)$entityTypeId,
+                'OWNER_ID' => (int)$entityId,
+            ],
+            'select' => ['*'],
+        ]);
+    }
+
+    public function addActivity($fields)
+    {
+        $result = $this->request('crm.activity.add', ['fields' => $fields]);
+        return $result['result'] ?? null;
+    }
+
+    public function getTimelineComments($entityTypeId, $entityId)
+    {
+        return $this->fetchAll('crm.timeline.comment.list', [
+            'filter' => [
+                'ENTITY_TYPE_ID' => (int)$entityTypeId,
+                'ENTITY_ID' => (int)$entityId,
+            ],
+        ]);
+    }
+
+    public function addTimelineComment($fields)
+    {
+        $result = $this->request('crm.timeline.comment.add', ['fields' => $fields]);
+        return $result['result'] ?? null;
+    }
+
+    // =========================================================================
+    // CRM Contact-Company binding
+    // =========================================================================
+
+    public function getContactCompanyItems($contactId)
+    {
+        $result = $this->request('crm.contact.company.items.get', ['id' => (int)$contactId]);
+        return $result['result'] ?? [];
+    }
+
+    public function setContactCompanyItems($contactId, $items)
+    {
+        return $this->request('crm.contact.company.items.set', [
+            'id' => (int)$contactId,
+            'items' => $items,
+        ]);
+    }
+
+    // =========================================================================
+    // CRM Deal-Contact binding
+    // =========================================================================
+
+    public function getDealContactItems($dealId)
+    {
+        $result = $this->request('crm.deal.contact.items.get', ['id' => (int)$dealId]);
+        return $result['result'] ?? [];
+    }
+
+    public function setDealContactItems($dealId, $items)
+    {
+        return $this->request('crm.deal.contact.items.set', [
+            'id' => (int)$dealId,
+            'items' => $items,
+        ]);
+    }
+
+    // =========================================================================
+    // CRM Requisites (for duplicate detection by INN/UNP)
+    // =========================================================================
+
+    public function getRequisites($entityTypeId, $entityId)
+    {
+        return $this->fetchAll('crm.requisite.list', [
+            'filter' => [
+                'ENTITY_TYPE_ID' => (int)$entityTypeId,
+                'ENTITY_ID' => (int)$entityId,
+            ],
+        ]);
+    }
+
+    public function addRequisite($fields)
+    {
+        $result = $this->request('crm.requisite.add', ['fields' => $fields]);
+        return $result['result'] ?? null;
+    }
+
+    public function findRequisiteByInn($inn)
+    {
+        $result = $this->request('crm.requisite.list', [
+            'filter' => ['RQ_INN' => $inn],
+            'select' => ['ID', 'ENTITY_TYPE_ID', 'ENTITY_ID'],
+        ]);
+        $items = $result['result'] ?? [];
+        return !empty($items) ? $items[0] : null;
+    }
+
+    // =========================================================================
+    // CRM multifield (phone, email) helpers
+    // =========================================================================
+
+    public function findCompanyByPhone($phone)
+    {
+        $result = $this->request('crm.company.list', [
+            'filter' => ['PHONE' => $phone],
+            'select' => ['ID', 'TITLE'],
+        ]);
+        $items = $result['result'] ?? [];
+        return !empty($items) ? $items[0] : null;
+    }
+
+    public function findCompanyByEmail($email)
+    {
+        $result = $this->request('crm.company.list', [
+            'filter' => ['EMAIL' => $email],
+            'select' => ['ID', 'TITLE'],
+        ]);
+        $items = $result['result'] ?? [];
+        return !empty($items) ? $items[0] : null;
+    }
+
+    public function findContactByPhone($phone)
+    {
+        $result = $this->request('crm.contact.list', [
+            'filter' => ['PHONE' => $phone],
+            'select' => ['ID', 'NAME', 'LAST_NAME'],
+        ]);
+        $items = $result['result'] ?? [];
+        return !empty($items) ? $items[0] : null;
+    }
+
+    public function findContactByEmail($email)
+    {
+        $result = $this->request('crm.contact.list', [
+            'filter' => ['EMAIL' => $email],
+            'select' => ['ID', 'NAME', 'LAST_NAME'],
+        ]);
+        $items = $result['result'] ?? [];
+        return !empty($items) ? $items[0] : null;
+    }
+
+    public function findContactByName($name, $lastName)
+    {
+        $result = $this->request('crm.contact.list', [
+            'filter' => ['NAME' => $name, 'LAST_NAME' => $lastName],
+            'select' => ['ID', 'NAME', 'LAST_NAME'],
+        ]);
+        $items = $result['result'] ?? [];
+        return !empty($items) ? $items[0] : null;
+    }
+
+    public function findDealByTitle($title)
+    {
+        $result = $this->request('crm.deal.list', [
+            'filter' => ['TITLE' => $title],
+            'select' => ['ID', 'TITLE'],
+        ]);
+        $items = $result['result'] ?? [];
+        return !empty($items) ? $items[0] : null;
+    }
+
+    public function findLeadByTitle($title)
+    {
+        $result = $this->request('crm.lead.list', [
+            'filter' => ['TITLE' => $title],
+            'select' => ['ID', 'TITLE'],
+        ]);
+        $items = $result['result'] ?? [];
+        return !empty($items) ? $items[0] : null;
+    }
+
+    public function findLeadByPhone($phone)
+    {
+        $result = $this->request('crm.lead.list', [
+            'filter' => ['PHONE' => $phone],
+            'select' => ['ID', 'TITLE'],
+        ]);
+        $items = $result['result'] ?? [];
+        return !empty($items) ? $items[0] : null;
+    }
+
+    public function findLeadByEmail($email)
+    {
+        $result = $this->request('crm.lead.list', [
+            'filter' => ['EMAIL' => $email],
+            'select' => ['ID', 'TITLE'],
+        ]);
+        $items = $result['result'] ?? [];
+        return !empty($items) ? $items[0] : null;
     }
 }

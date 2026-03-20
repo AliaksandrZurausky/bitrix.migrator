@@ -7,13 +7,8 @@ require_once($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_be
 
 use Bitrix\Main\Config\Option;
 use Bitrix\Main\Loader;
-use BitrixMigrator\Integration\CloudAPI;
-use BitrixMigrator\Service\TaskMigrationService;
 
 header('Content-Type: application/json');
-
-set_time_limit(0);
-ignore_user_abort(true);
 
 if (!check_bitrix_sessid()) {
     echo json_encode(['success' => false, 'error' => 'Invalid sessid']);
@@ -47,32 +42,64 @@ if ($currentStatus === 'running') {
     die();
 }
 
-$cloudAPI = new CloudAPI($cloudWebhookUrl);
-$boxAPI   = new CloudAPI($boxWebhookUrl);
+$migrateType = $_POST['type'] ?? 'full';
 
-$planJson = Option::get($moduleId, 'migration_plan', '');
-$plan     = $planJson ? json_decode($planJson, true) : [];
+// Reset state
+Option::set($moduleId, 'migration_status', 'running');
+Option::set($moduleId, 'migration_message', 'Запуск миграции...');
+Option::set($moduleId, 'migration_stats', '{}');
+Option::set($moduleId, 'migration_log', '[]');
+Option::set($moduleId, 'migration_phases', '{}');
+Option::set($moduleId, 'migration_progress', '{}');
+Option::set($moduleId, 'migration_stop', '0');
+Option::set($moduleId, 'migration_pid', '');
 
-// Determine what to migrate
-$migrateType = $_POST['type'] ?? 'tasks';
+// Path to CLI worker — resolve from module directory, not from ajax copy
+$documentRoot = $_SERVER['DOCUMENT_ROOT'];
+$workerPath = $documentRoot . '/local/modules/bitrix_migrator/install/cli/migrate.php';
+$phpBinary = PHP_BINARY ?: '/usr/bin/php';
 
-// Send response immediately, continue in background
-echo json_encode(['success' => true, 'message' => 'Migration started']);
-
-if (function_exists('fastcgi_finish_request')) {
-    fastcgi_finish_request();
-} else {
-    ob_end_flush();
-    flush();
+if (!$workerPath || !file_exists($workerPath)) {
+    Option::set($moduleId, 'migration_status', 'error');
+    Option::set($moduleId, 'migration_message', 'CLI worker not found');
+    echo json_encode(['success' => false, 'error' => 'CLI worker not found at expected path']);
+    die();
 }
 
-// Run migration
-try {
-    if ($migrateType === 'tasks') {
-        $service = new TaskMigrationService($cloudAPI, $boxAPI, $plan);
-        $service->migrate();
-    }
-} catch (\Exception $e) {
-    Option::set($moduleId, 'migration_status', 'error');
-    Option::set($moduleId, 'migration_message', $e->getMessage());
+// Launch CLI process in background
+// Output goes to log file, nohup keeps it running after parent exits
+$logDir = $documentRoot . '/local/logs';
+if (!is_dir($logDir)) {
+    @mkdir($logDir, 0775, true);
+}
+$stdoutLog = $logDir . '/migrator_stdout_' . date('Y-m-d_H-i-s') . '.log';
+
+$command = 'nohup ' . escapeshellarg($phpBinary)
+    . ' ' . escapeshellarg($workerPath)
+    . ' ' . escapeshellarg($documentRoot)
+    . ' ' . escapeshellarg($migrateType)
+    . ' > ' . escapeshellarg($stdoutLog) . ' 2>&1 & echo $!';
+
+$pid = trim(shell_exec($command));
+
+if ($pid && is_numeric($pid)) {
+    Option::set($moduleId, 'migration_pid', $pid);
+    echo json_encode([
+        'success' => true,
+        'message' => 'Migration started in background',
+        'pid' => (int)$pid,
+    ]);
+} else {
+    // Fallback: try exec()
+    $command2 = escapeshellarg($phpBinary)
+        . ' ' . escapeshellarg($workerPath)
+        . ' ' . escapeshellarg($documentRoot)
+        . ' ' . escapeshellarg($migrateType)
+        . ' > ' . escapeshellarg($stdoutLog) . ' 2>&1 &';
+    exec($command2);
+
+    echo json_encode([
+        'success' => true,
+        'message' => 'Migration started (exec fallback)',
+    ]);
 }

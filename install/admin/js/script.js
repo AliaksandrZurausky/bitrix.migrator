@@ -3,8 +3,26 @@
 
     var dryRunData = null;
     var savedPlan  = null;
-
     var migrationPollTimer = null;
+
+    var PHASE_LABELS = {
+        departments: 'Подразделения',
+        users: 'Пользователи',
+        crm_fields: 'CRM поля',
+        pipelines: 'Воронки сделок',
+        companies: 'Компании',
+        contacts: 'Контакты',
+        deals: 'Сделки',
+        leads: 'Лиды',
+        timeline: 'Таймлайн и активности',
+        workgroups: 'Рабочие группы',
+        smart_processes: 'Смарт-процессы',
+        tasks: 'Задачи'
+    };
+
+    var PHASE_ORDER = ['departments', 'users', 'crm_fields', 'pipelines', 'companies', 'contacts', 'deals', 'leads', 'timeline', 'workgroups', 'smart_processes', 'tasks'];
+
+    var logsAutoRefreshTimer = null;
 
     document.addEventListener('DOMContentLoaded', function() {
         initTabs();
@@ -12,6 +30,7 @@
         loadDryRunResults();
         initPlanHandlers();
         initMigrationHandlers();
+        initLogsHandlers();
     });
 
     // =========================================================================
@@ -30,6 +49,7 @@
                 document.getElementById('tab-' + targetTab).classList.add('active');
 
                 if (targetTab === 'plan') loadPlan();
+                if (targetTab === 'logs') loadLogs();
             });
         });
     }
@@ -78,7 +98,7 @@
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 statusBlock.className = 'migrator-status migrator-status-' + (data.success ? 'success' : 'error');
-                statusText.textContent = data.success ? 'Подключение успешно установлено' : 'Ошибка: ' + (data.error || '');
+                statusText.textContent = data.success ? 'Подключение успешно' : 'Ошибка: ' + (data.error || '');
             })
             .catch(function() { statusBlock.className = 'migrator-status migrator-status-error'; statusText.textContent = 'Ошибка проверки'; });
     }
@@ -98,9 +118,9 @@
             .then(function(data) {
                 if (data.success) { loadDryRunResults(); document.querySelector('[data-tab="dryrun"]').click(); }
                 else alert('Ошибка: ' + (data.error || ''));
-                btn.disabled = false; btn.textContent = 'Запустить Dry Run';
+                btn.disabled = false; btn.textContent = 'Запустить анализ (Dry Run)';
             })
-            .catch(function() { alert('Ошибка запуска анализа'); btn.disabled = false; btn.textContent = 'Запустить Dry Run'; });
+            .catch(function() { alert('Ошибка запуска анализа'); btn.disabled = false; btn.textContent = 'Запустить анализ (Dry Run)'; });
     }
 
     function loadDryRunResults() {
@@ -133,12 +153,12 @@
         var crm = data.crm || {};
         var deptNameMap = users.dept_name_map || {};
 
-        // 1. Подразделения
+        // 1. Departments
         summary.appendChild(makeAccordion('Подразделения', val(depts.count), function(body) {
             depts.list && depts.list.length > 0 ? buildDepartmentTree(depts.list, body) : body.appendChild(el('p', { style: 'color:#999' }, 'Нет данных'));
         }));
 
-        // 2. Пользователи
+        // 2. Users
         var ub = [badge('В облаке', val(users.cloud_active_count), '#0080C8')];
         if (users.box_active_count !== undefined) ub.push(badge('В коробке', val(users.box_active_count), '#17a2b8'));
         if (users.matched_count !== undefined) ub.push(badge('Совпали', val(users.matched_count), '#28a745'));
@@ -192,7 +212,7 @@
             }
         }));
 
-        // 4. Воронки
+        // 4. Pipelines
         var pipelines = (data.pipelines || {}).list || [];
         summary.appendChild(makeAccordion('Воронки сделок', val((data.pipelines || {}).count) + ' воронок', function(body) {
             pipelines.forEach(function(p) {
@@ -210,10 +230,10 @@
             });
         }));
 
-        // 5. Задачи
+        // 5. Tasks
         summary.appendChild(makeAccordion('Задачи', val((data.tasks || {}).count), null));
 
-        // 6. Рабочие группы
+        // 6. Workgroups
         var wgList = (data.workgroups || {}).list || [];
         summary.appendChild(makeAccordion('Рабочие группы', val((data.workgroups || {}).count), wgList.length > 0 ? function(body) {
             var t = el('table', { className: 'migrator-table' });
@@ -223,7 +243,7 @@
             t.appendChild(tb); body.appendChild(t);
         } : null));
 
-        // 7. Смарт-процессы
+        // 7. Smart processes
         var sps = (data.smart_processes || {}).list || [];
         summary.appendChild(makeAccordion('Смарт-процессы', val((data.smart_processes || {}).count), sps.length > 0 ? function(body) {
             sps.forEach(function(sp) {
@@ -259,7 +279,6 @@
     }
 
     function loadPlan() {
-        // Load saved plan, then build UI using dryRunData
         fetch('/local/ajax/bitrix_migrator/get_plan.php')
             .then(function(r) { return r.json(); })
             .then(function(data) {
@@ -306,41 +325,40 @@
             if (plan.settings.conflict_resolution) document.getElementById('plan-conflict-resolution').value = plan.settings.conflict_resolution;
         }
 
-        // Duplicate detection config per CRM entity
         var DUPLICATE_CRITERIA = {
             companies: [
-                { value: 'TITLE',    label: 'Название компании' },
-                { value: 'RQ_INN',   label: 'УНП / ИНН' },
-                { value: 'PHONE',    label: 'Телефон' },
-                { value: 'EMAIL',    label: 'Email' },
+                { value: 'TITLE', label: 'Название компании' },
+                { value: 'RQ_INN', label: 'УНП / ИНН' },
+                { value: 'PHONE', label: 'Телефон' },
+                { value: 'EMAIL', label: 'Email' },
             ],
             contacts: [
-                { value: 'EMAIL',     label: 'Email' },
-                { value: 'PHONE',     label: 'Телефон' },
+                { value: 'EMAIL', label: 'Email' },
+                { value: 'PHONE', label: 'Телефон' },
                 { value: 'FULL_NAME', label: 'ФИО (Имя + Фамилия)' },
             ],
             deals: [
-                { value: 'TITLE',  label: 'Название сделки' },
+                { value: 'TITLE', label: 'Название сделки' },
             ],
             leads: [
-                { value: 'TITLE',  label: 'Название лида' },
-                { value: 'EMAIL',  label: 'Email' },
-                { value: 'PHONE',  label: 'Телефон' },
+                { value: 'TITLE', label: 'Название лида' },
+                { value: 'EMAIL', label: 'Email' },
+                { value: 'PHONE', label: 'Телефон' },
             ],
         };
 
         var DUPLICATE_ACTIONS = [
-            { value: 'skip',   label: 'Пропустить (не создавать)' },
+            { value: 'skip', label: 'Пропустить (не создавать)' },
             { value: 'update', label: 'Обновить существующий' },
             { value: 'create', label: 'Создать дубль' },
         ];
 
         var sections = [];
 
-        // 1. Подразделения
+        // 1. Departments
         sections.push(buildPlanSection('departments', 'Подразделения', depts.count || 0, plan.departments, null));
 
-        // 2. Пользователи
+        // 2. Users
         var newUsers = users.new_list || [];
         sections.push(buildPlanSection('users', 'Пользователи (новые к миграции)', newUsers.length, plan.users, function(body) {
             if (newUsers.length === 0) { body.appendChild(el('p', { style: 'color:#999' }, 'Нет новых пользователей')); return; }
@@ -363,17 +381,17 @@
             syncSelectAll(t);
         }));
 
-        // 3. Компании (с настройкой дублей)
+        // 3. Companies
         sections.push(buildPlanSection('companies', 'Компании', crm.companies_regular || crm.companies || 0, plan.companies, function(body) {
             buildDuplicateSettings(body, 'companies', plan, DUPLICATE_CRITERIA, DUPLICATE_ACTIONS);
         }));
 
-        // 4. Контакты (с настройкой дублей)
+        // 4. Contacts
         sections.push(buildPlanSection('contacts', 'Контакты', crm.contacts || 0, plan.contacts, function(body) {
             buildDuplicateSettings(body, 'contacts', plan, DUPLICATE_CRITERIA, DUPLICATE_ACTIONS);
         }));
 
-        // 5. Воронки (поштучно)
+        // 5. Pipelines
         sections.push(buildPlanSection('pipelines', 'Воронки сделок', pipelines.length, plan.pipelines, function(body) {
             if (pipelines.length === 0) { body.appendChild(el('p', { style: 'color:#999' }, 'Нет воронок')); return; }
             pipelines.forEach(function(p) {
@@ -390,33 +408,35 @@
             });
         }));
 
-        // 6. Сделки (с настройкой дублей)
+        // 6. Deals
         sections.push(buildPlanSection('deals', 'Сделки', crm.deals || 0, plan.deals, function(body) {
             buildDuplicateSettings(body, 'deals', plan, DUPLICATE_CRITERIA, DUPLICATE_ACTIONS);
         }));
 
-        // 7. Лиды (с настройкой дублей)
+        // 7. Leads
         sections.push(buildPlanSection('leads', 'Лиды', crm.leads || 0, plan.leads, function(body) {
             buildDuplicateSettings(body, 'leads', plan, DUPLICATE_CRITERIA, DUPLICATE_ACTIONS);
         }));
 
-        // 8. Задачи
+        // 8. Timeline
+        sections.push(buildPlanSection('timeline', 'Таймлайн и активности', null, plan.timeline, null));
+
+        // 9. Tasks
         sections.push(buildPlanSection('tasks', 'Задачи', (dryRunData.tasks || {}).count || 0, plan.tasks, null));
 
-        // 9. Рабочие группы (поштучно, с пометкой совпадений)
+        // 9. Workgroups
         var wgData = dryRunData.workgroups || {};
-        var wgAll = wgList;
         var wgMatchedNames = (wgData.matched_list || []).map(function(wg) { return wg.NAME.toLowerCase(); });
-        sections.push(buildPlanSection('workgroups', 'Рабочие группы', wgAll.length, plan.workgroups, function(body) {
-            if (wgAll.length === 0) { body.appendChild(el('p', { style: 'color:#999' }, 'Нет рабочих групп')); return; }
+        sections.push(buildPlanSection('workgroups', 'Рабочие группы', wgList.length, plan.workgroups, function(body) {
+            if (wgList.length === 0) { body.appendChild(el('p', { style: 'color:#999' }, 'Нет рабочих групп')); return; }
 
             if (wgData.matched_count > 0) {
                 var info = el('p', { style: 'margin-bottom:10px;font-size:13px;color:#666' });
-                info.innerHTML = 'Совпали по названию с коробкой: <strong>' + wgData.matched_count + '</strong> (будут использованы существующие). Новых: <strong>' + (wgData.new_count || 0) + '</strong>';
+                info.innerHTML = 'Совпали по названию с коробкой: <strong>' + wgData.matched_count + '</strong>. Новых: <strong>' + (wgData.new_count || 0) + '</strong>';
                 body.appendChild(info);
             }
 
-            wgAll.forEach(function(wg) {
+            wgList.forEach(function(wg) {
                 var wid = String(wg.ID);
                 var checked = isItemEnabled(plan, 'workgroups', wid);
                 var isMatched = wgMatchedNames.indexOf(wg.NAME.toLowerCase()) !== -1;
@@ -426,17 +446,15 @@
                 cb.setAttribute('data-plan-item', 'workgroups');
                 cb.setAttribute('data-item-id', wid);
                 row.appendChild(cb);
-                var lbl = el('span', {}, wg.NAME);
-                row.appendChild(lbl);
+                row.appendChild(el('span', {}, wg.NAME));
                 if (isMatched) {
-                    var tag = el('span', { className: 'migrator-badge', style: 'margin-left:8px;font-size:11px;border-color:#28a745;color:#28a745' }, 'есть в коробке');
-                    row.appendChild(tag);
+                    row.appendChild(badge('', 'есть в коробке', '#28a745'));
                 }
                 body.appendChild(row);
             });
         }));
 
-        // 10. Смарт-процессы (поштучно + поля)
+        // 10. Smart processes
         sections.push(buildPlanSection('smart_processes', 'Смарт-процессы', smartProcs.length, plan.smart_processes, function(body) {
             if (smartProcs.length === 0) { body.appendChild(el('p', { style: 'color:#999' }, 'Нет смарт-процессов')); return; }
             smartProcs.forEach(function(sp) {
@@ -480,7 +498,7 @@
             });
         }));
 
-        // 11. Пользовательские поля CRM (аккордеон на каждую сущность)
+        // 11. CRM custom fields
         var crmFields = dryRunData.crm_custom_fields || {};
         var crmLabels = { deal: 'Сделки', contact: 'Контакты', company: 'Компании', lead: 'Лиды' };
         var hasAnyFields = Object.keys(crmFields).some(function(e) { return crmFields[e] && Object.keys(crmFields[e]).length > 0; });
@@ -517,7 +535,7 @@
 
         sections.forEach(function(s) { builder.appendChild(s); });
 
-        // Wire select-all checkboxes
+        // Wire select-all
         builder.querySelectorAll('[data-plan-select-all]').forEach(function(sa) {
             sa.addEventListener('change', function() {
                 var group = sa.getAttribute('data-plan-select-all');
@@ -526,7 +544,6 @@
             });
         });
 
-        // Summary
         updatePlanSummary();
         builder.addEventListener('change', function() { updatePlanSummary(); });
     }
@@ -537,9 +554,8 @@
         if (criteria.length === 0) return;
 
         var wrapper = el('div', { className: 'migrator-duplicate-settings' });
-        wrapper.appendChild(el('div', { style: 'font-weight:bold;margin-bottom:8px;font-size:13px' }, 'Поиск дублей:'));
+        wrapper.appendChild(el('div', { style: 'font-weight:600;margin-bottom:8px;font-size:13px' }, 'Поиск дублей:'));
 
-        // Criteria checkboxes
         var critDiv = el('div', { style: 'margin-bottom:10px' });
         var savedMatchBy = saved.match_by || [criteria[0].value];
         criteria.forEach(function(c) {
@@ -555,7 +571,6 @@
         });
         wrapper.appendChild(critDiv);
 
-        // Action select
         var actionRow = el('div', { style: 'display:flex;align-items:center;gap:8px' });
         actionRow.appendChild(el('span', { style: 'font-size:13px' }, 'При найденном дубле:'));
         var sel = el('select', { className: 'migrator-input', style: 'width:auto;font-size:13px' });
@@ -579,7 +594,6 @@
 
         var header = el('div', { className: 'migrator-accordion-header' });
 
-        // Master checkbox
         var masterCb = el('input');
         masterCb.type = 'checkbox';
         masterCb.className = 'migrator-plan-master';
@@ -593,12 +607,10 @@
         header.appendChild(masterCb);
 
         if (bodyBuilder) {
-            var arrow = el('span', { className: 'migrator-accordion-arrow' }, '\u25B6');
-            header.appendChild(arrow);
+            header.appendChild(el('span', { className: 'migrator-accordion-arrow' }, '\u25B6'));
         }
 
-        var titleEl = el('span', { className: 'migrator-accordion-title' }, title);
-        header.appendChild(titleEl);
+        header.appendChild(el('span', { className: 'migrator-accordion-title' }, title));
 
         if (count !== null) {
             var badgeWrap = el('span', { className: 'migrator-accordion-badges' });
@@ -650,12 +662,10 @@
         var plan = {};
         var builder = document.getElementById('plan-builder');
 
-        // Sections with master checkboxes
         builder.querySelectorAll('[data-plan-master]').forEach(function(mc) {
             var key = mc.getAttribute('data-plan-master');
             plan[key] = { enabled: mc.checked };
 
-            // Collect excluded items
             var section = mc.closest('.migrator-plan-section');
             var items = section.querySelectorAll('[data-plan-item="' + key + '"]');
             if (items.length > 0) {
@@ -665,7 +675,7 @@
             }
         });
 
-        // Collect CRM custom fields
+        // CRM custom fields
         var crmFieldsCbs = builder.querySelectorAll('[data-plan-field="crm_custom_fields"]');
         if (crmFieldsCbs.length > 0) {
             plan.crm_custom_fields = plan.crm_custom_fields || { enabled: true };
@@ -681,7 +691,7 @@
             Object.keys(crmExcl).forEach(function(e) { plan.crm_custom_fields[e] = crmExcl[e]; });
         }
 
-        // Collect smart process fields
+        // Smart process fields
         var spFieldsCbs = builder.querySelectorAll('[data-plan-field="smart_process_fields"]');
         if (spFieldsCbs.length > 0) {
             if (!plan.smart_process_fields) plan.smart_process_fields = {};
@@ -695,10 +705,9 @@
             });
         }
 
-        // Duplicate settings per CRM entity
+        // Duplicate settings
         plan.duplicate_settings = {};
-        var dupEntities = ['companies', 'contacts', 'deals', 'leads'];
-        dupEntities.forEach(function(entityKey) {
+        ['companies', 'contacts', 'deals', 'leads'].forEach(function(entityKey) {
             var critCbs = builder.querySelectorAll('[data-dup-criteria="' + entityKey + '"]');
             var actionSel = builder.querySelector('[data-dup-action="' + entityKey + '"]');
             if (critCbs.length === 0) return;
@@ -711,7 +720,6 @@
             };
         });
 
-        // Settings
         plan.settings = {
             user_match_strategy: document.getElementById('plan-user-strategy').value,
             conflict_resolution: document.getElementById('plan-conflict-resolution').value
@@ -730,12 +738,12 @@
 
         var entityLabels = {
             departments: 'Подразделения', users: 'Пользователи', companies: 'Компании',
-            contacts: 'Контакты', pipelines: 'Воронки', leads: 'Лиды',
-            tasks: 'Задачи', workgroups: 'Рабочие группы', smart_processes: 'Смарт-процессы',
-            crm_custom_fields: 'Польз. поля CRM'
+            contacts: 'Контакты', pipelines: 'Воронки', deals: 'Сделки', leads: 'Лиды',
+            timeline: 'Таймлайн', tasks: 'Задачи', workgroups: 'Рабочие группы',
+            smart_processes: 'Смарт-процессы', crm_custom_fields: 'Польз. поля CRM'
         };
 
-        var order = ['departments', 'users', 'companies', 'contacts', 'pipelines', 'leads', 'tasks', 'workgroups', 'smart_processes', 'crm_custom_fields'];
+        var order = ['departments', 'users', 'companies', 'contacts', 'pipelines', 'deals', 'leads', 'timeline', 'tasks', 'workgroups', 'smart_processes', 'crm_custom_fields'];
         order.forEach(function(key) {
             if (!plan[key]) return;
             var enabled = plan[key].enabled !== false;
@@ -751,9 +759,6 @@
         var list = el('div', { className: 'migrator-plan-summary-list' });
         items.forEach(function(item) { list.appendChild(el('div', { className: 'migrator-plan-summary-item' }, item)); });
         summaryEl.appendChild(list);
-
-        var conflictLabel = plan.settings.conflict_resolution === 'update' ? 'обновлять' : 'пропускать';
-        summaryEl.appendChild(el('p', { style: 'margin-top:8px;color:#666;font-size:13px' }, 'Маппинг: по email | Конфликты: ' + conflictLabel));
     }
 
     function savePlan() {
@@ -768,12 +773,8 @@
         fetch('/local/ajax/bitrix_migrator/save_plan.php', { method: 'POST', body: fd })
             .then(function(r) { return r.json(); })
             .then(function(data) {
-                if (data.success) {
-                    savedPlan = plan;
-                    alert('План миграции сохранён');
-                } else {
-                    alert('Ошибка: ' + (data.error || ''));
-                }
+                if (data.success) { savedPlan = plan; alert('План миграции сохранён'); }
+                else alert('Ошибка: ' + (data.error || ''));
                 btn.disabled = false; btn.textContent = 'Сохранить план';
             })
             .catch(function() { alert('Ошибка сохранения плана'); btn.disabled = false; btn.textContent = 'Сохранить план'; });
@@ -783,40 +784,86 @@
     // Migration
     // =========================================================================
     function initMigrationHandlers() {
-        document.getElementById('btn-start-task-migration')?.addEventListener('click', startTaskMigration);
-        // Check if migration is already running
+        document.getElementById('btn-start-migration')?.addEventListener('click', startMigration);
+        document.getElementById('btn-stop-migration')?.addEventListener('click', stopMigration);
         checkMigrationStatus();
     }
 
-    function startTaskMigration() {
-        if (!confirm('Запустить миграцию задач из облака в коробку?')) return;
+    function startMigration() {
+        if (!confirm('Запустить полную миграцию данных из облака в коробку?')) return;
 
-        var btn = document.getElementById('btn-start-task-migration');
+        var btn = document.getElementById('btn-start-migration');
         btn.disabled = true; btn.textContent = 'Запуск...';
 
         var fd = new FormData();
         fd.append('sessid', window.BITRIX_MIGRATOR.sessid);
-        fd.append('type', 'tasks');
+        fd.append('type', 'full');
 
         fetch('/local/ajax/bitrix_migrator/start_migration.php', { method: 'POST', body: fd })
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 if (data.success) {
                     showMigrationProgress();
+                    showMigrationRunningUI();
                     startMigrationPolling();
                 } else {
                     alert('Ошибка: ' + (data.error || ''));
-                    btn.disabled = false; btn.textContent = 'Запустить миграцию задач';
+                    btn.disabled = false; btn.textContent = 'Запустить миграцию';
                 }
             })
             .catch(function() {
                 alert('Ошибка запуска миграции');
-                btn.disabled = false; btn.textContent = 'Запустить миграцию задач';
+                btn.disabled = false; btn.textContent = 'Запустить миграцию';
             });
+    }
+
+    function stopMigration() {
+        if (!confirm('Остановить миграцию? Процесс завершится после текущей операции.')) return;
+
+        var btn = document.getElementById('btn-stop-migration');
+        btn.disabled = true; btn.textContent = 'Остановка...';
+
+        var fd = new FormData();
+        fd.append('sessid', window.BITRIX_MIGRATOR.sessid);
+
+        fetch('/local/ajax/bitrix_migrator/stop_migration.php', { method: 'POST', body: fd })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (!data.success) {
+                    alert('Ошибка: ' + (data.error || ''));
+                    btn.disabled = false; btn.textContent = 'Остановить миграцию';
+                }
+                // Polling will handle the UI update
+            })
+            .catch(function() {
+                alert('Ошибка остановки');
+                btn.disabled = false; btn.textContent = 'Остановить миграцию';
+            });
+    }
+
+    function showMigrationRunningUI() {
+        var startBtn = document.getElementById('btn-start-migration');
+        var stopBtn = document.getElementById('btn-stop-migration');
+        startBtn.disabled = true;
+        startBtn.textContent = 'Миграция выполняется...';
+        stopBtn.style.display = 'inline-flex';
+        stopBtn.disabled = false;
+        stopBtn.textContent = 'Остановить миграцию';
+    }
+
+    function showMigrationIdleUI() {
+        var startBtn = document.getElementById('btn-start-migration');
+        var stopBtn = document.getElementById('btn-stop-migration');
+        var pidInfo = document.getElementById('migration-pid-info');
+        startBtn.disabled = false;
+        startBtn.textContent = 'Запустить миграцию';
+        stopBtn.style.display = 'none';
+        if (pidInfo) pidInfo.style.display = 'none';
     }
 
     function showMigrationProgress() {
         document.getElementById('migration-progress').style.display = 'block';
+        document.getElementById('migration-phases').style.display = 'block';
     }
 
     function startMigrationPolling() {
@@ -829,12 +876,18 @@
         fetch('/local/ajax/bitrix_migrator/get_migration_status.php')
             .then(function(r) { return r.json(); })
             .then(function(data) {
-                if (data.success && data.status === 'running') {
+                if (data.success && (data.status === 'running' || data.status === 'stopping')) {
                     showMigrationProgress();
+                    showMigrationRunningUI();
                     startMigrationPolling();
-                    document.getElementById('btn-start-task-migration').disabled = true;
-                    document.getElementById('btn-start-task-migration').textContent = 'Миграция выполняется...';
-                } else if (data.success && (data.status === 'completed' || data.status === 'error')) {
+                    if (data.pid > 0) {
+                        var pidInfo = document.getElementById('migration-pid-info');
+                        if (pidInfo) {
+                            pidInfo.style.display = 'inline';
+                            pidInfo.textContent = 'PID: ' + data.pid;
+                        }
+                    }
+                } else if (data.success && (data.status === 'completed' || data.status === 'error' || data.status === 'stopped')) {
                     if (data.log && data.log.length > 0) {
                         showMigrationProgress();
                         updateMigrationUI(data);
@@ -851,12 +904,19 @@
                 if (!data.success) return;
                 updateMigrationUI(data);
 
-                if (data.status === 'completed' || data.status === 'error') {
+                // Show PID
+                if (data.pid > 0) {
+                    var pidInfo = document.getElementById('migration-pid-info');
+                    if (pidInfo) {
+                        pidInfo.style.display = 'inline';
+                        pidInfo.textContent = 'PID: ' + data.pid;
+                    }
+                }
+
+                if (data.status === 'completed' || data.status === 'error' || data.status === 'stopped') {
                     clearInterval(migrationPollTimer);
                     migrationPollTimer = null;
-                    var btn = document.getElementById('btn-start-task-migration');
-                    btn.disabled = false;
-                    btn.textContent = 'Запустить миграцию задач';
+                    showMigrationIdleUI();
                 }
             })
             .catch(function() {});
@@ -865,13 +925,14 @@
     function updateMigrationUI(data) {
         var statusBadge = document.getElementById('migration-status-badge');
         var messageEl   = document.getElementById('migration-message');
+        var phaseLabel  = document.getElementById('migration-phase-label');
         var statsRow    = document.getElementById('migration-stats-row');
         var progressBar = document.getElementById('migration-progress-bar');
         var logEl       = document.getElementById('migration-log');
 
         // Status badge
-        var statusColors = { running: '#ffc107', completed: '#28a745', error: '#dc3545', idle: '#6c757d' };
-        var statusLabels = { running: 'Выполняется', completed: 'Завершено', error: 'Ошибка', idle: 'Ожидание' };
+        var statusColors = { running: '#ffc107', completed: '#28a745', error: '#dc3545', idle: '#6c757d', stopping: '#e67e22', stopped: '#e67e22' };
+        var statusLabels = { running: 'Выполняется', completed: 'Завершено', error: 'Ошибка', idle: 'Ожидание', stopping: 'Останавливается...', stopped: 'Остановлено' };
         var color = statusColors[data.status] || '#6c757d';
         statusBadge.style.borderColor = color;
         statusBadge.style.color = color;
@@ -879,6 +940,48 @@
 
         // Message
         messageEl.textContent = data.message || '';
+
+        // Phase label
+        if (phaseLabel) phaseLabel.textContent = data.message || '';
+
+        // Phase list
+        var phases = data.phases || {};
+        var progress = data.progress || {};
+        var phasesEl = document.getElementById('migration-phases');
+        if (phasesEl) {
+            phasesEl.innerHTML = '';
+            var phaseList = el('div', { className: 'migrator-phase-list' });
+
+            PHASE_ORDER.forEach(function(key) {
+                var st = phases[key] || 'pending';
+                var cls = 'migrator-phase-item';
+                var icon = '\u2022';
+
+                if (st === 'running') { cls += ' migrator-phase-item--active'; icon = '\u25B6'; }
+                else if (st === 'done') { cls += ' migrator-phase-item--done'; icon = '\u2714'; }
+                else if (st === 'error') { cls += ' migrator-phase-item--error'; icon = '\u2716'; }
+                else if (st === 'skipped') { icon = '\u2014'; }
+
+                var item = el('div', { className: cls });
+                item.appendChild(el('span', { className: 'migrator-phase-icon' }, icon));
+                item.appendChild(el('span', {}, PHASE_LABELS[key] || key));
+
+                // Show progress for running phase
+                if (st === 'running' && progress[key]) {
+                    var p = progress[key];
+                    var pctText = p.total > 0 ? Math.round((p.offset / p.total) * 100) + '%' : '';
+                    var progressText = p.offset + '/' + p.total;
+                    if (pctText) progressText += ' (' + pctText + ')';
+                    item.appendChild(el('span', { style: 'margin-left:auto;font-size:12px;color:#0080C8;font-weight:600' }, progressText));
+                } else if (st === 'skipped') {
+                    item.appendChild(el('span', { style: 'margin-left:auto;font-size:12px;color:#999' }, 'пропущено'));
+                }
+
+                phaseList.appendChild(item);
+            });
+
+            phasesEl.appendChild(phaseList);
+        }
 
         // Stats
         var stats = data.stats || {};
@@ -891,7 +994,14 @@
         }
 
         // Progress bar
-        var pct = stats.total > 0 ? Math.round(((stats.current || 0) / stats.total) * 100) : 0;
+        var donePhases = 0;
+        var totalPhases = PHASE_ORDER.length;
+        PHASE_ORDER.forEach(function(k) {
+            var s = phases[k] || 'pending';
+            if (s === 'done' || s === 'skipped') donePhases++;
+            else if (s === 'running') donePhases += 0.5;
+        });
+        var pct = totalPhases > 0 ? Math.round((donePhases / totalPhases) * 100) : 0;
         progressBar.style.width = pct + '%';
 
         // Log
@@ -902,15 +1012,56 @@
     }
 
     // =========================================================================
-    // Accordion builders (shared)
+    // Logs Tab
+    // =========================================================================
+    function initLogsHandlers() {
+        document.getElementById('btn-refresh-logs')?.addEventListener('click', loadLogs);
+        document.getElementById('logs-auto-refresh')?.addEventListener('change', function() {
+            if (this.checked) {
+                loadLogs();
+                logsAutoRefreshTimer = setInterval(loadLogs, 3000);
+            } else {
+                if (logsAutoRefreshTimer) { clearInterval(logsAutoRefreshTimer); logsAutoRefreshTimer = null; }
+            }
+        });
+    }
+
+    function loadLogs() {
+        fetch('/local/ajax/bitrix_migrator/get_migration_status.php')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (!data.success) return;
+
+                var emptyEl = document.getElementById('logs-empty');
+                var boxEl = document.getElementById('logs-box');
+                var filePathEl = document.getElementById('logs-file-path');
+
+                if (data.log && data.log.length > 0) {
+                    emptyEl.style.display = 'none';
+                    boxEl.style.display = 'block';
+                    boxEl.textContent = data.log.join('\n');
+                    boxEl.scrollTop = boxEl.scrollHeight;
+                } else {
+                    emptyEl.style.display = 'block';
+                    boxEl.style.display = 'none';
+                }
+
+                if (data.log_file && filePathEl) {
+                    filePathEl.textContent = 'Файл: ' + data.log_file;
+                }
+            })
+            .catch(function() {});
+    }
+
+    // =========================================================================
+    // Accordion builders
     // =========================================================================
     function makeAccordion(title, badgeContent, bodyBuilder) {
         var section = el('div', { className: 'migrator-accordion' });
         var header = el('div', { className: 'migrator-accordion-header' });
 
         if (bodyBuilder) {
-            var arrow = el('span', { className: 'migrator-accordion-arrow' }, '\u25B6');
-            header.appendChild(arrow);
+            header.appendChild(el('span', { className: 'migrator-accordion-arrow' }, '\u25B6'));
         }
         header.appendChild(el('span', { className: 'migrator-accordion-title' }, title));
 
@@ -996,7 +1147,7 @@
     }
 
     // =========================================================================
-    // New Users List (dry run)
+    // New Users List
     // =========================================================================
     function buildNewUsersList(users, deptNameMap, container) {
         var t = el('table', { className: 'migrator-table' });

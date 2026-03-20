@@ -9,8 +9,8 @@ class TaskMigrationService
 {
     const MODULE_ID = 'bitrix_migrator';
     const FOLDER_NAME = 'Миграция задач';
-    const BATCH_PAUSE_EVERY = 250;
-    const BATCH_PAUSE_SECONDS = 60;
+    const BATCH_PAUSE_EVERY = 100;
+    const BATCH_PAUSE_SECONDS = 10;
 
     private $cloudAPI;
     private $boxAPI;
@@ -25,6 +25,7 @@ class TaskMigrationService
     private $migrationFolderId = 0;
     private $counter           = 0;
     private $log               = [];
+    private $logFile           = null;
     private $stats             = [
         'total'     => 0,
         'migrated'  => 0,
@@ -38,6 +39,29 @@ class TaskMigrationService
         $this->cloudAPI = $cloudAPI;
         $this->boxAPI   = $boxAPI;
         $this->plan     = $plan;
+    }
+
+    public function setUserMapCache(array $cache)
+    {
+        $this->userMapCache = $cache;
+    }
+
+    public function setGroupMapCache(array $cache)
+    {
+        $this->groupMapCache = $cache;
+    }
+
+    public function setLogFile($path)
+    {
+        $this->logFile = $path;
+    }
+
+    private function checkStop()
+    {
+        $stop = Option::get(self::MODULE_ID, 'migration_stop', '0');
+        if ($stop === '1') {
+            throw new MigrationStoppedException('Остановлено пользователем');
+        }
     }
 
     /**
@@ -57,6 +81,7 @@ class TaskMigrationService
             $this->addLog('Кэш пользователей: ' . count($this->userMapCache) . ' маппингов');
 
             // 3. Fetch all task IDs from cloud
+            $this->checkStop();
             $this->saveStatus('running', 'Получение списка задач из облака...');
             $taskIds = $this->fetchAllTaskIds();
             $this->stats['total'] = count($taskIds);
@@ -70,11 +95,14 @@ class TaskMigrationService
             // 4. Migrate each task (first pass)
             $this->saveStatus('running', 'Миграция задач: 0/' . $this->stats['total']);
             foreach ($taskIds as $i => $cloudTaskId) {
+                $this->checkStop();
                 $this->stats['current'] = $i + 1;
 
                 try {
                     $this->migrateTask($cloudTaskId);
                     $this->stats['migrated']++;
+                } catch (MigrationStoppedException $e) {
+                    throw $e;
                 } catch (\Exception $e) {
                     $this->stats['errors']++;
                     $this->addLog('ОШИБКА задача #' . $cloudTaskId . ': ' . $e->getMessage());
@@ -89,12 +117,16 @@ class TaskMigrationService
             }
 
             // 5. Second pass: link parent tasks
+            $this->checkStop();
             $this->saveStatus('running', 'Создание связей между задачами...');
             $this->linkParentTasks();
 
             $this->saveStatus('completed', 'Миграция задач завершена');
             $this->addLog('Готово: ' . $this->stats['migrated'] . ' перенесено, ' . $this->stats['errors'] . ' ошибок');
 
+        } catch (MigrationStoppedException $e) {
+            $this->addLog('=== Миграция задач остановлена пользователем ===');
+            $this->saveStatus('stopped', 'Миграция задач остановлена');
         } catch (\Exception $e) {
             $this->saveStatus('error', $e->getMessage());
             $this->addLog('ФАТАЛЬНАЯ ОШИБКА: ' . $e->getMessage());
@@ -241,7 +273,7 @@ class TaskMigrationService
             }
         }
 
-        usleep(320000); // rate limit between tasks
+        usleep(600000); // rate limit between tasks
     }
 
     // =========================================================================
@@ -367,7 +399,7 @@ class TaskMigrationService
                     $this->addLog('  Файл "' . $fileName . '" → box ID ' . $boxFileId);
                 }
 
-                usleep(320000);
+                usleep(600000);
             } catch (\Exception $e) {
                 $this->addLog('  Файл #' . ($ref ?? '') . ': ' . $e->getMessage());
             }
@@ -428,7 +460,7 @@ class TaskMigrationService
                     $boxBindings[] = $entityType . '_' . $boxId;
                 }
 
-                usleep(320000);
+                usleep(600000);
             } catch (\Exception $e) {
                 $this->addLog('  CRM привязка ' . $binding . ': ' . $e->getMessage());
             }
@@ -505,7 +537,7 @@ class TaskMigrationService
                     }
 
                     $this->boxAPI->addTaskComment($boxTaskId, $fields);
-                    usleep(320000);
+                    usleep(600000);
                 } catch (\Exception $e) {
                     $this->addLog('  Комментарий #' . $commentId . ': ' . $e->getMessage());
                 }
@@ -538,7 +570,7 @@ class TaskMigrationService
                     $boxFileIds[] = 'n' . $boxFileId;
                 }
 
-                usleep(320000);
+                usleep(600000);
             } catch (\Exception $e) {
                 // non-critical
             }
@@ -586,7 +618,7 @@ class TaskMigrationService
                 try {
                     $this->boxAPI->updateTask($boxTaskId, ['PARENT_ID' => $boxParentId]);
                     $linked++;
-                    usleep(320000);
+                    usleep(600000);
                 } catch (\Exception $e) {
                     $this->addLog('Связь ' . $cloudTaskId . '→' . $cloudParentId . ': ' . $e->getMessage());
                 }
@@ -667,6 +699,8 @@ class TaskMigrationService
     private function rateLimitPause()
     {
         $this->counter++;
+        $this->checkStop();
+
         if ($this->counter >= self::BATCH_PAUSE_EVERY) {
             $this->counter = 0;
             $this->addLog('Пауза ' . self::BATCH_PAUSE_SECONDS . ' сек (rate limit)...');
@@ -680,11 +714,17 @@ class TaskMigrationService
 
     private function addLog($message)
     {
-        $this->log[] = date('H:i:s') . ' ' . $message;
+        $line = date('H:i:s') . ' ' . $message;
+        $this->log[] = $line;
 
         // Keep last 500 lines in option for UI
         $last = array_slice($this->log, -500);
         Option::set(self::MODULE_ID, 'migration_log', json_encode($last, JSON_UNESCAPED_UNICODE));
+
+        // File log
+        if ($this->logFile) {
+            @file_put_contents($this->logFile, date('Y-m-d ') . $line . "\n", FILE_APPEND);
+        }
     }
 
     private function saveStatus($status, $message)

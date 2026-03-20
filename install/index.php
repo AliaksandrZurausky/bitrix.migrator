@@ -94,10 +94,8 @@ class bitrix_migrator extends CModule
 
             if ($deleteData) {
                 $this->UninstallDB();
+                Option::delete($this->MODULE_ID);
             }
-
-
-            Option::delete($this->MODULE_ID);
             ModuleManager::unregisterModule($this->MODULE_ID);
 
 
