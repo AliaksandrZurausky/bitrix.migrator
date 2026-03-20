@@ -459,6 +459,38 @@
     border-radius: 4px;
 }
 
+/* Progress bar */
+.migrator-progress-bar-wrap {
+    width: 100%;
+    height: 20px;
+    background: #e9ecef;
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.migrator-progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, #0080C8, #28a745);
+    border-radius: 10px;
+    transition: width 0.3s;
+    min-width: 0;
+}
+
+/* Log box */
+.migrator-log-box {
+    max-height: 400px;
+    overflow-y: auto;
+    background: #1e1e1e;
+    color: #d4d4d4;
+    font-family: monospace;
+    font-size: 12px;
+    padding: 12px;
+    border-radius: 6px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
 /* Duplicate settings */
 .migrator-duplicate-settings {
     background: #f8f9fa;

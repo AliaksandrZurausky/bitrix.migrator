@@ -4,11 +4,14 @@
     var dryRunData = null;
     var savedPlan  = null;
 
+    var migrationPollTimer = null;
+
     document.addEventListener('DOMContentLoaded', function() {
         initTabs();
         initConnectionHandlers();
         loadDryRunResults();
         initPlanHandlers();
+        initMigrationHandlers();
     });
 
     // =========================================================================
@@ -774,6 +777,128 @@
                 btn.disabled = false; btn.textContent = 'Сохранить план';
             })
             .catch(function() { alert('Ошибка сохранения плана'); btn.disabled = false; btn.textContent = 'Сохранить план'; });
+    }
+
+    // =========================================================================
+    // Migration
+    // =========================================================================
+    function initMigrationHandlers() {
+        document.getElementById('btn-start-task-migration')?.addEventListener('click', startTaskMigration);
+        // Check if migration is already running
+        checkMigrationStatus();
+    }
+
+    function startTaskMigration() {
+        if (!confirm('Запустить миграцию задач из облака в коробку?')) return;
+
+        var btn = document.getElementById('btn-start-task-migration');
+        btn.disabled = true; btn.textContent = 'Запуск...';
+
+        var fd = new FormData();
+        fd.append('sessid', window.BITRIX_MIGRATOR.sessid);
+        fd.append('type', 'tasks');
+
+        fetch('/local/ajax/bitrix_migrator/start_migration.php', { method: 'POST', body: fd })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.success) {
+                    showMigrationProgress();
+                    startMigrationPolling();
+                } else {
+                    alert('Ошибка: ' + (data.error || ''));
+                    btn.disabled = false; btn.textContent = 'Запустить миграцию задач';
+                }
+            })
+            .catch(function() {
+                alert('Ошибка запуска миграции');
+                btn.disabled = false; btn.textContent = 'Запустить миграцию задач';
+            });
+    }
+
+    function showMigrationProgress() {
+        document.getElementById('migration-progress').style.display = 'block';
+    }
+
+    function startMigrationPolling() {
+        if (migrationPollTimer) clearInterval(migrationPollTimer);
+        migrationPollTimer = setInterval(pollMigrationStatus, 3000);
+        pollMigrationStatus();
+    }
+
+    function checkMigrationStatus() {
+        fetch('/local/ajax/bitrix_migrator/get_migration_status.php')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.success && data.status === 'running') {
+                    showMigrationProgress();
+                    startMigrationPolling();
+                    document.getElementById('btn-start-task-migration').disabled = true;
+                    document.getElementById('btn-start-task-migration').textContent = 'Миграция выполняется...';
+                } else if (data.success && (data.status === 'completed' || data.status === 'error')) {
+                    if (data.log && data.log.length > 0) {
+                        showMigrationProgress();
+                        updateMigrationUI(data);
+                    }
+                }
+            })
+            .catch(function() {});
+    }
+
+    function pollMigrationStatus() {
+        fetch('/local/ajax/bitrix_migrator/get_migration_status.php')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (!data.success) return;
+                updateMigrationUI(data);
+
+                if (data.status === 'completed' || data.status === 'error') {
+                    clearInterval(migrationPollTimer);
+                    migrationPollTimer = null;
+                    var btn = document.getElementById('btn-start-task-migration');
+                    btn.disabled = false;
+                    btn.textContent = 'Запустить миграцию задач';
+                }
+            })
+            .catch(function() {});
+    }
+
+    function updateMigrationUI(data) {
+        var statusBadge = document.getElementById('migration-status-badge');
+        var messageEl   = document.getElementById('migration-message');
+        var statsRow    = document.getElementById('migration-stats-row');
+        var progressBar = document.getElementById('migration-progress-bar');
+        var logEl       = document.getElementById('migration-log');
+
+        // Status badge
+        var statusColors = { running: '#ffc107', completed: '#28a745', error: '#dc3545', idle: '#6c757d' };
+        var statusLabels = { running: 'Выполняется', completed: 'Завершено', error: 'Ошибка', idle: 'Ожидание' };
+        var color = statusColors[data.status] || '#6c757d';
+        statusBadge.style.borderColor = color;
+        statusBadge.style.color = color;
+        statusBadge.textContent = statusLabels[data.status] || data.status;
+
+        // Message
+        messageEl.textContent = data.message || '';
+
+        // Stats
+        var stats = data.stats || {};
+        statsRow.innerHTML = '';
+        if (stats.total > 0) {
+            statsRow.appendChild(statCard(String(stats.total), 'Всего'));
+            statsRow.appendChild(statCard(String(stats.migrated || 0), 'Перенесено', 'success'));
+            statsRow.appendChild(statCard(String(stats.errors || 0), 'Ошибок', stats.errors > 0 ? 'warning' : undefined));
+            statsRow.appendChild(statCard(String(stats.current || 0), 'Текущая'));
+        }
+
+        // Progress bar
+        var pct = stats.total > 0 ? Math.round(((stats.current || 0) / stats.total) * 100) : 0;
+        progressBar.style.width = pct + '%';
+
+        // Log
+        if (data.log && data.log.length > 0) {
+            logEl.textContent = data.log.join('\n');
+            logEl.scrollTop = logEl.scrollHeight;
+        }
     }
 
     // =========================================================================

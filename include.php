@@ -12,6 +12,7 @@ Loader::registerAutoloadClasses(
         'BitrixMigrator\\Service\\MapService' => 'lib/Service/MapService.php',
         'BitrixMigrator\\Service\\LogService' => 'lib/Service/LogService.php',
         'BitrixMigrator\\Service\\DryRunService' => 'lib/Service/DryRunService.php',
+        'BitrixMigrator\\Service\\TaskMigrationService' => 'lib/Service/TaskMigrationService.php',
         'BitrixMigrator\\Integration\\CloudAPI' => 'lib/Integration/CloudAPI.php',
         'BitrixMigrator\\EventHandlers' => 'lib/EventHandlers.php',
         'Bitrix\\Migrator\\Controller\\Migrator' => 'lib/Controller/Migrator.php',

@@ -317,4 +317,290 @@ class CloudAPI
     {
         return $this->getCount('crm.item.list', ['entityTypeId' => (int)$entityTypeId]);
     }
+
+    // =========================================================================
+    // Task migration helpers
+    // =========================================================================
+
+    /**
+     * Get single task by ID with all fields
+     */
+    public function getTask($taskId)
+    {
+        $result = $this->request('tasks.task.get', ['taskId' => (int)$taskId, 'select' => ['*', 'UF_*']]);
+        return $result['result']['task'] ?? [];
+    }
+
+    /**
+     * Create a task
+     */
+    public function createTask($fields)
+    {
+        $result = $this->request('tasks.task.add', ['fields' => $fields]);
+        return $result['result']['task'] ?? $result['result'] ?? [];
+    }
+
+    /**
+     * Update task fields
+     */
+    public function updateTask($taskId, $fields)
+    {
+        return $this->request('tasks.task.update', ['taskId' => (int)$taskId, 'fields' => $fields]);
+    }
+
+    /**
+     * Complete a task
+     */
+    public function completeTask($taskId)
+    {
+        return $this->request('tasks.task.complete', ['taskId' => (int)$taskId]);
+    }
+
+    /**
+     * Defer a task
+     */
+    public function deferTask($taskId)
+    {
+        return $this->request('tasks.task.defer', ['taskId' => (int)$taskId]);
+    }
+
+    /**
+     * Get task checklist items
+     */
+    public function getTaskChecklists($taskId)
+    {
+        $result = $this->request('task.checklistitem.getlist', ['TASKID' => (int)$taskId]);
+        return $result['result'] ?? [];
+    }
+
+    /**
+     * Add task checklist item
+     */
+    public function addTaskChecklistItem($taskId, $fields)
+    {
+        return $this->request('task.checklistitem.add', ['TASKID' => (int)$taskId, 'FIELDS' => $fields]);
+    }
+
+    /**
+     * Get task comment list (IDs)
+     */
+    public function getTaskComments($taskId)
+    {
+        $result = $this->request('task.commentitem.getlist', ['TASKID' => (int)$taskId]);
+        return $result['result'] ?? [];
+    }
+
+    /**
+     * Get single task comment
+     */
+    public function getTaskComment($taskId, $commentId)
+    {
+        $result = $this->request('task.commentitem.get', ['TASKID' => (int)$taskId, 'ITEMID' => (int)$commentId]);
+        return $result['result'] ?? [];
+    }
+
+    /**
+     * Add task comment
+     */
+    public function addTaskComment($taskId, $fields)
+    {
+        return $this->request('task.commentitem.add', ['TASKID' => (int)$taskId, 'FIELDS' => $fields]);
+    }
+
+    /**
+     * Get disk attached object info (download URL, name, etc.)
+     */
+    public function getAttachedObject($id)
+    {
+        $result = $this->request('disk.attachedObject.get', ['id' => (int)$id]);
+        return $result['result'] ?? [];
+    }
+
+    /**
+     * Get disk file info
+     */
+    public function getDiskFile($id)
+    {
+        $result = $this->request('disk.file.get', ['id' => (int)$id]);
+        return $result['result'] ?? [];
+    }
+
+    /**
+     * Download file by URL (returns binary content)
+     */
+    public function downloadFile($url)
+    {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_TIMEOUT        => 120,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => false,
+        ]);
+        $content = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        if ($error || $httpCode !== 200) {
+            throw new \Exception('File download error: ' . ($error ?: 'HTTP ' . $httpCode));
+        }
+
+        return $content;
+    }
+
+    /**
+     * Get list of disk storages
+     */
+    public function getStorages()
+    {
+        return $this->fetchAll('disk.storage.getlist', []);
+    }
+
+    /**
+     * Get folder children (files and subfolders)
+     */
+    public function getFolderChildren($folderId)
+    {
+        return $this->fetchAll('disk.folder.getchildren', ['id' => (int)$folderId]);
+    }
+
+    /**
+     * Create subfolder inside a folder
+     */
+    public function createSubfolder($folderId, $name)
+    {
+        $result = $this->request('disk.folder.addsubfolder', [
+            'id'   => (int)$folderId,
+            'data' => ['NAME' => $name],
+        ]);
+        return $result['result'] ?? [];
+    }
+
+    /**
+     * Upload file to a disk folder (multipart/form-data)
+     */
+    public function uploadFileToFolder($folderId, $filename, $fileContent)
+    {
+        $url = $this->webhookUrl . '/disk.folder.uploadfile.json';
+
+        $boundary = '----MigratorBoundary' . uniqid();
+        $body  = '--' . $boundary . "\r\n";
+        $body .= "Content-Disposition: form-data; name=\"id\"\r\n\r\n" . (int)$folderId . "\r\n";
+        $body .= '--' . $boundary . "\r\n";
+        $body .= "Content-Disposition: form-data; name=\"data[NAME]\"\r\n\r\n" . $filename . "\r\n";
+        $body .= '--' . $boundary . "\r\n";
+        $body .= "Content-Disposition: form-data; name=\"fileContent\"; filename=\"" . $filename . "\"\r\n";
+        $body .= "Content-Type: application/octet-stream\r\n\r\n";
+        $body .= $fileContent . "\r\n";
+        $body .= '--' . $boundary . "--\r\n";
+
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_POST           => true,
+            CURLOPT_HTTPHEADER     => ['Content-Type: multipart/form-data; boundary=' . $boundary],
+            CURLOPT_POSTFIELDS     => $body,
+            CURLOPT_TIMEOUT        => 120,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => false,
+        ]);
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        if ($error) {
+            throw new \Exception('Upload cURL error: ' . $error);
+        }
+        if ($httpCode !== 200) {
+            throw new \Exception('Upload HTTP error: ' . $httpCode);
+        }
+
+        $data = json_decode($response, true);
+        if (!is_array($data)) {
+            throw new \Exception('Upload: bad JSON response');
+        }
+        if (isset($data['error'])) {
+            throw new \Exception($data['error_description'] ?? $data['error']);
+        }
+
+        return $data['result'] ?? [];
+    }
+
+    /**
+     * Find user by email on this portal
+     */
+    public function getUserByEmail($email)
+    {
+        $result = $this->request('user.get', ['filter' => ['EMAIL' => $email]]);
+        $users = $result['result'] ?? [];
+        return !empty($users) ? $users[0] : null;
+    }
+
+    /**
+     * Find workgroup by name
+     */
+    public function getGroupByName($name)
+    {
+        // sonet_group.get doesn't support reliable filtering, fetch all and search
+        $groups = $this->getWorkgroups();
+        foreach ($groups as $g) {
+            if (mb_strtolower(trim($g['NAME'] ?? '')) === mb_strtolower(trim($name))) {
+                return $g;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Find CRM entity on box by title/name
+     */
+    public function findCrmEntityByTitle($entityType, $title)
+    {
+        $methodMap = [
+            'C'  => ['crm.company.list', 'TITLE'],
+            'D'  => ['crm.deal.list',    'TITLE'],
+            'L'  => ['crm.lead.list',    'TITLE'],
+            'CO' => ['crm.contact.list',  null],
+        ];
+
+        $config = $methodMap[$entityType] ?? null;
+        if (!$config) return null;
+
+        $method    = $config[0];
+        $titleField = $config[1];
+
+        if ($entityType === 'CO') {
+            // Contacts don't have TITLE, search by NAME + LAST_NAME is complex
+            // Try searching with a generic approach
+            $result = $this->request($method, ['filter' => ['%NAME' => $title], 'select' => ['ID', 'NAME', 'LAST_NAME']]);
+        } else {
+            $result = $this->request($method, ['filter' => [$titleField => $title], 'select' => ['ID', $titleField]]);
+        }
+
+        $items = $result['result'] ?? [];
+        return !empty($items) ? $items[0] : null;
+    }
+
+    /**
+     * Get single CRM entity by type and ID
+     */
+    public function getCrmEntity($entityType, $id)
+    {
+        $methodMap = [
+            'C'  => 'crm.company.get',
+            'D'  => 'crm.deal.get',
+            'L'  => 'crm.lead.get',
+            'CO' => 'crm.contact.get',
+        ];
+
+        $method = $methodMap[$entityType] ?? null;
+        if (!$method) return null;
+
+        $result = $this->request($method, ['ID' => (int)$id]);
+        return $result['result'] ?? [];
+    }
 }

@@ -213,7 +213,33 @@ $plan = $migrationPlan ? json_decode($migrationPlan, true) : [];
     <div id="tab-migration" class="migrator-tab-content">
         <div class="adm-detail-content">
             <h2><?= Loc::getMessage('BITRIX_MIGRATOR_MIGRATION_TITLE') ?></h2>
-            <p><?= Loc::getMessage('BITRIX_MIGRATOR_MIGRATION_INFO') ?></p>
+            <p>Запуск миграции данных из облака в коробку на основе сохранённого плана.</p>
+
+            <div id="migration-controls" style="margin-top:20px;">
+                <button type="button" id="btn-start-task-migration" class="adm-btn-save">
+                    Запустить миграцию задач
+                </button>
+            </div>
+
+            <div id="migration-progress" style="display:none; margin-top:20px;">
+                <div class="migrator-accordion open">
+                    <div class="migrator-accordion-header">
+                        <span class="migrator-accordion-title">Прогресс миграции</span>
+                        <span class="migrator-accordion-badges">
+                            <span class="migrator-badge" id="migration-status-badge" style="border-color:#ffc107;color:#856404;">idle</span>
+                        </span>
+                    </div>
+                    <div class="migrator-accordion-body" style="display:block;">
+                        <div id="migration-message" style="margin-bottom:12px;font-size:14px;"></div>
+                        <div id="migration-stats-row" class="migrator-stats" style="margin-bottom:12px;"></div>
+                        <div class="migrator-progress-bar-wrap" style="margin-bottom:16px;">
+                            <div class="migrator-progress-bar" id="migration-progress-bar" style="width:0%"></div>
+                        </div>
+                        <div style="font-weight:bold;margin-bottom:6px;">Лог:</div>
+                        <div id="migration-log" class="migrator-log-box"></div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
