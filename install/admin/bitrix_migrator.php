@@ -160,122 +160,7 @@ $plan = $migrationPlan ? json_decode($migrationPlan, true) : [];
                     <p><?= Loc::getMessage('BITRIX_MIGRATOR_DRYRUN_NO_RESULTS') ?></p>
                 </div>
 
-                <div id="dryrun-summary" style="display:none;">
-                    <h3><?= Loc::getMessage('BITRIX_MIGRATOR_DRYRUN_RESULTS_TITLE') ?></h3>
-
-                    <!-- Structure -->
-                    <div class="migrator-stat-group">
-                        <div class="migrator-stat-group-title">Структура</div>
-                        <div class="migrator-stats">
-                            <div class="migrator-stat-card">
-                                <div class="migrator-stat-value" id="departments-count">—</div>
-                                <div class="migrator-stat-label">Подразделений</div>
-                            </div>
-                            <div class="migrator-stat-card">
-                                <div class="migrator-stat-value" id="workgroups-count">—</div>
-                                <div class="migrator-stat-label">Рабочих групп</div>
-                            </div>
-                            <div class="migrator-stat-card">
-                                <div class="migrator-stat-value" id="pipelines-count">—</div>
-                                <div class="migrator-stat-label">Воронок сделок</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Users -->
-                    <div class="migrator-stat-group">
-                        <div class="migrator-stat-group-title">Пользователи</div>
-                        <div class="migrator-stats">
-                            <div class="migrator-stat-card">
-                                <div class="migrator-stat-value" id="users-cloud-count">—</div>
-                                <div class="migrator-stat-label">Активных в облаке</div>
-                            </div>
-                            <div class="migrator-stat-card migrator-stat-card--success">
-                                <div class="migrator-stat-value" id="users-matched-count">—</div>
-                                <div class="migrator-stat-label">Найдено в коробке</div>
-                            </div>
-                            <div class="migrator-stat-card migrator-stat-card--warning">
-                                <div class="migrator-stat-value" id="users-new-count">—</div>
-                                <div class="migrator-stat-label">Новых к миграции</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- CRM -->
-                    <div class="migrator-stat-group">
-                        <div class="migrator-stat-group-title">CRM</div>
-                        <div class="migrator-stats">
-                            <div class="migrator-stat-card">
-                                <div class="migrator-stat-value" id="crm-companies-count">—</div>
-                                <div class="migrator-stat-label">Компаний <span id="crm-companies-my-note" style="display:none;font-size:11px;color:#999;"></span></div>
-                            </div>
-                            <div class="migrator-stat-card">
-                                <div class="migrator-stat-value" id="crm-contacts-count">—</div>
-                                <div class="migrator-stat-label">Контактов</div>
-                            </div>
-                            <div class="migrator-stat-card">
-                                <div class="migrator-stat-value" id="crm-deals-count">—</div>
-                                <div class="migrator-stat-label">Сделок</div>
-                            </div>
-                            <div class="migrator-stat-card">
-                                <div class="migrator-stat-value" id="crm-leads-count">—</div>
-                                <div class="migrator-stat-label">Лидов</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Tasks -->
-                    <div class="migrator-stat-group">
-                        <div class="migrator-stat-group-title">Задачи и смарт-процессы</div>
-                        <div class="migrator-stats">
-                            <div class="migrator-stat-card">
-                                <div class="migrator-stat-value" id="tasks-count">—</div>
-                                <div class="migrator-stat-label">Задач</div>
-                            </div>
-                            <div class="migrator-stat-card">
-                                <div class="migrator-stat-value" id="smart-processes-count">—</div>
-                                <div class="migrator-stat-label">Смарт-процессов</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Actions -->
-                    <div style="margin: 24px 0 8px;">
-                        <button type="button" id="btn-show-structure" class="adm-btn">
-                            <?= Loc::getMessage('BITRIX_MIGRATOR_BTN_SHOW_STRUCTURE') ?>
-                        </button>
-                    </div>
-
-                    <!-- Department Tree (inline) -->
-                    <div id="department-tree-container" style="display:none; margin-top:20px;">
-                        <h4>Структура подразделений:</h4>
-                        <div id="department-tree"></div>
-                    </div>
-
-                    <!-- New Users List -->
-                    <div id="new-users-container" style="display:none; margin-top:20px;">
-                        <h4>Новые пользователи (будут созданы при миграции):</h4>
-                        <div id="new-users-list"></div>
-                    </div>
-
-                    <!-- Pipelines List -->
-                    <div id="pipelines-container" style="display:none; margin-top:20px;">
-                        <h4>Воронки сделок:</h4>
-                        <div id="pipelines-list"></div>
-                    </div>
-
-                    <!-- CRM Custom Fields -->
-                    <div id="crm-fields-container" style="display:none; margin-top:20px;">
-                        <h4>Пользовательские поля CRM:</h4>
-                        <div id="crm-fields-list"></div>
-                    </div>
-
-                    <!-- Smart Processes -->
-                    <div id="smart-processes-container" style="display:none; margin-top:20px;">
-                        <h4>Смарт-процессы:</h4>
-                        <div id="smart-processes-list"></div>
-                    </div>
-                </div>
+                <div id="dryrun-summary" style="display:none;"></div>
             </div>
         </div>
     </div>
@@ -301,20 +186,6 @@ $plan = $migrationPlan ? json_decode($migrationPlan, true) : [];
         <div class="adm-detail-content">
             <h2><?= Loc::getMessage('BITRIX_MIGRATOR_LOGS_TITLE') ?></h2>
             <p><?= Loc::getMessage('BITRIX_MIGRATOR_LOGS_INFO') ?></p>
-        </div>
-    </div>
-</div>
-
-<!-- Structure Slider -->
-<div id="structure-slider" class="migrator-slider">
-    <div class="migrator-slider-overlay"></div>
-    <div class="migrator-slider-content">
-        <div class="migrator-slider-header">
-            <h3><?= Loc::getMessage('BITRIX_MIGRATOR_SLIDER_STRUCTURE_TITLE') ?></h3>
-            <button type="button" class="migrator-slider-close">&times;</button>
-        </div>
-        <div class="migrator-slider-body">
-            <div id="slider-department-tree"></div>
         </div>
     </div>
 </div>

@@ -88,6 +88,15 @@ class DryRunService
                 $data['users']['matched_count']     = count($matchedUsers);
                 $data['users']['new_list']          = $newUsers;
             }
+
+            // Build department name map for UI
+            if (!empty($data['departments']['list'])) {
+                $deptNameMap = [];
+                foreach ($data['departments']['list'] as $dept) {
+                    $deptNameMap[(string)$dept['ID']] = $dept['NAME'] ?? '';
+                }
+                $data['users']['dept_name_map'] = $deptNameMap;
+            }
         } catch (\Exception $e) {
             $data['users'] = ['error' => $e->getMessage(), 'cloud_count' => 0, 'cloud_active_count' => 0];
         }
@@ -130,9 +139,19 @@ class DryRunService
             $stagesByKey  = $cloudAPI->getAllDealStagesGrouped();
 
             $defaultStages = $stagesByKey['DEAL_STAGE'] ?? [];
+
+            // Get default pipeline name from API
+            $defaultName = 'Общая';
+            try {
+                $defaultCat = $cloudAPI->getDealCategoryById(0);
+                if (!empty($defaultCat['NAME'])) {
+                    $defaultName = $defaultCat['NAME'];
+                }
+            } catch (\Exception $e) {}
+
             $pipelines     = [[
                 'id'           => 0,
-                'name'         => 'Основная воронка',
+                'name'         => $defaultName,
                 'stages'       => $defaultStages,
                 'stages_count' => count($defaultStages),
             ]];
@@ -197,11 +216,31 @@ class DryRunService
                         // count not critical
                     }
                 }
+                // Fetch custom fields for this smart process
+                $spCustomFields = [];
+                if ($entityTypeId > 0) {
+                    try {
+                        $allSpFields = $cloudAPI->getSmartProcessFields($entityTypeId);
+                        $customOnly = array_filter($allSpFields, static function ($key) {
+                            return strncmp($key, 'uf', 2) === 0 || strncmp($key, 'UF_', 3) === 0;
+                        }, ARRAY_FILTER_USE_KEY);
+                        $spCustomFields = array_map(static function ($f) {
+                            return [
+                                'title' => $f['formLabel'] ?? $f['title'] ?? '',
+                                'type'  => $f['type'] ?? '',
+                            ];
+                        }, $customOnly);
+                    } catch (\Exception $e) {
+                        // fields not critical
+                    }
+                }
+
                 $smartProcesses[] = [
-                    'id'           => $type['id']    ?? 0,
-                    'entityTypeId' => $entityTypeId,
-                    'title'        => $type['title'] ?? '',
-                    'count'        => $count,
+                    'id'            => $type['id']    ?? 0,
+                    'entityTypeId'  => $entityTypeId,
+                    'title'         => $type['title'] ?? '',
+                    'count'         => $count,
+                    'custom_fields' => $spCustomFields,
                 ];
             }
             $data['smart_processes'] = [

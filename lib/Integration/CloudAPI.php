@@ -262,6 +262,29 @@ class CloudAPI
     }
 
     /**
+     * Get default deal category info (id=0 for default pipeline)
+     */
+    public function getDealCategoryById($id)
+    {
+        try {
+            $result = $this->request('crm.dealcategory.get', ['ID' => (int)$id]);
+            return $result['result'] ?? [];
+        } catch (\Exception $e) {
+            return [];
+        }
+    }
+
+    /**
+     * Get fields for a smart process entity type
+     */
+    public function getSmartProcessFields($entityTypeId)
+    {
+        $result = $this->request('crm.item.fields', ['entityTypeId' => (int)$entityTypeId]);
+        $fields = $result['result']['fields'] ?? $result['result'] ?? [];
+        return is_array($fields) ? $fields : [];
+    }
+
+    /**
      * Get workgroups count
      */
     public function getWorkgroupsCount()
