@@ -458,3 +458,12 @@
     background: #f8f9fa;
     border-radius: 4px;
 }
+
+/* Duplicate settings */
+.migrator-duplicate-settings {
+    background: #f8f9fa;
+    border: 1px solid #e8e8e8;
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin-top: 4px;
+}

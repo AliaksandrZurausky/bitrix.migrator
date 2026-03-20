@@ -303,13 +303,41 @@
             if (plan.settings.conflict_resolution) document.getElementById('plan-conflict-resolution').value = plan.settings.conflict_resolution;
         }
 
-        // Migration order: departments → users → companies → contacts → deals → leads → tasks → workgroups → smart_processes
+        // Duplicate detection config per CRM entity
+        var DUPLICATE_CRITERIA = {
+            companies: [
+                { value: 'TITLE',    label: 'Название компании' },
+                { value: 'RQ_INN',   label: 'УНП / ИНН' },
+                { value: 'PHONE',    label: 'Телефон' },
+                { value: 'EMAIL',    label: 'Email' },
+            ],
+            contacts: [
+                { value: 'EMAIL',     label: 'Email' },
+                { value: 'PHONE',     label: 'Телефон' },
+                { value: 'FULL_NAME', label: 'ФИО (Имя + Фамилия)' },
+            ],
+            deals: [
+                { value: 'TITLE',  label: 'Название сделки' },
+            ],
+            leads: [
+                { value: 'TITLE',  label: 'Название лида' },
+                { value: 'EMAIL',  label: 'Email' },
+                { value: 'PHONE',  label: 'Телефон' },
+            ],
+        };
+
+        var DUPLICATE_ACTIONS = [
+            { value: 'skip',   label: 'Пропустить (не создавать)' },
+            { value: 'update', label: 'Обновить существующий' },
+            { value: 'create', label: 'Создать дубль' },
+        ];
+
         var sections = [];
 
         // 1. Подразделения
         sections.push(buildPlanSection('departments', 'Подразделения', depts.count || 0, plan.departments, null));
 
-        // 2. Пользователи (новые к миграции - поштучно)
+        // 2. Пользователи
         var newUsers = users.new_list || [];
         sections.push(buildPlanSection('users', 'Пользователи (новые к миграции)', newUsers.length, plan.users, function(body) {
             if (newUsers.length === 0) { body.appendChild(el('p', { style: 'color:#999' }, 'Нет новых пользователей')); return; }
@@ -332,11 +360,15 @@
             syncSelectAll(t);
         }));
 
-        // 3. Компании
-        sections.push(buildPlanSection('companies', 'Компании', crm.companies_regular || crm.companies || 0, plan.companies, null));
+        // 3. Компании (с настройкой дублей)
+        sections.push(buildPlanSection('companies', 'Компании', crm.companies_regular || crm.companies || 0, plan.companies, function(body) {
+            buildDuplicateSettings(body, 'companies', plan, DUPLICATE_CRITERIA, DUPLICATE_ACTIONS);
+        }));
 
-        // 4. Контакты
-        sections.push(buildPlanSection('contacts', 'Контакты', crm.contacts || 0, plan.contacts, null));
+        // 4. Контакты (с настройкой дублей)
+        sections.push(buildPlanSection('contacts', 'Контакты', crm.contacts || 0, plan.contacts, function(body) {
+            buildDuplicateSettings(body, 'contacts', plan, DUPLICATE_CRITERIA, DUPLICATE_ACTIONS);
+        }));
 
         // 5. Воронки (поштучно)
         sections.push(buildPlanSection('pipelines', 'Воронки сделок', pipelines.length, plan.pipelines, function(body) {
@@ -349,36 +381,59 @@
                 cb.type = 'checkbox'; cb.checked = checked;
                 cb.setAttribute('data-plan-item', 'pipelines');
                 cb.setAttribute('data-item-id', pid);
-                var lbl = el('span', {}, p.name + ' (' + (p.stages_count || 0) + ' стадий)');
-                row.appendChild(cb); row.appendChild(lbl);
+                row.appendChild(cb);
+                row.appendChild(el('span', {}, p.name + ' (' + (p.stages_count || 0) + ' стадий)'));
                 body.appendChild(row);
             });
         }));
 
-        // 6. Лиды
-        sections.push(buildPlanSection('leads', 'Лиды', crm.leads || 0, plan.leads, null));
+        // 6. Сделки (с настройкой дублей)
+        sections.push(buildPlanSection('deals', 'Сделки', crm.deals || 0, plan.deals, function(body) {
+            buildDuplicateSettings(body, 'deals', plan, DUPLICATE_CRITERIA, DUPLICATE_ACTIONS);
+        }));
 
-        // 7. Задачи
+        // 7. Лиды (с настройкой дублей)
+        sections.push(buildPlanSection('leads', 'Лиды', crm.leads || 0, plan.leads, function(body) {
+            buildDuplicateSettings(body, 'leads', plan, DUPLICATE_CRITERIA, DUPLICATE_ACTIONS);
+        }));
+
+        // 8. Задачи
         sections.push(buildPlanSection('tasks', 'Задачи', (dryRunData.tasks || {}).count || 0, plan.tasks, null));
 
-        // 8. Рабочие группы (поштучно)
-        sections.push(buildPlanSection('workgroups', 'Рабочие группы', wgList.length, plan.workgroups, function(body) {
-            if (wgList.length === 0) { body.appendChild(el('p', { style: 'color:#999' }, 'Нет рабочих групп')); return; }
-            wgList.forEach(function(wg) {
+        // 9. Рабочие группы (поштучно, с пометкой совпадений)
+        var wgData = dryRunData.workgroups || {};
+        var wgAll = wgList;
+        var wgMatchedNames = (wgData.matched_list || []).map(function(wg) { return wg.NAME.toLowerCase(); });
+        sections.push(buildPlanSection('workgroups', 'Рабочие группы', wgAll.length, plan.workgroups, function(body) {
+            if (wgAll.length === 0) { body.appendChild(el('p', { style: 'color:#999' }, 'Нет рабочих групп')); return; }
+
+            if (wgData.matched_count > 0) {
+                var info = el('p', { style: 'margin-bottom:10px;font-size:13px;color:#666' });
+                info.innerHTML = 'Совпали по названию с коробкой: <strong>' + wgData.matched_count + '</strong> (будут использованы существующие). Новых: <strong>' + (wgData.new_count || 0) + '</strong>';
+                body.appendChild(info);
+            }
+
+            wgAll.forEach(function(wg) {
                 var wid = String(wg.ID);
                 var checked = isItemEnabled(plan, 'workgroups', wid);
+                var isMatched = wgMatchedNames.indexOf(wg.NAME.toLowerCase()) !== -1;
                 var row = el('div', { className: 'migrator-plan-item' });
                 var cb = el('input');
                 cb.type = 'checkbox'; cb.checked = checked;
                 cb.setAttribute('data-plan-item', 'workgroups');
                 cb.setAttribute('data-item-id', wid);
+                row.appendChild(cb);
                 var lbl = el('span', {}, wg.NAME);
-                row.appendChild(cb); row.appendChild(lbl);
+                row.appendChild(lbl);
+                if (isMatched) {
+                    var tag = el('span', { className: 'migrator-badge', style: 'margin-left:8px;font-size:11px;border-color:#28a745;color:#28a745' }, 'есть в коробке');
+                    row.appendChild(tag);
+                }
                 body.appendChild(row);
             });
         }));
 
-        // 9. Смарт-процессы (поштучно + поля)
+        // 10. Смарт-процессы (поштучно + поля)
         sections.push(buildPlanSection('smart_processes', 'Смарт-процессы', smartProcs.length, plan.smart_processes, function(body) {
             if (smartProcs.length === 0) { body.appendChild(el('p', { style: 'color:#999' }, 'Нет смарт-процессов')); return; }
             smartProcs.forEach(function(sp) {
@@ -389,10 +444,9 @@
                 cb.type = 'checkbox'; cb.checked = checked;
                 cb.setAttribute('data-plan-item', 'smart_processes');
                 cb.setAttribute('data-item-id', spId);
-                var lbl = el('span', {}, sp.title + ' (записей: ' + (sp.count || 0) + ')');
-                row.appendChild(cb); row.appendChild(lbl);
+                row.appendChild(cb);
+                row.appendChild(el('span', {}, sp.title + ' (записей: ' + (sp.count || 0) + ')'));
 
-                // Custom fields for this smart process
                 if (sp.custom_fields && Object.keys(sp.custom_fields).length > 0) {
                     var fieldsToggle = el('span', { className: 'migrator-plan-fields-toggle' }, 'поля \u25B6');
                     row.appendChild(fieldsToggle);
@@ -407,7 +461,7 @@
                         fcb.setAttribute('data-entity-id', spId);
                         fcb.setAttribute('data-field-code', code);
                         fr.appendChild(fcb);
-                        fr.appendChild(el('span', {}, code + ' — ' + (f.title || '') + ' (' + (f.type || '') + ')'));
+                        fr.appendChild(el('span', {}, code + ' \u2014 ' + (f.title || '') + ' (' + (f.type || '') + ')'));
                         fieldsDiv.appendChild(fr);
                     });
                     body.appendChild(row);
@@ -423,7 +477,7 @@
             });
         }));
 
-        // 10. Пользовательские поля CRM (по сущностям + поштучно)
+        // 11. Пользовательские поля CRM (аккордеон на каждую сущность)
         var crmFields = dryRunData.crm_custom_fields || {};
         var crmLabels = { deal: 'Сделки', contact: 'Контакты', company: 'Компании', lead: 'Лиды' };
         var hasAnyFields = Object.keys(crmFields).some(function(e) { return crmFields[e] && Object.keys(crmFields[e]).length > 0; });
@@ -434,24 +488,26 @@
                     var fields = crmFields[entity];
                     if (!fields || Object.keys(fields).length === 0) return;
 
-                    var entityBlock = el('div', { style: 'margin-bottom:12px' });
-                    entityBlock.appendChild(el('strong', {}, (crmLabels[entity] || entity) + ':'));
-
-                    Object.keys(fields).forEach(function(code) {
-                        var f = fields[code];
-                        var fchecked = isFieldEnabled(plan, 'crm_custom_fields', entity, code);
-                        var fr = el('div', { className: 'migrator-plan-field-item' });
-                        var fcb = el('input');
-                        fcb.type = 'checkbox'; fcb.checked = fchecked;
-                        fcb.setAttribute('data-plan-field', 'crm_custom_fields');
-                        fcb.setAttribute('data-entity-id', entity);
-                        fcb.setAttribute('data-field-code', code);
-                        fr.appendChild(fcb);
-                        fr.appendChild(el('span', {}, code + ' — ' + (f.title || '') + ' (' + (f.type || '') + ')'));
-                        entityBlock.appendChild(fr);
-                    });
-
-                    body.appendChild(entityBlock);
+                    var fieldKeys = Object.keys(fields);
+                    body.appendChild(makeSubAccordion(
+                        (crmLabels[entity] || entity) + ' (' + fieldKeys.length + ' полей)',
+                        null,
+                        function(subBody) {
+                            fieldKeys.forEach(function(code) {
+                                var f = fields[code];
+                                var fchecked = isFieldEnabled(plan, 'crm_custom_fields', entity, code);
+                                var fr = el('div', { className: 'migrator-plan-field-item' });
+                                var fcb = el('input');
+                                fcb.type = 'checkbox'; fcb.checked = fchecked;
+                                fcb.setAttribute('data-plan-field', 'crm_custom_fields');
+                                fcb.setAttribute('data-entity-id', entity);
+                                fcb.setAttribute('data-field-code', code);
+                                fr.appendChild(fcb);
+                                fr.appendChild(el('span', {}, code + ' \u2014 ' + (f.title || '') + ' (' + (f.type || '') + ')'));
+                                subBody.appendChild(fr);
+                            });
+                        }
+                    ));
                 });
             }));
         }
@@ -470,6 +526,48 @@
         // Summary
         updatePlanSummary();
         builder.addEventListener('change', function() { updatePlanSummary(); });
+    }
+
+    function buildDuplicateSettings(container, entityKey, plan, criteriaMap, actionsMap) {
+        var saved = (plan.duplicate_settings || {})[entityKey] || {};
+        var criteria = criteriaMap[entityKey] || [];
+        if (criteria.length === 0) return;
+
+        var wrapper = el('div', { className: 'migrator-duplicate-settings' });
+        wrapper.appendChild(el('div', { style: 'font-weight:bold;margin-bottom:8px;font-size:13px' }, 'Поиск дублей:'));
+
+        // Criteria checkboxes
+        var critDiv = el('div', { style: 'margin-bottom:10px' });
+        var savedMatchBy = saved.match_by || [criteria[0].value];
+        criteria.forEach(function(c) {
+            var row = el('div', { className: 'migrator-plan-field-item' });
+            var cb = el('input');
+            cb.type = 'checkbox';
+            cb.checked = savedMatchBy.indexOf(c.value) !== -1;
+            cb.setAttribute('data-dup-criteria', entityKey);
+            cb.setAttribute('data-dup-value', c.value);
+            row.appendChild(cb);
+            row.appendChild(el('span', {}, c.label));
+            critDiv.appendChild(row);
+        });
+        wrapper.appendChild(critDiv);
+
+        // Action select
+        var actionRow = el('div', { style: 'display:flex;align-items:center;gap:8px' });
+        actionRow.appendChild(el('span', { style: 'font-size:13px' }, 'При найденном дубле:'));
+        var sel = el('select', { className: 'migrator-input', style: 'width:auto;font-size:13px' });
+        sel.setAttribute('data-dup-action', entityKey);
+        actionsMap.forEach(function(a) {
+            var opt = el('option');
+            opt.value = a.value;
+            opt.textContent = a.label;
+            if ((saved.action || 'skip') === a.value) opt.selected = true;
+            sel.appendChild(opt);
+        });
+        actionRow.appendChild(sel);
+        wrapper.appendChild(actionRow);
+
+        container.appendChild(wrapper);
     }
 
     function buildPlanSection(key, title, count, savedState, bodyBuilder) {
@@ -593,6 +691,22 @@
                 }
             });
         }
+
+        // Duplicate settings per CRM entity
+        plan.duplicate_settings = {};
+        var dupEntities = ['companies', 'contacts', 'deals', 'leads'];
+        dupEntities.forEach(function(entityKey) {
+            var critCbs = builder.querySelectorAll('[data-dup-criteria="' + entityKey + '"]');
+            var actionSel = builder.querySelector('[data-dup-action="' + entityKey + '"]');
+            if (critCbs.length === 0) return;
+
+            var matchBy = [];
+            critCbs.forEach(function(cb) { if (cb.checked) matchBy.push(cb.getAttribute('data-dup-value')); });
+            plan.duplicate_settings[entityKey] = {
+                match_by: matchBy,
+                action: actionSel ? actionSel.value : 'skip'
+            };
+        });
 
         // Settings
         plan.settings = {

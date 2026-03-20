@@ -128,18 +128,49 @@ class DryRunService
         // --- 5. Workgroups ---
         try {
             $wgList = $cloudAPI->getWorkgroups();
+            $wgListMapped = array_map(static function ($wg) {
+                return [
+                    'ID'          => $wg['ID'] ?? 0,
+                    'NAME'        => $wg['NAME'] ?? '',
+                    'DESCRIPTION' => $wg['DESCRIPTION'] ?? '',
+                    'ACTIVE'      => $wg['ACTIVE'] ?? 'Y',
+                    'OPENED'      => $wg['OPENED'] ?? 'N',
+                ];
+            }, $wgList);
+
             $data['workgroups'] = [
-                'count' => count($wgList),
-                'list'  => array_map(static function ($wg) {
-                    return [
-                        'ID'          => $wg['ID'] ?? 0,
-                        'NAME'        => $wg['NAME'] ?? '',
-                        'DESCRIPTION' => $wg['DESCRIPTION'] ?? '',
-                        'ACTIVE'      => $wg['ACTIVE'] ?? 'Y',
-                        'OPENED'      => $wg['OPENED'] ?? 'N',
-                    ];
-                }, $wgList),
+                'count' => count($wgListMapped),
+                'list'  => $wgListMapped,
             ];
+
+            // Match workgroups by name with box
+            if ($boxAPI) {
+                try {
+                    $boxWgList = $boxAPI->getWorkgroups();
+                    $boxWgNames = array_map(static function ($wg) {
+                        return mb_strtolower(trim($wg['NAME'] ?? ''));
+                    }, $boxWgList);
+
+                    $matched = [];
+                    $newWg   = [];
+                    foreach ($wgListMapped as $wg) {
+                        $nameLC = mb_strtolower(trim($wg['NAME']));
+                        if (in_array($nameLC, $boxWgNames, true)) {
+                            $matched[] = $wg;
+                        } else {
+                            $newWg[] = $wg;
+                        }
+                    }
+
+                    $data['workgroups']['box_count']     = count($boxWgList);
+                    $data['workgroups']['matched_count']  = count($matched);
+                    $data['workgroups']['matched_list']   = $matched;
+                    $data['workgroups']['new_count']      = count($newWg);
+                    $data['workgroups']['new_list']       = $newWg;
+                } catch (\Exception $e) {
+                    // box workgroups not critical
+                }
+            }
         } catch (\Exception $e) {
             $data['workgroups'] = ['error' => $e->getMessage(), 'count' => 0, 'list' => []];
         }

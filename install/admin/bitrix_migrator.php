@@ -191,10 +191,10 @@ $plan = $migrationPlan ? json_decode($migrationPlan, true) : [];
                             </select>
                         </div>
                         <div class="migrator-form-group" style="margin-bottom:0;">
-                            <label class="migrator-label">При конфликте:</label>
+                            <label class="migrator-label">Рабочие группы — при совпадении по названию:</label>
                             <select id="plan-conflict-resolution" class="migrator-input" style="width:auto;">
-                                <option value="skip">Пропустить существующие</option>
-                                <option value="update">Обновить существующие</option>
+                                <option value="skip">Использовать существующую (не создавать)</option>
+                                <option value="create">Создать новую</option>
                             </select>
                         </div>
                     </div>
