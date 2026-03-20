@@ -169,7 +169,43 @@ $plan = $migrationPlan ? json_decode($migrationPlan, true) : [];
     <div id="tab-plan" class="migrator-tab-content">
         <div class="adm-detail-content">
             <h2><?= Loc::getMessage('BITRIX_MIGRATOR_PLAN_TITLE') ?></h2>
-            <p><?= Loc::getMessage('BITRIX_MIGRATOR_PLAN_INFO') ?></p>
+            <p>Выберите, какие данные нужно перенести из облака в коробку. Раскройте секции для детальной настройки.</p>
+
+            <div id="plan-no-dryrun" style="display:none;">
+                <p style="color:#e67e22;">Сначала выполните Dry Run для получения данных портала.</p>
+            </div>
+
+            <div id="plan-builder" style="display:none;"></div>
+
+            <div id="plan-settings" style="display:none; margin-top:24px;">
+                <div class="migrator-accordion">
+                    <div class="migrator-accordion-header" id="plan-settings-header" style="cursor:pointer;">
+                        <span class="migrator-accordion-arrow">&#9654;</span>
+                        <span class="migrator-accordion-title">Настройки миграции</span>
+                    </div>
+                    <div class="migrator-accordion-body" id="plan-settings-body">
+                        <div class="migrator-form-group" style="margin-bottom:16px;">
+                            <label class="migrator-label">Маппинг пользователей:</label>
+                            <select id="plan-user-strategy" class="migrator-input" style="width:auto;">
+                                <option value="email">По совпадению email</option>
+                            </select>
+                        </div>
+                        <div class="migrator-form-group" style="margin-bottom:0;">
+                            <label class="migrator-label">При конфликте:</label>
+                            <select id="plan-conflict-resolution" class="migrator-input" style="width:auto;">
+                                <option value="skip">Пропустить существующие</option>
+                                <option value="update">Обновить существующие</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="plan-summary" style="display:none; margin-top:24px;"></div>
+
+            <div id="plan-actions" style="display:none; margin-top:20px;" class="migrator-form-actions">
+                <button type="button" id="btn-save-plan" class="adm-btn-save">Сохранить план</button>
+            </div>
         </div>
     </div>
 

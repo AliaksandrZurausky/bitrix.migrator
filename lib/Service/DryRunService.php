@@ -127,9 +127,21 @@ class DryRunService
 
         // --- 5. Workgroups ---
         try {
-            $data['workgroups'] = ['count' => $cloudAPI->getWorkgroupsCount()];
+            $wgList = $cloudAPI->getWorkgroups();
+            $data['workgroups'] = [
+                'count' => count($wgList),
+                'list'  => array_map(static function ($wg) {
+                    return [
+                        'ID'          => $wg['ID'] ?? 0,
+                        'NAME'        => $wg['NAME'] ?? '',
+                        'DESCRIPTION' => $wg['DESCRIPTION'] ?? '',
+                        'ACTIVE'      => $wg['ACTIVE'] ?? 'Y',
+                        'OPENED'      => $wg['OPENED'] ?? 'N',
+                    ];
+                }, $wgList),
+            ];
         } catch (\Exception $e) {
-            $data['workgroups'] = ['error' => $e->getMessage(), 'count' => 0];
+            $data['workgroups'] = ['error' => $e->getMessage(), 'count' => 0, 'list' => []];
         }
 
         // --- 6. Deal pipelines + stages ---

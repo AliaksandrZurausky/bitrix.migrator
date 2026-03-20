@@ -293,6 +293,14 @@ class CloudAPI
     }
 
     /**
+     * Get all workgroups (sonet groups)
+     */
+    public function getWorkgroups()
+    {
+        return $this->fetchAll('sonet_group.get', []);
+    }
+
+    /**
      * Get all smart process types (crm.type.list)
      */
     public function getSmartProcessTypes()
