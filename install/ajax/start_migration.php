@@ -57,7 +57,40 @@ Option::set($moduleId, 'migration_pid', '');
 // Path to CLI worker — resolve from module directory, not from ajax copy
 $documentRoot = $_SERVER['DOCUMENT_ROOT'];
 $workerPath = $documentRoot . '/local/modules/bitrix_migrator/install/cli/migrate.php';
-$phpBinary = PHP_BINARY ?: '/usr/bin/php';
+// PHP_BINARY may point to php-fpm which can't run scripts — find CLI binary
+$phpBinary = null;
+$candidates = [
+    '/usr/bin/php',
+    '/usr/local/bin/php',
+    '/usr/bin/php8.2',
+    '/usr/bin/php8.1',
+    '/usr/bin/php8.0',
+    '/usr/bin/php7.4',
+];
+// Check if PHP_BINARY is actually CLI (not fpm)
+if (PHP_BINARY && !preg_match('/fpm/', PHP_BINARY)) {
+    $phpBinary = PHP_BINARY;
+} else {
+    foreach ($candidates as $path) {
+        if (is_file($path) && is_executable($path)) {
+            $phpBinary = $path;
+            break;
+        }
+    }
+}
+// Last resort: try 'php' from PATH
+if (!$phpBinary) {
+    $fromPath = trim(shell_exec('which php 2>/dev/null') ?: '');
+    if ($fromPath && is_executable($fromPath)) {
+        $phpBinary = $fromPath;
+    }
+}
+if (!$phpBinary) {
+    Option::set($moduleId, 'migration_status', 'error');
+    Option::set($moduleId, 'migration_message', 'PHP CLI binary not found');
+    echo json_encode(['success' => false, 'error' => 'PHP CLI binary not found. Install php-cli package.']);
+    die();
+}
 
 if (!$workerPath || !file_exists($workerPath)) {
     Option::set($moduleId, 'migration_status', 'error');
