@@ -213,21 +213,26 @@ class CloudAPI
     }
 
     /**
-     * Get deal pipeline categories
+     * Get deal pipeline categories (custom funnels).
+     * Tries crm.dealcategory.list first, falls back to crm.category.list (newer API).
      */
     public function getDealCategories()
     {
-        $result = $this->request('crm.dealcategory.list');
-        $categories = $result['result']['categories'] ?? $result['result'] ?? [];
-        return is_array($categories) ? $categories : [];
+        try {
+            $result     = $this->request('crm.dealcategory.list');
+            $categories = $result['result']['categories'] ?? $result['result'] ?? [];
+            return is_array($categories) ? array_values($categories) : [];
+        } catch (\Exception $e) {
+            // Fallback for newer Bitrix24 that removed crm.dealcategory.*
+            $result     = $this->request('crm.category.list', ['entityTypeId' => 2]);
+            $categories = $result['result']['categories'] ?? $result['result'] ?? [];
+            return is_array($categories) ? array_values($categories) : [];
+        }
     }
 
     /**
-     * Get stages for a deal pipeline category (id=0 for default)
-     */
-    /**
      * Fetch all deal-related statuses in one request and return them grouped by ENTITY_ID.
-     * Keys: 'DEAL_STAGE', 'DEAL_STAGE_Category1', 'DEAL_STAGE_Category2', …
+     * Keys: 'DEAL_STAGE' (default pipeline), 'DEAL_STAGE_N' (custom pipeline N).
      */
     public function getAllDealStagesGrouped(): array
     {
@@ -236,7 +241,10 @@ class CloudAPI
         $grouped = [];
         foreach ($all as $status) {
             $entityId = $status['ENTITY_ID'] ?? '';
-            if ($entityId === 'DEAL_STAGE' || strncmp($entityId, 'DEAL_STAGE_Category', 19) === 0) {
+            // Default pipeline: 'DEAL_STAGE'; custom: 'DEAL_STAGE_N' (N = category ID)
+            if ($entityId === 'DEAL_STAGE'
+                || (strlen($entityId) > 11 && strncmp($entityId, 'DEAL_STAGE_', 11) === 0)
+            ) {
                 $grouped[$entityId][] = $status;
             }
         }

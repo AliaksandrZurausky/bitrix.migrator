@@ -139,7 +139,7 @@ class DryRunService
 
             foreach ($categories as $cat) {
                 $catId       = (int)($cat['ID'] ?? 0);
-                $key         = 'DEAL_STAGE_Category' . $catId;
+                $key         = 'DEAL_STAGE_' . $catId;
                 $stages      = $stagesByKey[$key] ?? [];
                 $pipelines[] = [
                     'id'           => $catId,
