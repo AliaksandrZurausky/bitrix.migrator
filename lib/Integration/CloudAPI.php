@@ -78,18 +78,34 @@ class CloudAPI
     }
 
     /**
+     * Get all currencies with full data
+     */
+    public function getCurrencies(): array
+    {
+        $result = $this->request('crm.currency.list');
+        return $result['result'] ?? [];
+    }
+
+    /**
      * Get available currencies (returns set of CURRENCY codes)
      */
     public function getCurrencyCodes(): array
     {
-        $result = $this->request('crm.currency.list');
-        $items = $result['result'] ?? [];
         $codes = [];
-        foreach ($items as $item) {
+        foreach ($this->getCurrencies() as $item) {
             $code = $item['CURRENCY'] ?? '';
             if ($code) $codes[$code] = true;
         }
         return $codes;
+    }
+
+    /**
+     * Add a currency
+     */
+    public function addCurrency(array $fields)
+    {
+        $result = $this->request('crm.currency.add', ['fields' => $fields]);
+        return $result['result'] ?? null;
     }
 
     /**

@@ -34,6 +34,7 @@ class MigrationService
         'users',
         'crm_fields',
         'pipelines',
+        'currencies',
         'companies',
         'contacts',
         'deals',
@@ -50,6 +51,7 @@ class MigrationService
         'users'           => 'Пользователи',
         'crm_fields'      => 'CRM пользовательские поля',
         'pipelines'       => 'Воронки сделок',
+        'currencies'      => 'Валюты',
         'companies'       => 'Компании',
         'contacts'        => 'Контакты',
         'deals'           => 'Сделки',
@@ -167,6 +169,7 @@ class MigrationService
             'users'           => 'users',
             'crm_fields'      => 'crm_custom_fields',
             'pipelines'       => 'pipelines',
+            'currencies'      => 'currencies',
             'companies'       => 'companies',
             'contacts'        => 'contacts',
             'deals'           => 'deals',
@@ -916,7 +919,52 @@ class MigrationService
     }
 
     // =========================================================================
-    // Phase 5: Companies
+    // Phase 5: Currencies
+    // =========================================================================
+
+    private function migrateCurrencies()
+    {
+        $cloudCurrencies = $this->cloudAPI->getCurrencies();
+        $boxCurrencyCodes = $this->boxAPI->getCurrencyCodes();
+
+        $created = 0;
+        $skipped = 0;
+
+        foreach ($cloudCurrencies as $currency) {
+            $code = $currency['CURRENCY'] ?? '';
+            if (empty($code)) continue;
+
+            if (isset($boxCurrencyCodes[$code])) {
+                $skipped++;
+                continue;
+            }
+
+            $this->rateLimit();
+
+            // Fields accepted by crm.currency.add
+            $fields = ['CURRENCY' => $code];
+            $copyFields = ['AMOUNT_CNT', 'AMOUNT', 'SORT', 'FULL_NAME', 'DECIMALS',
+                           'DEC_POINT', 'THOUSANDS_SEP', 'FORMAT_STRING', 'HIDE_ZERO'];
+            foreach ($copyFields as $f) {
+                if (isset($currency[$f]) && $currency[$f] !== '') {
+                    $fields[$f] = $currency[$f];
+                }
+            }
+
+            try {
+                $this->boxAPI->addCurrency($fields);
+                $created++;
+                $this->addLog("  Валюта $code добавлена на коробку");
+            } catch (\Throwable $e) {
+                $this->addLog("  Ошибка добавления валюты $code: " . $e->getMessage());
+            }
+        }
+
+        $this->addLog("Валюты: добавлено=$created, уже существовало=$skipped из " . count($cloudCurrencies));
+    }
+
+    // =========================================================================
+    // Phase 6: Companies
     // =========================================================================
 
     private function migrateCompanies()
