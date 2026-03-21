@@ -276,6 +276,18 @@
                 arrow.textContent = acc.classList.contains('open') ? '\u25BC' : '\u25B6';
             });
         }
+
+        // Delete userfields master toggle
+        var deleteUfMaster = document.getElementById('plan-delete-userfields');
+        if (deleteUfMaster) {
+            deleteUfMaster.addEventListener('change', function() {
+                var entities = document.getElementById('plan-delete-userfields-entities');
+                if (entities) {
+                    entities.style.opacity = deleteUfMaster.checked ? '1' : '0.5';
+                    entities.style.pointerEvents = deleteUfMaster.checked ? 'auto' : 'none';
+                }
+            });
+        }
     }
 
     function loadPlan() {
@@ -323,6 +335,16 @@
         if (plan.settings) {
             if (plan.settings.user_match_strategy) document.getElementById('plan-user-strategy').value = plan.settings.user_match_strategy;
             if (plan.settings.conflict_resolution) document.getElementById('plan-conflict-resolution').value = plan.settings.conflict_resolution;
+        }
+
+        // Restore delete userfields setting
+        if (plan.delete_userfields) {
+            document.getElementById('plan-delete-userfields').checked = plan.delete_userfields.enabled !== false;
+            var skipEntities = plan.delete_userfields.skip_entities || [];
+            document.querySelectorAll('.plan-delete-uf-entity').forEach(function(cb) {
+                var entity = cb.getAttribute('data-entity');
+                cb.checked = skipEntities.indexOf(entity) === -1;
+            });
         }
 
         var DUPLICATE_CRITERIA = {
@@ -723,6 +745,19 @@
         plan.settings = {
             user_match_strategy: document.getElementById('plan-user-strategy').value,
             conflict_resolution: document.getElementById('plan-conflict-resolution').value
+        };
+
+        // Delete userfields setting
+        var deleteUfEnabled = document.getElementById('plan-delete-userfields').checked;
+        var skipEntities = [];
+        document.querySelectorAll('.plan-delete-uf-entity').forEach(function(cb) {
+            if (!cb.checked) {
+                skipEntities.push(cb.getAttribute('data-entity'));
+            }
+        });
+        plan.delete_userfields = {
+            enabled: deleteUfEnabled,
+            skip_entities: skipEntities
         };
 
         return plan;

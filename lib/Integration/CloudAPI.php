@@ -818,6 +818,21 @@ class CloudAPI
         return $this->fetchAll($method, []);
     }
 
+    public function deleteUserfield($entityType, $id)
+    {
+        $methodMap = [
+            'deal'    => 'crm.deal.userfield.delete',
+            'contact' => 'crm.contact.userfield.delete',
+            'company' => 'crm.company.userfield.delete',
+            'lead'    => 'crm.lead.userfield.delete',
+        ];
+        $method = $methodMap[$entityType] ?? null;
+        if (!$method) throw new \Exception("Unknown entity type for userfield delete: $entityType");
+
+        $result = $this->request($method, ['id' => (int)$id]);
+        return $result['result'] ?? false;
+    }
+
     // =========================================================================
     // Workgroup (sonet_group) management
     // =========================================================================

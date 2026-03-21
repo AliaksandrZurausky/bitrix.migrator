@@ -165,12 +165,40 @@ function migratorStatusText($status) {
                             <option value="email">По совпадению email</option>
                         </select>
                     </div>
-                    <div class="migrator-form-group" style="margin-bottom:0;">
+                    <div class="migrator-form-group" style="margin-bottom:16px;">
                         <label class="migrator-label">Рабочие группы — при совпадении по названию:</label>
                         <select id="plan-conflict-resolution" class="migrator-input" style="width:auto;">
                             <option value="skip">Использовать существующую (не создавать)</option>
                             <option value="create">Создать новую</option>
                         </select>
+                    </div>
+                    <div class="migrator-form-group" style="margin-bottom:0;">
+                        <label class="migrator-label">Удаление пользовательских полей перед миграцией:</label>
+                        <div style="margin-top:8px;">
+                            <label style="display:flex;align-items:center;gap:6px;margin-bottom:6px;font-weight:600;">
+                                <input type="checkbox" id="plan-delete-userfields" checked>
+                                Удалять существующие поля на box перед созданием
+                            </label>
+                            <div id="plan-delete-userfields-entities" style="margin-left:24px;">
+                                <label style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+                                    <input type="checkbox" class="plan-delete-uf-entity" data-entity="deal" checked>
+                                    Сделки
+                                </label>
+                                <label style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+                                    <input type="checkbox" class="plan-delete-uf-entity" data-entity="contact" checked>
+                                    Контакты
+                                </label>
+                                <label style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+                                    <input type="checkbox" class="plan-delete-uf-entity" data-entity="company" checked>
+                                    Компании
+                                </label>
+                                <label style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+                                    <input type="checkbox" class="plan-delete-uf-entity" data-entity="lead" checked>
+                                    Лиды
+                                </label>
+                            </div>
+                            <p style="margin:8px 0 0;font-size:12px;color:#888;">Отмеченные типы сущностей — поля будут удалены и пересозданы из облака. Снимите галочку, чтобы не удалять поля для конкретного типа.</p>
+                        </div>
                     </div>
                 </div>
             </div>

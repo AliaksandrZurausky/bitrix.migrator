@@ -438,16 +438,46 @@ class MigrationService
     {
         $entityTypes = ['deal', 'contact', 'company', 'lead'];
         $totalCreated = 0;
+        $totalDeleted = 0;
+
+        // Setting: which entity types should have fields deleted before migration
+        // Default: delete all. User can exclude specific entity types.
+        $deleteFieldsSettings = $this->plan['delete_userfields'] ?? [];
+        // Default is enabled for all types
+        $deleteFieldsEnabled = ($deleteFieldsSettings['enabled'] ?? true) === true;
 
         foreach ($entityTypes as $entityType) {
             $cloudFields = $this->cloudAPI->getUserfields($entityType);
             $boxFields = $this->boxAPI->getUserfields($entityType);
 
-            $boxFieldNames = [];
-            foreach ($boxFields as $f) {
-                $boxFieldNames[] = $f['FIELD_NAME'] ?? '';
+            // --- Step 1: Delete existing userfields on box if enabled for this entity type ---
+            $shouldDelete = $deleteFieldsEnabled
+                && !in_array($entityType, $deleteFieldsSettings['skip_entities'] ?? []);
+
+            if ($shouldDelete && !empty($boxFields)) {
+                $this->addLog("Удаление пользовательских полей ($entityType): " . count($boxFields) . " шт.");
+                foreach ($boxFields as $f) {
+                    $this->rateLimit();
+                    $fId = (int)($f['ID'] ?? 0);
+                    $fName = $f['FIELD_NAME'] ?? '';
+                    if (!$fId) continue;
+                    try {
+                        $this->boxAPI->deleteUserfield($entityType, $fId);
+                        $totalDeleted++;
+                    } catch (\Exception $e) {
+                        $this->addLog("  Ошибка удаления поля $fName ($entityType): " . $e->getMessage());
+                    }
+                }
+                // After deletion, no existing fields to skip
+                $boxFieldNames = [];
+            } else {
+                $boxFieldNames = [];
+                foreach ($boxFields as $f) {
+                    $boxFieldNames[] = $f['FIELD_NAME'] ?? '';
+                }
             }
 
+            // --- Step 2: Create fields from cloud ---
             foreach ($cloudFields as $field) {
                 $this->rateLimit();
                 $fieldName = $field['FIELD_NAME'] ?? '';
@@ -482,7 +512,7 @@ class MigrationService
             }
         }
 
-        $this->addLog("CRM поля: создано $totalCreated");
+        $this->addLog("CRM поля: удалено=$totalDeleted, создано=$totalCreated");
     }
 
     // =========================================================================
