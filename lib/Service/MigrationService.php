@@ -322,6 +322,9 @@ class MigrationService
             try {
                 $boxDeptIds = $this->mapDepartmentIds($u['UF_DEPARTMENT'] ?? []);
 
+                // Determine if we should send invitation email
+                $sendInvite = ($this->plan['settings']['send_invite'] ?? 'N') === 'Y';
+
                 $fields = [
                     'EMAIL' => $u['EMAIL'],
                     'NAME' => $u['NAME'] ?? '',
@@ -331,13 +334,23 @@ class MigrationService
                     'PERSONAL_PHONE' => $u['PERSONAL_PHONE'] ?? '',
                     'PERSONAL_MOBILE' => $u['PERSONAL_MOBILE'] ?? '',
                     'WORK_PHONE' => $u['WORK_PHONE'] ?? '',
-                    'ACTIVE' => true,
+                    'ACTIVE' => 'Y',
                     'EXTRANET' => 'N',
-                    'MESSAGE_TYPE' => 'N', // Do not send invitation email
                 ];
 
+                if (!$sendInvite) {
+                    $fields['MESSAGE_TYPE'] = 'N';
+                }
+
+                // UF_DEPARTMENT is required for user.add on box — fallback to root dept
                 if (!empty($boxDeptIds)) {
                     $fields['UF_DEPARTMENT'] = $boxDeptIds;
+                } else {
+                    // Assign to root department if no dept mapping available
+                    $rootDeptId = reset($this->deptMapCache);
+                    if ($rootDeptId) {
+                        $fields['UF_DEPARTMENT'] = [$rootDeptId];
+                    }
                 }
 
                 // Personal info
@@ -352,7 +365,12 @@ class MigrationService
                 }
             } catch (\Exception $e) {
                 $errors++;
-                $this->addLog("  Ошибка создания пользователя {$u['EMAIL']}: " . $e->getMessage());
+                $errDetails = $e->getMessage();
+                $this->addLog("  Ошибка создания пользователя {$u['EMAIL']}: $errDetails");
+                // Log first error with full fields for debugging
+                if ($errors <= 3) {
+                    $this->addLog("    Отправленные поля: " . json_encode($fields, JSON_UNESCAPED_UNICODE));
+                }
             }
         }
 
@@ -491,15 +509,35 @@ class MigrationService
                 if (in_array($fieldName, $boxFieldNames)) continue;
 
                 try {
+                    // Build readable label — prefer EDIT_FORM_LABEL, fallback to LIST_COLUMN_LABEL
+                    $editLabel = $field['EDIT_FORM_LABEL'] ?? [];
+                    $listLabel = $field['LIST_COLUMN_LABEL'] ?? [];
+                    $filterLabel = $field['LIST_FILTER_LABEL'] ?? [];
+
+                    // If labels are empty, use field name from LABEL or FIELD_NAME
+                    if (empty($editLabel) || (is_array($editLabel) && implode('', $editLabel) === '')) {
+                        $fallbackLabel = $field['LABEL'] ?? $fieldName;
+                        $editLabel = is_array($editLabel) ? $editLabel : [];
+                        if (is_string($fallbackLabel) && $fallbackLabel !== '') {
+                            $editLabel['ru'] = $fallbackLabel;
+                        }
+                    }
+
                     $newField = [
                         'FIELD_NAME' => $fieldName,
                         'USER_TYPE_ID' => $field['USER_TYPE_ID'] ?? 'string',
                         'XML_ID' => $field['XML_ID'] ?? $fieldName,
-                        'EDIT_FORM_LABEL' => $field['EDIT_FORM_LABEL'] ?? [],
-                        'LIST_COLUMN_LABEL' => $field['LIST_COLUMN_LABEL'] ?? [],
+                        'EDIT_FORM_LABEL' => $editLabel,
+                        'LIST_COLUMN_LABEL' => !empty($listLabel) ? $listLabel : $editLabel,
+                        'LIST_FILTER_LABEL' => !empty($filterLabel) ? $filterLabel : $editLabel,
                         'SETTINGS' => $field['SETTINGS'] ?? [],
                     ];
 
+                    if (!empty($field['SORT'])) $newField['SORT'] = $field['SORT'];
+                    if (!empty($field['SHOW_FILTER'])) $newField['SHOW_FILTER'] = $field['SHOW_FILTER'];
+                    if (!empty($field['SHOW_IN_LIST'])) $newField['SHOW_IN_LIST'] = $field['SHOW_IN_LIST'];
+                    if (!empty($field['EDIT_IN_LIST'])) $newField['EDIT_IN_LIST'] = $field['EDIT_IN_LIST'];
+                    if (!empty($field['IS_SEARCHABLE'])) $newField['IS_SEARCHABLE'] = $field['IS_SEARCHABLE'];
                     if (!empty($field['MANDATORY'])) $newField['MANDATORY'] = $field['MANDATORY'];
                     if (!empty($field['MULTIPLE'])) $newField['MULTIPLE'] = $field['MULTIPLE'];
                     if (!empty($field['LIST'])) $newField['LIST'] = $field['LIST'];

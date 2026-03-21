@@ -166,6 +166,13 @@ function migratorStatusText($status) {
                         </select>
                     </div>
                     <div class="migrator-form-group" style="margin-bottom:16px;">
+                        <label class="migrator-label">Приглашение пользователей:</label>
+                        <select id="plan-send-invite" class="migrator-input" style="width:auto;">
+                            <option value="N">Не отправлять приглашение на email</option>
+                            <option value="Y">Отправлять приглашение на email</option>
+                        </select>
+                    </div>
+                    <div class="migrator-form-group" style="margin-bottom:16px;">
                         <label class="migrator-label">Рабочие группы — при совпадении по названию:</label>
                         <select id="plan-conflict-resolution" class="migrator-input" style="width:auto;">
                             <option value="skip">Использовать существующую (не создавать)</option>

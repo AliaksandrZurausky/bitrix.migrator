@@ -335,6 +335,7 @@
         if (plan.settings) {
             if (plan.settings.user_match_strategy) document.getElementById('plan-user-strategy').value = plan.settings.user_match_strategy;
             if (plan.settings.conflict_resolution) document.getElementById('plan-conflict-resolution').value = plan.settings.conflict_resolution;
+            if (plan.settings.send_invite) document.getElementById('plan-send-invite').value = plan.settings.send_invite;
         }
 
         // Restore delete userfields setting
@@ -763,7 +764,8 @@
 
         plan.settings = {
             user_match_strategy: document.getElementById('plan-user-strategy').value,
-            conflict_resolution: document.getElementById('plan-conflict-resolution').value
+            conflict_resolution: document.getElementById('plan-conflict-resolution').value,
+            send_invite: document.getElementById('plan-send-invite').value
         };
 
         // Delete userfields setting
