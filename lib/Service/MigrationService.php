@@ -712,15 +712,25 @@ class MigrationService
         $total = count($items);
         $deleted = 0;
 
+        $errors = 0;
+        $firstError = '';
         foreach ($items as $item) {
             $this->checkStop();
             try {
                 BoxD7Service::{$cfg['d7']}((int)$item['ID']);
                 $deleted++;
-            } catch (\Throwable $e) {}
+            } catch (\Throwable $e) {
+                $errors++;
+                if ($errors <= 3) {
+                    $firstError .= "  ID={$item['ID']}: {$e->getMessage()}\n";
+                }
+            }
         }
 
-        $this->addLog("Очистка $entityType: удалено $deleted из $total");
+        $this->addLog("Очистка $entityType: удалено=$deleted, ошибок=$errors из $total");
+        if ($firstError) {
+            $this->addLog("Первые ошибки удаления ($entityType):\n$firstError");
+        }
     }
 
     // =========================================================================

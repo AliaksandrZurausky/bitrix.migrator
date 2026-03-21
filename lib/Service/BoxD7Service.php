@@ -135,8 +135,15 @@ class BoxD7Service
 
     public static function deleteCompany(int $id): bool
     {
+        if (!Loader::includeModule('crm')) {
+            throw new \Exception('CRM module not loaded');
+        }
         $obj = new \CCrmCompany(false);
-        return (bool)$obj->Delete($id, ['REGISTER_SONET_EVENT' => false]);
+        $result = $obj->Delete($id, ['REGISTER_SONET_EVENT' => false]);
+        if (!$result) {
+            throw new \Exception('CCrmCompany::Delete error for ID=' . $id);
+        }
+        return true;
     }
 
     // =========================================================================
@@ -164,8 +171,15 @@ class BoxD7Service
 
     public static function deleteContact(int $id): bool
     {
+        if (!Loader::includeModule('crm')) {
+            throw new \Exception('CRM module not loaded');
+        }
         $obj = new \CCrmContact(false);
-        return (bool)$obj->Delete($id, ['REGISTER_SONET_EVENT' => false]);
+        $result = $obj->Delete($id, ['REGISTER_SONET_EVENT' => false]);
+        if (!$result) {
+            throw new \Exception('CCrmContact::Delete error for ID=' . $id);
+        }
+        return true;
     }
 
     /**
@@ -211,8 +225,15 @@ class BoxD7Service
 
     public static function deleteDeal(int $id): bool
     {
+        if (!Loader::includeModule('crm')) {
+            throw new \Exception('CRM module not loaded');
+        }
         $obj = new \CCrmDeal(false);
-        return (bool)$obj->Delete($id, ['REGISTER_SONET_EVENT' => false]);
+        $result = $obj->Delete($id, ['REGISTER_SONET_EVENT' => false]);
+        if (!$result) {
+            throw new \Exception('CCrmDeal::Delete error for ID=' . $id);
+        }
+        return true;
     }
 
     /**
@@ -258,8 +279,15 @@ class BoxD7Service
 
     public static function deleteLead(int $id): bool
     {
+        if (!Loader::includeModule('crm')) {
+            throw new \Exception('CRM module not loaded');
+        }
         $obj = new \CCrmLead(false);
-        return (bool)$obj->Delete($id, ['REGISTER_SONET_EVENT' => false]);
+        $result = $obj->Delete($id, ['REGISTER_SONET_EVENT' => false]);
+        if (!$result) {
+            throw new \Exception('CCrmLead::Delete error for ID=' . $id);
+        }
+        return true;
     }
 
     // =========================================================================
