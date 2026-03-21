@@ -277,17 +277,6 @@
             });
         }
 
-        // Box mode toggle — show/hide invitation option
-        var boxMode = document.getElementById('plan-box-mode');
-        if (boxMode) {
-            boxMode.addEventListener('change', function() {
-                var inviteGroup = document.getElementById('plan-send-invite-group');
-                if (inviteGroup) {
-                    inviteGroup.style.display = boxMode.value === 'd7' ? '' : 'none';
-                }
-            });
-        }
-
         // Delete userfields master toggle — affects both CRM entities and smart processes
         var deleteUfMaster = document.getElementById('plan-delete-userfields');
         if (deleteUfMaster) {
@@ -366,12 +355,11 @@
         if (plan.settings) {
             if (plan.settings.user_match_strategy) document.getElementById('plan-user-strategy').value = plan.settings.user_match_strategy;
             if (plan.settings.conflict_resolution) document.getElementById('plan-conflict-resolution').value = plan.settings.conflict_resolution;
-            if (plan.settings.box_mode) {
-                document.getElementById('plan-box-mode').value = plan.settings.box_mode;
-                // Trigger change to show/hide invite option
-                document.getElementById('plan-box-mode').dispatchEvent(new Event('change'));
-            }
             if (plan.settings.send_invite) document.getElementById('plan-send-invite').value = plan.settings.send_invite;
+            var saveIdsEl = document.getElementById('plan-save-migrated-ids');
+            if (saveIdsEl) saveIdsEl.checked = !!plan.settings.save_migrated_ids;
+            var delMigratedEl = document.getElementById('plan-delete-migrated-data');
+            if (delMigratedEl) delMigratedEl.checked = !!plan.settings.delete_migrated_data;
         }
 
         // Restore delete userfields setting
@@ -809,8 +797,9 @@
         plan.settings = {
             user_match_strategy: document.getElementById('plan-user-strategy').value,
             conflict_resolution: document.getElementById('plan-conflict-resolution').value,
-            box_mode: document.getElementById('plan-box-mode').value,
-            send_invite: document.getElementById('plan-send-invite').value
+            send_invite: document.getElementById('plan-send-invite').value,
+            save_migrated_ids: !!(document.getElementById('plan-save-migrated-ids') || {}).checked,
+            delete_migrated_data: !!(document.getElementById('plan-delete-migrated-data') || {}).checked
         };
 
         // Delete userfields setting

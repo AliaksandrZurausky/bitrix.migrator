@@ -133,6 +133,12 @@ class BoxD7Service
         return true;
     }
 
+    public static function deleteCompany(int $id): bool
+    {
+        $obj = new \CCrmCompany(false);
+        return (bool)$obj->Delete($id, ['REGISTER_SONET_EVENT' => false]);
+    }
+
     // =========================================================================
     // Contacts
     // =========================================================================
@@ -154,6 +160,12 @@ class BoxD7Service
             throw new \Exception('CCrmContact::Update error: ' . $obj->GetLastErrorMessage());
         }
         return true;
+    }
+
+    public static function deleteContact(int $id): bool
+    {
+        $obj = new \CCrmContact(false);
+        return (bool)$obj->Delete($id, ['REGISTER_SONET_EVENT' => false]);
     }
 
     /**
@@ -197,6 +209,12 @@ class BoxD7Service
         return true;
     }
 
+    public static function deleteDeal(int $id): bool
+    {
+        $obj = new \CCrmDeal(false);
+        return (bool)$obj->Delete($id, ['REGISTER_SONET_EVENT' => false]);
+    }
+
     /**
      * Link deal to contacts (replaces crm.deal.contact.items.set).
      */
@@ -236,6 +254,12 @@ class BoxD7Service
             throw new \Exception('CCrmLead::Update error: ' . $obj->GetLastErrorMessage());
         }
         return true;
+    }
+
+    public static function deleteLead(int $id): bool
+    {
+        $obj = new \CCrmLead(false);
+        return (bool)$obj->Delete($id, ['REGISTER_SONET_EVENT' => false]);
     }
 
     // =========================================================================

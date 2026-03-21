@@ -161,11 +161,8 @@ function migratorStatusText($status) {
                 <div class="migrator-accordion-body" id="plan-settings-body">
                     <div class="migrator-form-group" style="margin-bottom:16px;">
                         <label class="migrator-label">Режим работы с коробкой:</label>
-                        <select id="plan-box-mode" class="migrator-input" style="width:auto;">
-                            <option value="api">REST API (через вебхук)</option>
-                            <option value="d7" selected>D7 (прямое подключение на сервере)</option>
-                        </select>
-                        <p style="margin:4px 0 0;font-size:12px;color:#888;">D7 — прямая работа с БД через ядро Bitrix. Доступно только при запуске CLI на сервере коробки.</p>
+                        <div style="padding:6px 0;font-size:14px;font-weight:600;color:#27ae60;">D7 (прямое подключение через ядро Bitrix)</div>
+                        <p style="margin:4px 0 0;font-size:12px;color:#888;">CRM-сущности создаются через D7 напрямую (без пауз). REST API используется только для операций без D7-альтернативы (подразделения, воронки, активности и т.д.).</p>
                     </div>
                     <div class="migrator-form-group" style="margin-bottom:16px;">
                         <label class="migrator-label">Маппинг пользователей:</label>
@@ -173,7 +170,7 @@ function migratorStatusText($status) {
                             <option value="email">По совпадению email</option>
                         </select>
                     </div>
-                    <div class="migrator-form-group" id="plan-send-invite-group" style="margin-bottom:16px;display:none;">
+                    <div class="migrator-form-group" id="plan-send-invite-group" style="margin-bottom:16px;">
                         <label class="migrator-label">Приглашение пользователей:</label>
                         <select id="plan-send-invite" class="migrator-input" style="width:auto;">
                             <option value="N">Не отправлять приглашение на email</option>
@@ -187,6 +184,26 @@ function migratorStatusText($status) {
                             <option value="skip">Использовать существующую (не создавать)</option>
                             <option value="create">Создать новую</option>
                         </select>
+                    </div>
+                    <div class="migrator-form-group" style="margin-bottom:16px;">
+                        <label class="migrator-label">Перенос ID в HL блок (для возможности отката):</label>
+                        <div style="margin-top:8px;">
+                            <label style="display:flex;align-items:center;gap:6px;font-weight:600;">
+                                <input type="checkbox" id="plan-save-migrated-ids">
+                                Сохранять ID созданных записей в HL блок
+                            </label>
+                            <p style="margin:6px 0 0 24px;font-size:12px;color:#888;">При включении IDs компаний, контактов, сделок и лидов, созданных в ходе миграции, будут записаны в MigratorMap. Это позволит удалить только их при следующем запуске.</p>
+                        </div>
+                    </div>
+                    <div class="migrator-form-group" style="margin-bottom:16px;" id="plan-delete-migrated-group">
+                        <label class="migrator-label" style="color:#c00;">Удаление ранее перенесённых данных:</label>
+                        <div style="margin-top:8px;">
+                            <label style="display:flex;align-items:center;gap:6px;font-weight:600;color:#c00;">
+                                <input type="checkbox" id="plan-delete-migrated-data">
+                                Удалить ранее перенесённые данные из HL блока перед миграцией
+                            </label>
+                            <p style="margin:6px 0 0 24px;font-size:12px;color:#888;">Перед стартом миграции удалит только те компании, контакты, сделки и лиды, ID которых хранятся в MigratorMap. Затем очистит записи из HL блока. Не затрагивает данные, добавленные вручную.</p>
+                        </div>
                     </div>
                     <div class="migrator-form-group" style="margin-bottom:0;">
                         <label class="migrator-label">Удаление пользовательских полей перед миграцией:</label>

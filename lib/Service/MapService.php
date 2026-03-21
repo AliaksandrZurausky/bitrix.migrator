@@ -183,4 +183,45 @@ class MapService
     {
         return self::getMap($entityType, $cloudId) !== null;
     }
+
+    /**
+     * Get all box (local) IDs for a given entity type.
+     * Returns array of integer IDs.
+     */
+    public static function getAllLocalIds(string $entityType): array
+    {
+        $entity = self::getEntity();
+        $entityDataClass = $entity->getDataClass();
+
+        $ids = [];
+        $rs = $entityDataClass::getList([
+            'filter' => ['=UF_ENTITY_TYPE' => $entityType],
+            'select' => ['UF_LOCAL_ID'],
+        ]);
+        while ($row = $rs->fetch()) {
+            $id = (int)$row['UF_LOCAL_ID'];
+            if ($id > 0) {
+                $ids[] = $id;
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
+     * Delete all map entries for a given entity type.
+     */
+    public static function clearByEntityType(string $entityType): void
+    {
+        $entity = self::getEntity();
+        $entityDataClass = $entity->getDataClass();
+
+        $rs = $entityDataClass::getList([
+            'filter' => ['=UF_ENTITY_TYPE' => $entityType],
+            'select' => ['ID'],
+        ]);
+        while ($row = $rs->fetch()) {
+            $entityDataClass::delete($row['ID']);
+        }
+    }
 }

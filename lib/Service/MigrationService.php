@@ -4,6 +4,7 @@ namespace BitrixMigrator\Service;
 
 use BitrixMigrator\Integration\CloudAPI;
 use Bitrix\Main\Config\Option;
+use Bitrix\Main\Loader;
 
 class MigrationService
 {
@@ -13,7 +14,6 @@ class MigrationService
     private $moduleId = 'bitrix_migrator';
     private $logFile = null;
     private $errorLogFile = null; // separate file for detailed error traces
-    private $boxMode = 'api'; // 'api' or 'd7'
 
     // Caches
     private $userMapCache = [];      // cloud user ID => box user ID
@@ -28,6 +28,7 @@ class MigrationService
 
     private $log = [];
     private $opCount = 0;
+    private $saveMapEnabled = false; // persist created IDs to MigratorMap HL block
 
     // Migration phases in execution order
     const PHASES = [
@@ -69,12 +70,7 @@ class MigrationService
         $this->cloudAPI = $cloudAPI;
         $this->boxAPI = $boxAPI;
         $this->plan = $plan;
-        $this->boxMode = $plan['settings']['box_mode'] ?? 'd7';
-    }
-
-    private function isD7Mode(): bool
-    {
-        return $this->boxMode === 'd7';
+        $this->saveMapEnabled = !empty($plan['settings']['save_migrated_ids']);
     }
 
     public function setLogFile($path)
@@ -90,7 +86,12 @@ class MigrationService
         $this->addLog('=== Начало полной миграции ===');
 
         try {
-            // --- Step 0: Run all cleanups first, before any migration ---
+            // --- Step 0a: Delete previously migrated data via HL block (if enabled) ---
+            if (!empty($this->plan['settings']['delete_migrated_data'])) {
+                $this->runHlBlockCleanup();
+            }
+
+            // --- Step 0b: Run all cleanups first, before any migration ---
             $this->runAllCleanups();
 
             foreach (self::PHASES as $phase) {
@@ -358,7 +359,7 @@ class MigrationService
 
         // --- Create new users ---
         foreach ($newUsers as $i => $u) {
-            $this->rateLimit(true);
+            $this->checkStop();
             $this->savePhaseProgress('users', $i + 1, $total + count($existingToUpdate));
 
             // Skip users without email — user.add requires email
@@ -405,14 +406,9 @@ class MigrationService
                 }
                 if (!empty($u['PERSONAL_PHOTO'])) $fields['PERSONAL_PHOTO'] = $u['PERSONAL_PHOTO'];
 
-                if ($this->isD7Mode()) {
-                    $sendInvite = ($this->plan['settings']['send_invite'] ?? 'N') === 'Y';
-                    // Pass registration date for backdating
-                    if (!empty($u['DATE_REGISTER'])) $fields['DATE_REGISTER'] = $u['DATE_REGISTER'];
-                    $newId = BoxD7Service::createUser($fields, $sendInvite);
-                } else {
-                    $newId = $this->boxAPI->inviteUser($fields);
-                }
+                $sendInvite = ($this->plan['settings']['send_invite'] ?? 'N') === 'Y';
+                if (!empty($u['DATE_REGISTER'])) $fields['DATE_REGISTER'] = $u['DATE_REGISTER'];
+                $newId = BoxD7Service::createUser($fields, $sendInvite);
                 if ($newId) {
                     $this->userMapCache[(int)$u['ID']] = $newId;
                     $invited++;
@@ -428,7 +424,7 @@ class MigrationService
 
         // --- Update existing users (departments, position) ---
         foreach ($existingToUpdate as $j => $u) {
-            $this->rateLimit(true);
+            $this->checkStop();
             $this->savePhaseProgress('users', $total + $j + 1, $total + count($existingToUpdate));
 
             $cloudId = (int)$u['ID'];
@@ -446,11 +442,7 @@ class MigrationService
                 }
 
                 if (!empty($updateFields)) {
-                    if ($this->isD7Mode()) {
-                        BoxD7Service::updateUser($boxUserId, $updateFields);
-                    } else {
-                        $this->boxAPI->updateUser($boxUserId, $updateFields);
-                    }
+                    BoxD7Service::updateUser($boxUserId, $updateFields);
                     $updated++;
                 }
             } catch (\Throwable $e) {
@@ -511,6 +503,84 @@ class MigrationService
     private function isCleanupEnabled($phase)
     {
         return ($this->plan['cleanup'] ?? [])[$phase] ?? false;
+    }
+
+    /**
+     * Delete only previously migrated entities using IDs stored in MigratorMap HL block.
+     * Runs before main cleanup and migration phases.
+     */
+    private function runHlBlockCleanup(): void
+    {
+        if (!Loader::includeModule('highloadblock')) {
+            $this->addLog('[HL cleanup] Модуль highloadblock не загружен, пропуск');
+            return;
+        }
+
+        $this->addLog("--- Удаление ранее перенесённых данных (HL блок) ---");
+        $this->setStatus('running', 'Удаление ранее перенесённых данных...');
+
+        // Entity type → D7 delete method or API fallback
+        // Delete in dependency order: deals first (they reference contacts/companies)
+        $entityOrder = ['deal', 'contact', 'company', 'lead'];
+
+        foreach ($entityOrder as $entityType) {
+            $this->checkStop();
+
+            try {
+                $ids = MapService::getAllLocalIds($entityType);
+            } catch (\Throwable $e) {
+                $this->addLog("[HL cleanup] Ошибка чтения MigratorMap ($entityType): " . $e->getMessage());
+                continue;
+            }
+
+            if (empty($ids)) {
+                $this->addLog("[HL cleanup] $entityType: нет данных в HL блоке");
+                continue;
+            }
+
+            $this->addLog("[HL cleanup] $entityType: удаляем " . count($ids) . " записей...");
+            $deleted = 0;
+            $errors  = 0;
+
+            foreach ($ids as $boxId) {
+                $this->checkStop();
+                try {
+                    switch ($entityType) {
+                        case 'company': BoxD7Service::deleteCompany($boxId); break;
+                        case 'contact': BoxD7Service::deleteContact($boxId); break;
+                        case 'deal':    BoxD7Service::deleteDeal($boxId);    break;
+                        case 'lead':    BoxD7Service::deleteLead($boxId);    break;
+                    }
+                    $deleted++;
+                } catch (\Throwable $e) {
+                    $errors++;
+                }
+            }
+
+            // Clear map entries for this entity type
+            try {
+                MapService::clearByEntityType($entityType);
+            } catch (\Throwable $e) {
+                $this->addLog("[HL cleanup] Ошибка очистки MigratorMap ($entityType): " . $e->getMessage());
+            }
+
+            $this->addLog("[HL cleanup] $entityType: удалено=$deleted, ошибок=$errors");
+        }
+
+        $this->addLog("--- HL блок очистка завершена ---");
+    }
+
+    /**
+     * Save created entity ID to MigratorMap HL block (for future cleanup).
+     */
+    private function saveToMap(string $entityType, int $cloudId, int $boxId): void
+    {
+        if (!$this->saveMapEnabled) return;
+        try {
+            MapService::addMap($entityType, $cloudId, $boxId);
+        } catch (\Throwable $e) {
+            // Non-critical — don't interrupt migration
+        }
     }
 
     /**
@@ -622,29 +692,30 @@ class MigrationService
     }
 
     /**
-     * Delete all items of a CRM entity type on box (companies, contacts, deals, leads).
+     * Delete all items of a CRM entity type on box via D7 (companies, contacts, deals, leads).
      */
     private function cleanupCrmEntity($entityType)
     {
-        $methodMap = [
-            'companies' => ['list' => 'crm.company.list', 'delete' => 'deleteCompany'],
-            'contacts'  => ['list' => 'crm.contact.list', 'delete' => 'deleteContact'],
-            'deals'     => ['list' => 'crm.deal.list',    'delete' => 'deleteDeal'],
-            'leads'     => ['list' => 'crm.lead.list',    'delete' => 'deleteLead'],
+        $d7Map = [
+            'companies' => ['list' => 'crm.company.list', 'd7' => 'deleteCompany'],
+            'contacts'  => ['list' => 'crm.contact.list', 'd7' => 'deleteContact'],
+            'deals'     => ['list' => 'crm.deal.list',    'd7' => 'deleteDeal'],
+            'leads'     => ['list' => 'crm.lead.list',    'd7' => 'deleteLead'],
         ];
 
-        $cfg = $methodMap[$entityType] ?? null;
+        $cfg = $d7Map[$entityType] ?? null;
         if (!$cfg) return;
 
-        $this->addLog("Очистка $entityType на box...");
+        $this->addLog("Очистка $entityType на box (D7)...");
+        // Fetch IDs via REST (reading), delete via D7 (fast, no rate limit)
         $items = $this->boxAPI->fetchAll($cfg['list'], ['select' => ['ID']]);
         $total = count($items);
         $deleted = 0;
 
         foreach ($items as $item) {
-            $this->rateLimit();
+            $this->checkStop();
             try {
-                $this->boxAPI->{$cfg['delete']}((int)$item['ID']);
+                BoxD7Service::{$cfg['d7']}((int)$item['ID']);
                 $deleted++;
             } catch (\Throwable $e) {}
         }
@@ -995,7 +1066,7 @@ class MigrationService
         }
 
         foreach ($cloudCompanies as $i => $company) {
-            $this->rateLimit(true);
+            $this->checkStop();
             $this->savePhaseProgress('companies', $i + 1, $total);
             $cloudId = (int)$company['ID'];
 
@@ -1016,11 +1087,7 @@ class MigrationService
                 if ($dupAction === 'update') {
                     try {
                         $fields = $this->buildCompanyFields($company);
-                        if ($this->isD7Mode()) {
-                            BoxD7Service::updateCompany((int)$existing['ID'], $fields);
-                        } else {
-                            $this->boxAPI->updateCompany((int)$existing['ID'], $fields);
-                        }
+                        BoxD7Service::updateCompany((int)$existing['ID'], $fields);
                         $updated++;
                     } catch (\Throwable $e) {
                         $this->addLog("  Ошибка обновления компании #{$cloudId}: " . $e->getMessage());
@@ -1033,18 +1100,15 @@ class MigrationService
 
             try {
                 $fields = $this->buildCompanyFields($company);
-                if ($this->isD7Mode()) {
-                    if (!empty($company['DATE_CREATE'])) $fields['DATE_CREATE'] = $company['DATE_CREATE'];
-                    if (!empty($company['CREATED_BY_ID'])) {
-                        $cb = $this->mapUser($company['CREATED_BY_ID']);
-                        if ($cb) $fields['CREATED_BY_ID'] = $cb;
-                    }
-                    $newId = BoxD7Service::createCompany($fields);
-                } else {
-                    $newId = $this->boxAPI->addCompany($fields);
+                if (!empty($company['DATE_CREATE'])) $fields['DATE_CREATE'] = $company['DATE_CREATE'];
+                if (!empty($company['CREATED_BY_ID'])) {
+                    $cb = $this->mapUser($company['CREATED_BY_ID']);
+                    if ($cb) $fields['CREATED_BY_ID'] = $cb;
                 }
+                $newId = BoxD7Service::createCompany($fields);
                 if ($newId) {
                     $this->companyMapCache[$cloudId] = $newId;
+                    $this->saveToMap('company', $cloudId, $newId);
                     $created++;
                 }
             } catch (\Throwable $e) {
@@ -1104,7 +1168,7 @@ class MigrationService
         $dupAction = $dupSettings['action'] ?? 'skip';
 
         foreach ($cloudContacts as $i => $contact) {
-            $this->rateLimit(true);
+            $this->checkStop();
             $this->savePhaseProgress('contacts', $i + 1, $total);
             $cloudId = (int)$contact['ID'];
 
@@ -1114,11 +1178,7 @@ class MigrationService
                 if ($dupAction === 'update') {
                     try {
                         $fields = $this->buildContactFields($contact);
-                        if ($this->isD7Mode()) {
-                            BoxD7Service::updateContact((int)$existing['ID'], $fields);
-                        } else {
-                            $this->boxAPI->updateContact((int)$existing['ID'], $fields);
-                        }
+                        BoxD7Service::updateContact((int)$existing['ID'], $fields);
                         $updated++;
                     } catch (\Throwable $e) {
                         $this->addLog("  Ошибка обновления контакта #{$cloudId}: " . $e->getMessage());
@@ -1131,18 +1191,15 @@ class MigrationService
 
             try {
                 $fields = $this->buildContactFields($contact);
-                if ($this->isD7Mode()) {
-                    if (!empty($contact['DATE_CREATE'])) $fields['DATE_CREATE'] = $contact['DATE_CREATE'];
-                    if (!empty($contact['CREATED_BY_ID'])) {
-                        $cb = $this->mapUser($contact['CREATED_BY_ID']);
-                        if ($cb) $fields['CREATED_BY_ID'] = $cb;
-                    }
-                    $newId = BoxD7Service::createContact($fields);
-                } else {
-                    $newId = $this->boxAPI->addContact($fields);
+                if (!empty($contact['DATE_CREATE'])) $fields['DATE_CREATE'] = $contact['DATE_CREATE'];
+                if (!empty($contact['CREATED_BY_ID'])) {
+                    $cb = $this->mapUser($contact['CREATED_BY_ID']);
+                    if ($cb) $fields['CREATED_BY_ID'] = $cb;
                 }
+                $newId = BoxD7Service::createContact($fields);
                 if ($newId) {
                     $this->contactMapCache[$cloudId] = $newId;
+                    $this->saveToMap('contact', $cloudId, $newId);
                     $created++;
 
                     $this->linkContactCompanies($cloudId, $newId, $contact);
@@ -1206,12 +1263,8 @@ class MigrationService
             }
 
             if (!empty($boxItems)) {
-                if ($this->isD7Mode()) {
-                    $companyIds = array_column($boxItems, 'COMPANY_ID');
-                    BoxD7Service::setContactCompanies($boxContactId, $companyIds);
-                } else {
-                    $this->boxAPI->setContactCompanyItems($boxContactId, $boxItems);
-                }
+                $companyIds = array_column($boxItems, 'COMPANY_ID');
+                BoxD7Service::setContactCompanies($boxContactId, $companyIds);
             }
         } catch (\Throwable $e) {
             // Non-critical
@@ -1256,7 +1309,7 @@ class MigrationService
         }
 
         foreach ($cloudDeals as $i => $deal) {
-            $this->rateLimit(true);
+            $this->checkStop();
             $this->savePhaseProgress('deals', $i + 1, $total);
             $cloudId = (int)$deal['ID'];
 
@@ -1281,11 +1334,7 @@ class MigrationService
                             && !isset($boxCurrencies[$fields['CURRENCY_ID']])) {
                             unset($fields['CURRENCY_ID'], $fields['OPPORTUNITY'], $fields['TAX_VALUE']);
                         }
-                        if ($this->isD7Mode()) {
-                            BoxD7Service::updateDeal((int)$existing['ID'], $fields);
-                        } else {
-                            $this->boxAPI->updateDeal((int)$existing['ID'], $fields);
-                        }
+                        BoxD7Service::updateDeal((int)$existing['ID'], $fields);
                         $updated++;
                     } catch (\Throwable $e) {
                         $this->addLog("  Ошибка обновления сделки #{$cloudId}: " . $e->getMessage());
@@ -1303,18 +1352,15 @@ class MigrationService
                     && !isset($boxCurrencies[$fields['CURRENCY_ID']])) {
                     unset($fields['CURRENCY_ID'], $fields['OPPORTUNITY'], $fields['TAX_VALUE']);
                 }
-                if ($this->isD7Mode()) {
-                    if (!empty($deal['DATE_CREATE'])) $fields['DATE_CREATE'] = $deal['DATE_CREATE'];
-                    if (!empty($deal['CREATED_BY_ID'])) {
-                        $cb = $this->mapUser($deal['CREATED_BY_ID']);
-                        if ($cb) $fields['CREATED_BY_ID'] = $cb;
-                    }
-                    $newId = BoxD7Service::createDeal($fields);
-                } else {
-                    $newId = $this->boxAPI->addDeal($fields);
+                if (!empty($deal['DATE_CREATE'])) $fields['DATE_CREATE'] = $deal['DATE_CREATE'];
+                if (!empty($deal['CREATED_BY_ID'])) {
+                    $cb = $this->mapUser($deal['CREATED_BY_ID']);
+                    if ($cb) $fields['CREATED_BY_ID'] = $cb;
                 }
+                $newId = BoxD7Service::createDeal($fields);
                 if ($newId) {
                     $this->dealMapCache[$cloudId] = $newId;
+                    $this->saveToMap('deal', $cloudId, $newId);
                     $created++;
 
                     $this->linkDealContacts($cloudId, $newId);
@@ -1384,12 +1430,8 @@ class MigrationService
             }
 
             if (!empty($boxItems)) {
-                if ($this->isD7Mode()) {
-                    $contactIds = array_column($boxItems, 'CONTACT_ID');
-                    BoxD7Service::setDealContacts($boxDealId, $contactIds);
-                } else {
-                    $this->boxAPI->setDealContactItems($boxDealId, $boxItems);
-                }
+                $contactIds = array_column($boxItems, 'CONTACT_ID');
+                BoxD7Service::setDealContacts($boxDealId, $contactIds);
             }
         } catch (\Throwable $e) {
             // Non-critical
@@ -1420,7 +1462,7 @@ class MigrationService
         } catch (\Throwable $e) {}
 
         foreach ($cloudLeads as $i => $lead) {
-            $this->rateLimit(true);
+            $this->checkStop();
             $this->savePhaseProgress('leads', $i + 1, $total);
             $cloudId = (int)$lead['ID'];
 
@@ -1430,11 +1472,7 @@ class MigrationService
                 if ($dupAction === 'update') {
                     try {
                         $fields = $this->buildLeadFields($lead);
-                        if ($this->isD7Mode()) {
-                            BoxD7Service::updateLead((int)$existing['ID'], $fields);
-                        } else {
-                            $this->boxAPI->updateLead((int)$existing['ID'], $fields);
-                        }
+                        BoxD7Service::updateLead((int)$existing['ID'], $fields);
                         $updated++;
                     } catch (\Throwable $e) {
                         $this->addLog("  Ошибка обновления лида #{$cloudId}: " . $e->getMessage());
@@ -1451,18 +1489,15 @@ class MigrationService
                     && !isset($boxCurrencies[$fields['CURRENCY_ID']])) {
                     unset($fields['CURRENCY_ID'], $fields['OPPORTUNITY']);
                 }
-                if ($this->isD7Mode()) {
-                    if (!empty($lead['DATE_CREATE'])) $fields['DATE_CREATE'] = $lead['DATE_CREATE'];
-                    if (!empty($lead['CREATED_BY_ID'])) {
-                        $cb = $this->mapUser($lead['CREATED_BY_ID']);
-                        if ($cb) $fields['CREATED_BY_ID'] = $cb;
-                    }
-                    $newId = BoxD7Service::createLead($fields);
-                } else {
-                    $newId = $this->boxAPI->addLead($fields);
+                if (!empty($lead['DATE_CREATE'])) $fields['DATE_CREATE'] = $lead['DATE_CREATE'];
+                if (!empty($lead['CREATED_BY_ID'])) {
+                    $cb = $this->mapUser($lead['CREATED_BY_ID']);
+                    if ($cb) $fields['CREATED_BY_ID'] = $cb;
                 }
+                $newId = BoxD7Service::createLead($fields);
                 if ($newId) {
                     $this->leadMapCache[$cloudId] = $newId;
+                    $this->saveToMap('lead', $cloudId, $newId);
                     $created++;
                 }
             } catch (\Throwable $e) {
@@ -2218,30 +2253,14 @@ class MigrationService
     // =========================================================================
 
     /**
-     * Rate limit for REST API calls.
-     * In D7 mode box operations bypass REST — no pause needed.
-     * Cleanup still uses REST but is handled by 429 retry logic.
-     * @param bool $boxWrite  true = box write op (skips sleep in D7 mode)
+     * Rate limit for REST API calls. sleep(0.33) between requests.
+     * Call only before REST operations — D7 ops don't need pausing.
      */
-    private function rateLimit(bool $boxWrite = false)
+    private function rateLimit()
     {
         $this->opCount++;
-
-        // Skip sleep for box write operations in D7 mode (direct DB — no API rate limits)
-        $skipSleep = $boxWrite && $this->isD7Mode();
-
-        if (!$skipSleep) {
-            usleep(333000); // 333ms between operations (~3 req/s)
-        }
-
-        // Always check stop flag
+        usleep(333000); // 333ms (~3 req/s)
         $this->checkStop();
-
-        // Periodic long pause only for REST mode
-        if (!$skipSleep && $this->opCount % 100 === 0) {
-            $this->addLog("Пауза 10 сек (каждые 100 операций, op={$this->opCount})...");
-            sleep(10);
-        }
     }
 
     private function setStatus($status, $message)
