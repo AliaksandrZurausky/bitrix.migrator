@@ -51,6 +51,17 @@ class BoxD7Service
             'LID'              => (defined('SITE_ID') ? SITE_ID : 's1'),
         ];
 
+        // Backdate registration if cloud date is provided (e.g. DATE_REGISTER from user.get)
+        if (!empty($fields['DATE_REGISTER'])) {
+            $reg = $fields['DATE_REGISTER'];
+            // Convert ISO "2020-03-15T10:00:00+03:00" -> "15.03.2020"
+            if (preg_match('/^(\d{4})-(\d{2})-(\d{2})/', $reg, $m)) {
+                $userFields['DATE_REGISTER'] = $m[3] . '.' . $m[2] . '.' . $m[1];
+            } else {
+                $userFields['DATE_REGISTER'] = $reg;
+            }
+        }
+
         if (!empty($fields['UF_DEPARTMENT'])) {
             $userFields['UF_DEPARTMENT'] = $fields['UF_DEPARTMENT'];
         }

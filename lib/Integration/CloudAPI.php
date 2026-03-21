@@ -1085,6 +1085,19 @@ class CloudAPI
         return $result['result'] ?? null;
     }
 
+    public function getBankDetails($requisiteId)
+    {
+        return $this->fetchAll('crm.requisite.bankdetail.list', [
+            'filter' => ['ENTITY_ID' => (int)$requisiteId],
+        ]);
+    }
+
+    public function addBankDetail($fields)
+    {
+        $result = $this->request('crm.requisite.bankdetail.add', ['fields' => $fields]);
+        return $result['result'] ?? null;
+    }
+
     public function findRequisiteByInn($inn)
     {
         $result = $this->request('crm.requisite.list', [

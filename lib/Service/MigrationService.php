@@ -38,6 +38,7 @@ class MigrationService
         'contacts',
         'deals',
         'leads',
+        'requisites',
         'timeline',
         'workgroups',
         'smart_processes',
@@ -53,6 +54,7 @@ class MigrationService
         'contacts'        => 'Контакты',
         'deals'           => 'Сделки',
         'leads'           => 'Лиды',
+        'requisites'      => 'Реквизиты',
         'timeline'        => 'Таймлайн и активности',
         'workgroups'      => 'Рабочие группы',
         'smart_processes' => 'Смарт-процессы',
@@ -122,6 +124,27 @@ class MigrationService
     }
 
     // =========================================================================
+    // Helpers
+    // =========================================================================
+
+    /**
+     * Extract human-readable label text from a string or language-map array.
+     * Handles both `"Название"` (string) and `{"ru":"Название","en":"Name"}` (map).
+     */
+    private static function extractLabel($label): string
+    {
+        if (is_string($label) && $label !== '') {
+            return $label;
+        }
+        if (is_array($label)) {
+            foreach (['ru', 'en', 'de', 'pl', 'ua'] as $lang) {
+                if (!empty($label[$lang])) return $label[$lang];
+            }
+        }
+        return '';
+    }
+
+    // =========================================================================
     // Stop check
     // =========================================================================
 
@@ -148,6 +171,7 @@ class MigrationService
             'contacts'        => 'contacts',
             'deals'           => 'deals',
             'leads'           => 'leads',
+            'requisites'      => 'requisites',
             'timeline'        => 'timeline',
             'workgroups'      => 'workgroups',
             'smart_processes' => 'smart_processes',
@@ -377,6 +401,8 @@ class MigrationService
 
                 if ($this->isD7Mode()) {
                     $sendInvite = ($this->plan['settings']['send_invite'] ?? 'N') === 'Y';
+                    // Pass registration date for backdating
+                    if (!empty($u['DATE_REGISTER'])) $fields['DATE_REGISTER'] = $u['DATE_REGISTER'];
                     $newId = BoxD7Service::createUser($fields, $sendInvite);
                 } else {
                     $newId = $this->boxAPI->inviteUser($fields);
@@ -703,25 +729,28 @@ class MigrationService
 
                 if (in_array($fieldName, $boxFieldNames)) continue;
 
+                // Skip field types that are module-specific and can't be created on box
+                $userTypeId = $field['USER_TYPE_ID'] ?? 'string';
+                $unmigrateableTypes = ['im_openlines', 'crm_onetomany'];
+                if (in_array($userTypeId, $unmigrateableTypes)) {
+                    $this->addLog("  Пропуск поля $fieldName (тип '$userTypeId' — открытые линии, требует ручной настройки)");
+                    continue;
+                }
+
                 try {
                     $editLabel   = $field['EDIT_FORM_LABEL']   ?? [];
                     $listLabel   = $field['LIST_COLUMN_LABEL']  ?? [];
                     $filterLabel = $field['LIST_FILTER_LABEL']  ?? [];
 
                     // Priority 1: formLabel from crm.*.fields (plain string, always populated)
-                    // Priority 2: EDIT_FORM_LABEL from userfield.list (language map)
+                    // Priority 2: EDIT_FORM_LABEL / LIST_COLUMN_LABEL (string or language map)
                     // Priority 3: XML_ID / FIELD_NAME as last resort
                     if (!empty($fieldSchema[$fieldName])) {
                         $labelText = $fieldSchema[$fieldName];
                     } else {
-                        $labelText = '';
-                        if (is_array($editLabel)) {
-                            foreach (['ru', 'en', 'de', 'pl', 'ua'] as $lang) {
-                                if (!empty($editLabel[$lang])) {
-                                    $labelText = $editLabel[$lang];
-                                    break;
-                                }
-                            }
+                        $labelText = self::extractLabel($editLabel);
+                        if ($labelText === '') {
+                            $labelText = self::extractLabel($listLabel);
                         }
                         if ($labelText === '') {
                             $labelText = $field['XML_ID'] ?? $fieldName;
@@ -903,12 +932,34 @@ class MigrationService
         $matchBy = $dupSettings['match_by'] ?? ['TITLE'];
         $dupAction = $dupSettings['action'] ?? 'skip';
 
+        // Pre-build box companies title cache to avoid per-item API calls
+        $boxCompaniesByTitle = [];
+        if (in_array('TITLE', $matchBy)) {
+            $allBoxCompanies = $this->boxAPI->fetchAll('crm.company.list', ['select' => ['ID', 'TITLE']]);
+            foreach ($allBoxCompanies as $c) {
+                $t = mb_strtolower(trim($c['TITLE'] ?? ''));
+                if ($t && !isset($boxCompaniesByTitle[$t])) $boxCompaniesByTitle[$t] = (int)$c['ID'];
+            }
+            $this->addLog('Кэш компаний box: ' . count($boxCompaniesByTitle) . ' записей');
+        }
+
         foreach ($cloudCompanies as $i => $company) {
             $this->rateLimit(true);
             $this->savePhaseProgress('companies', $i + 1, $total);
             $cloudId = (int)$company['ID'];
 
-            $existing = $this->findDuplicate('company', $company, $matchBy);
+            // Fast title lookup from pre-built cache
+            $existing = null;
+            $titleKey = mb_strtolower(trim($company['TITLE'] ?? ''));
+            if ($titleKey && isset($boxCompaniesByTitle[$titleKey])) {
+                $existing = ['ID' => $boxCompaniesByTitle[$titleKey]];
+            } else {
+                $nonTitleCriteria = array_values(array_filter($matchBy, fn($c) => $c !== 'TITLE'));
+                if ($nonTitleCriteria) {
+                    $existing = $this->findDuplicate('company', $company, $nonTitleCriteria);
+                }
+            }
+
             if ($existing) {
                 $this->companyMapCache[$cloudId] = (int)$existing['ID'];
                 if ($dupAction === 'update') {
@@ -932,6 +983,11 @@ class MigrationService
             try {
                 $fields = $this->buildCompanyFields($company);
                 if ($this->isD7Mode()) {
+                    if (!empty($company['DATE_CREATE'])) $fields['DATE_CREATE'] = $company['DATE_CREATE'];
+                    if (!empty($company['CREATED_BY_ID'])) {
+                        $cb = $this->mapUser($company['CREATED_BY_ID']);
+                        if ($cb) $fields['CREATED_BY_ID'] = $cb;
+                    }
                     $newId = BoxD7Service::createCompany($fields);
                 } else {
                     $newId = $this->boxAPI->addCompany($fields);
@@ -1025,6 +1081,11 @@ class MigrationService
             try {
                 $fields = $this->buildContactFields($contact);
                 if ($this->isD7Mode()) {
+                    if (!empty($contact['DATE_CREATE'])) $fields['DATE_CREATE'] = $contact['DATE_CREATE'];
+                    if (!empty($contact['CREATED_BY_ID'])) {
+                        $cb = $this->mapUser($contact['CREATED_BY_ID']);
+                        if ($cb) $fields['CREATED_BY_ID'] = $cb;
+                    }
                     $newId = BoxD7Service::createContact($fields);
                 } else {
                     $newId = $this->boxAPI->addContact($fields);
@@ -1123,12 +1184,34 @@ class MigrationService
         $matchBy = $dupSettings['match_by'] ?? ['TITLE'];
         $dupAction = $dupSettings['action'] ?? 'skip';
 
+        // Pre-build box deals title cache to avoid per-item API calls
+        $boxDealsByTitle = [];
+        if (in_array('TITLE', $matchBy)) {
+            $allBoxDeals = $this->boxAPI->fetchAll('crm.deal.list', ['select' => ['ID', 'TITLE']]);
+            foreach ($allBoxDeals as $d) {
+                $t = mb_strtolower(trim($d['TITLE'] ?? ''));
+                if ($t && !isset($boxDealsByTitle[$t])) $boxDealsByTitle[$t] = (int)$d['ID'];
+            }
+            $this->addLog('Кэш сделок box: ' . count($boxDealsByTitle) . ' записей');
+        }
+
         foreach ($cloudDeals as $i => $deal) {
             $this->rateLimit(true);
             $this->savePhaseProgress('deals', $i + 1, $total);
             $cloudId = (int)$deal['ID'];
 
-            $existing = $this->findDuplicate('deal', $deal, $matchBy);
+            // Fast title lookup from pre-built cache
+            $existing = null;
+            $titleKey = mb_strtolower(trim($deal['TITLE'] ?? ''));
+            if ($titleKey && isset($boxDealsByTitle[$titleKey])) {
+                $existing = ['ID' => $boxDealsByTitle[$titleKey]];
+            } else {
+                $nonTitleCriteria = array_values(array_filter($matchBy, fn($c) => $c !== 'TITLE'));
+                if ($nonTitleCriteria) {
+                    $existing = $this->findDuplicate('deal', $deal, $nonTitleCriteria);
+                }
+            }
+
             if ($existing) {
                 $this->dealMapCache[$cloudId] = (int)$existing['ID'];
                 if ($dupAction === 'update') {
@@ -1152,6 +1235,11 @@ class MigrationService
             try {
                 $fields = $this->buildDealFields($deal);
                 if ($this->isD7Mode()) {
+                    if (!empty($deal['DATE_CREATE'])) $fields['DATE_CREATE'] = $deal['DATE_CREATE'];
+                    if (!empty($deal['CREATED_BY_ID'])) {
+                        $cb = $this->mapUser($deal['CREATED_BY_ID']);
+                        if ($cb) $fields['CREATED_BY_ID'] = $cb;
+                    }
                     $newId = BoxD7Service::createDeal($fields);
                 } else {
                     $newId = $this->boxAPI->addDeal($fields);
@@ -1285,6 +1373,11 @@ class MigrationService
             try {
                 $fields = $this->buildLeadFields($lead);
                 if ($this->isD7Mode()) {
+                    if (!empty($lead['DATE_CREATE'])) $fields['DATE_CREATE'] = $lead['DATE_CREATE'];
+                    if (!empty($lead['CREATED_BY_ID'])) {
+                        $cb = $this->mapUser($lead['CREATED_BY_ID']);
+                        if ($cb) $fields['CREATED_BY_ID'] = $cb;
+                    }
                     $newId = BoxD7Service::createLead($fields);
                 } else {
                     $newId = $this->boxAPI->addLead($fields);
@@ -1340,7 +1433,76 @@ class MigrationService
     }
 
     // =========================================================================
-    // Phase 9: Timeline (Activities & Comments)
+    // Phase 9: Requisites (companies + contacts)
+    // =========================================================================
+
+    private function migrateRequisites()
+    {
+        // entity type IDs: Company=4, Contact=3
+        $entityMap = [
+            4 => ['name' => 'company', 'cache' => &$this->companyMapCache],
+            3 => ['name' => 'contact', 'cache' => &$this->contactMapCache],
+        ];
+
+        $totalReq = 0;
+        $totalBank = 0;
+        $errors = 0;
+
+        foreach ($entityMap as $typeId => $cfg) {
+            $cache = $cfg['cache'];
+            $this->addLog("Реквизиты: обработка {$cfg['name']} (" . count($cache) . " шт)...");
+
+            foreach ($cache as $cloudEntityId => $boxEntityId) {
+                $this->rateLimit();
+                try {
+                    $requisites = $this->cloudAPI->getRequisites($typeId, $cloudEntityId);
+                    foreach ($requisites as $req) {
+                        $this->rateLimit();
+                        $cloudReqId = (int)$req['ID'];
+                        unset($req['ID'], $req['DATE_CREATE'], $req['DATE_MODIFY'],
+                              $req['CREATED_BY_ID'], $req['MODIFY_BY_ID']);
+                        $req['ENTITY_TYPE_ID'] = $typeId;
+                        $req['ENTITY_ID'] = $boxEntityId;
+
+                        try {
+                            $boxReqId = $this->boxAPI->addRequisite($req);
+                            if ($boxReqId) {
+                                $totalReq++;
+                                // Migrate bank details for this requisite
+                                try {
+                                    $bankDetails = $this->cloudAPI->getBankDetails($cloudReqId);
+                                    foreach ($bankDetails as $bank) {
+                                        $this->rateLimit();
+                                        unset($bank['ID'], $bank['DATE_CREATE'], $bank['DATE_MODIFY'],
+                                              $bank['CREATED_BY_ID'], $bank['MODIFY_BY_ID']);
+                                        $bank['ENTITY_ID'] = $boxReqId;
+                                        try {
+                                            $this->boxAPI->addBankDetail($bank);
+                                            $totalBank++;
+                                        } catch (\Throwable $e) {
+                                            $errors++;
+                                        }
+                                    }
+                                } catch (\Throwable $e) {
+                                    // non-critical
+                                }
+                            }
+                        } catch (\Throwable $e) {
+                            $errors++;
+                            $this->addLog("  Ошибка реквизита ({$cfg['name']} box#{$boxEntityId}): " . $e->getMessage());
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    $this->addLog("  Ошибка получения реквизитов ({$cfg['name']} cloud#{$cloudEntityId}): " . $e->getMessage());
+                }
+            }
+        }
+
+        $this->addLog("Реквизиты: создано=$totalReq, банковских реквизитов=$totalBank, ошибок=$errors");
+    }
+
+    // =========================================================================
+    // Phase 10: Timeline (Activities & Comments)
     // =========================================================================
 
     private function migrateTimeline()
@@ -1388,11 +1550,11 @@ class MigrationService
                             $totalActivities++;
                         } catch (\Throwable $e) {
                             $errors++;
-                            // Skip "already exists" type errors silently
+                            $this->addLog('  Активность #' . ($activity['ID'] ?? '?') . ' [type=' . ($activity['TYPE_ID'] ?? '?') . ']: ' . $e->getMessage());
                         }
                     }
                 } catch (\Throwable $e) {
-                    // Getting activities failed — skip entity
+                    $this->addLog('  Ошибка получения активностей (' . $entityName . ' #' . $cloudId . '): ' . $e->getMessage());
                 }
 
                 // Migrate timeline comments
@@ -1423,23 +1585,38 @@ class MigrationService
     {
         $fields = [
             'OWNER_TYPE_ID' => $ownerTypeId,
-            'OWNER_ID' => $boxOwnerId,
-            'TYPE_ID' => $activity['TYPE_ID'] ?? 0,
-            'SUBJECT' => $activity['SUBJECT'] ?? '',
-            'DESCRIPTION' => $activity['DESCRIPTION'] ?? '',
-            'DIRECTION' => $activity['DIRECTION'] ?? 0,
-            'COMPLETED' => $activity['COMPLETED'] ?? 'N',
-            'PRIORITY' => $activity['PRIORITY'] ?? '2',
+            'OWNER_ID'      => $boxOwnerId,
+            'TYPE_ID'       => $activity['TYPE_ID'] ?? 0,
+            'SUBJECT'       => $activity['SUBJECT'] ?? '',
+            'DESCRIPTION'   => $activity['DESCRIPTION'] ?? '',
+            'DIRECTION'     => $activity['DIRECTION'] ?? 0,
+            'COMPLETED'     => $activity['COMPLETED'] ?? 'N',
+            'PRIORITY'      => $activity['PRIORITY'] ?? '2',
         ];
 
         if (!empty($activity['START_TIME'])) $fields['START_TIME'] = $activity['START_TIME'];
-        if (!empty($activity['END_TIME'])) $fields['END_TIME'] = $activity['END_TIME'];
-        if (!empty($activity['DEADLINE'])) $fields['DEADLINE'] = $activity['DEADLINE'];
+        if (!empty($activity['END_TIME']))   $fields['END_TIME']   = $activity['END_TIME'];
+        if (!empty($activity['DEADLINE']))   $fields['DEADLINE']   = $activity['DEADLINE'];
 
         // Map responsible
         if (!empty($activity['RESPONSIBLE_ID'])) {
             $boxUser = $this->mapUser($activity['RESPONSIBLE_ID']);
             if ($boxUser) $fields['RESPONSIBLE_ID'] = $boxUser;
+        }
+
+        // Provider (required for telephony/voip activities)
+        if (!empty($activity['PROVIDER_ID']))      $fields['PROVIDER_ID']      = $activity['PROVIDER_ID'];
+        if (!empty($activity['PROVIDER_TYPE_ID'])) $fields['PROVIDER_TYPE_ID'] = $activity['PROVIDER_TYPE_ID'];
+
+        // Call-specific fields
+        if (!empty($activity['PHONE_NUMBER']))  $fields['PHONE_NUMBER']  = $activity['PHONE_NUMBER'];
+        if (isset($activity['CALL_DURATION']) && $activity['CALL_DURATION'] !== '')
+            $fields['CALL_DURATION'] = $activity['CALL_DURATION'];
+
+        // Call recording: append URL to description since file can't be transferred
+        if (!empty($activity['CALL_RECORD_URL'])) {
+            $fields['DESCRIPTION'] = ($fields['DESCRIPTION'] ? $fields['DESCRIPTION'] . "\n\n" : '')
+                . '[Запись звонка: ' . $activity['CALL_RECORD_URL'] . ']';
         }
 
         // Communications (phone numbers, emails linked to activity)
