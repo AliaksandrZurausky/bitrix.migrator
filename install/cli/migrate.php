@@ -100,6 +100,19 @@ $boxAPI   = new CloudAPI($boxWebhookUrl);
 $planJson = Option::get($moduleId, 'migration_plan', '');
 $plan     = $planJson ? json_decode($planJson, true) : [];
 
+// Catch fatal PHP errors (out of memory, class not found, etc.) that bypass try/catch
+register_shutdown_function(function () use ($moduleId, $logFile) {
+    $err = error_get_last();
+    if ($err && in_array($err['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
+        $msg = "PHP FATAL [{$err['type']}]: {$err['message']} in {$err['file']}:{$err['line']}";
+        @file_put_contents($logFile, date('Y-m-d H:i:s') . ' ' . $msg . "\n", FILE_APPEND);
+        fwrite(STDERR, $msg . "\n");
+        Option::set($moduleId, 'migration_status', 'error');
+        Option::set($moduleId, 'migration_message', $msg);
+        Option::set($moduleId, 'migration_pid', '');
+    }
+});
+
 try {
     if ($migrateType === 'tasks') {
         $service = new TaskMigrationService($cloudAPI, $boxAPI, $plan);
@@ -110,8 +123,8 @@ try {
         $service->setLogFile($logFile);
         $service->migrate();
     }
-} catch (\Exception $e) {
-    cliLog("FATAL: " . $e->getMessage(), $logFile);
+} catch (\Throwable $e) {
+    cliLog("FATAL: " . $e->getMessage() . " in " . $e->getFile() . ":" . $e->getLine(), $logFile);
     Option::set($moduleId, 'migration_status', 'error');
     Option::set($moduleId, 'migration_message', $e->getMessage());
 }

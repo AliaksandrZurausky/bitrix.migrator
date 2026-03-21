@@ -15,6 +15,7 @@ Loader::registerAutoloadClasses(
         'BitrixMigrator\\Service\\MigrationStoppedException' => 'lib/Service/MigrationStoppedException.php',
         'BitrixMigrator\\Service\\TaskMigrationService' => 'lib/Service/TaskMigrationService.php',
         'BitrixMigrator\\Service\\MigrationService' => 'lib/Service/MigrationService.php',
+        'BitrixMigrator\\Service\\BoxD7Service' => 'lib/Service/BoxD7Service.php',
         'BitrixMigrator\\Integration\\CloudAPI' => 'lib/Integration/CloudAPI.php',
         'BitrixMigrator\\EventHandlers' => 'lib/EventHandlers.php',
         'Bitrix\\Migrator\\Controller\\Migrator' => 'lib/Controller/Migrator.php',

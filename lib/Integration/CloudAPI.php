@@ -55,7 +55,13 @@ class CloudAPI
         }
 
         if ($httpCode !== 200) {
-            throw new \Exception('HTTP error: ' . $httpCode);
+            $body = substr($rawResponse, $headerSize);
+            $decoded = json_decode($body, true);
+            $detail = '';
+            if (is_array($decoded)) {
+                $detail = ': ' . ($decoded['error_description'] ?? $decoded['error'] ?? $body);
+            }
+            throw new \Exception('HTTP error: ' . $httpCode . $detail);
         }
 
         $body = substr($rawResponse, $headerSize);
@@ -82,9 +88,14 @@ class CloudAPI
     }
 
     /**
-     * Fetch all entities with pagination
+     * Fetch all entities with pagination.
+     *
+     * @param string      $method    REST API method
+     * @param array       $params    Request params
+     * @param string|null $resultKey When the API wraps items in a sub-key of result
+     *                               (e.g. 'tasks' for tasks.task.list which returns result.tasks)
      */
-    public function fetchAll($method, $params = [])
+    public function fetchAll($method, $params = [], $resultKey = null)
     {
         $items = [];
         $next = 0;
@@ -94,13 +105,16 @@ class CloudAPI
             $result = $this->request($method, $params);
 
             if (isset($result['result']) && is_array($result['result'])) {
-                $items = array_merge($items, $result['result']);
+                $data = $resultKey ? ($result['result'][$resultKey] ?? []) : $result['result'];
+                if (is_array($data)) {
+                    $items = array_merge($items, $data);
+                }
             }
 
             $next = $result['next'] ?? null;
-            
+
             if ($next !== null) {
-                usleep(600000); // 0.6s delay between paginated requests (~1.6 req/s)
+                usleep(333000); // 333ms delay between paginated requests (~3 req/s)
             }
         } while ($next !== null);
 
@@ -120,7 +134,7 @@ class CloudAPI
      */
     public function getUsersCount()
     {
-        return $this->getCount('user.get');
+        return $this->getCount('user.get', ['USER_TYPE' => 'employee']);
     }
 
     /**
@@ -160,16 +174,17 @@ class CloudAPI
      */
     public function getTasksCount()
     {
+        // tasks.task.list returns total at top level, same as getCount reads
         return $this->getCount('tasks.task.list');
     }
 
     /**
-     * Get all users (no API-side filter — filter active/inactive in PHP after).
+     * Get all intranet users (employee type only, excludes extranet/email users).
      * user.get returns all user fields; field selection is not supported.
      */
     public function getUsers()
     {
-        return $this->fetchAll('user.get', []);
+        return $this->fetchAll('user.get', ['USER_TYPE' => 'employee']);
     }
 
     /**
@@ -209,7 +224,8 @@ class CloudAPI
      */
     public function getTasks($select = ['ID', 'TITLE'])
     {
-        return $this->fetchAll('tasks.task.list', ['select' => $select]);
+        // tasks.task.list returns result.tasks (nested), not result directly
+        return $this->fetchAll('tasks.task.list', ['select' => $select], 'tasks');
     }
 
     /**
@@ -888,6 +904,29 @@ class CloudAPI
     public function deleteWorkgroup($id)
     {
         $result = $this->request('sonet_group.delete', ['GROUP_ID' => (int)$id]);
+        return $result['result'] ?? false;
+    }
+
+    /**
+     * Get members of a workgroup.
+     * Returns array of items with USER_ID, ROLE (A=admin, E=member, K=moderator).
+     */
+    public function getWorkgroupMembers($groupId)
+    {
+        return $this->fetchAll('sonet_group.user.get', ['GROUP_ID' => (int)$groupId]);
+    }
+
+    /**
+     * Add user to a workgroup.
+     * ROLE: A=admin, E=member (employee), K=moderator.
+     */
+    public function addWorkgroupMember($groupId, $userId, $role = 'E')
+    {
+        $result = $this->request('sonet_group.user.add', [
+            'GROUP_ID' => (int)$groupId,
+            'USER_ID'  => (int)$userId,
+            'ROLE'     => $role,
+        ]);
         return $result['result'] ?? false;
     }
 

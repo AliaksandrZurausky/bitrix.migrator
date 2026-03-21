@@ -12,6 +12,7 @@ class MigrationService
     private $plan;
     private $moduleId = 'bitrix_migrator';
     private $logFile = null;
+    private $boxMode = 'api'; // 'api' or 'd7'
 
     // Caches
     private $userMapCache = [];      // cloud user ID => box user ID
@@ -63,6 +64,12 @@ class MigrationService
         $this->cloudAPI = $cloudAPI;
         $this->boxAPI = $boxAPI;
         $this->plan = $plan;
+        $this->boxMode = $plan['settings']['box_mode'] ?? 'd7';
+    }
+
+    private function isD7Mode(): bool
+    {
+        return $this->boxMode === 'd7';
     }
 
     public function setLogFile($path)
@@ -105,8 +112,9 @@ class MigrationService
         } catch (MigrationStoppedException $e) {
             $this->addLog('=== Миграция остановлена пользователем ===');
             $this->setStatus('stopped', 'Миграция остановлена пользователем');
-        } catch (\Exception $e) {
-            $this->addLog('FATAL ERROR: ' . $e->getMessage());
+        } catch (\Throwable $e) {
+            $msg = $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine();
+            $this->addLog('FATAL ERROR: ' . $msg);
             $this->setStatus('error', 'Ошибка: ' . $e->getMessage());
         }
 
@@ -204,7 +212,7 @@ class MigrationService
             try {
                 $this->boxAPI->deleteDepartment((int)$d['ID']);
                 $deleted++;
-            } catch (\Exception $e) {
+            } catch (\Throwable $e) {
                 $this->addLog("  Ошибка удаления подразделения '{$d['NAME']}' (ID={$d['ID']}): " . $e->getMessage());
             }
         }
@@ -234,7 +242,7 @@ class MigrationService
             if ($cloudRootName) {
                 try {
                     $this->boxAPI->updateDepartment($rootDeptId, ['NAME' => $cloudRootName]);
-                } catch (\Exception $e) {
+                } catch (\Throwable $e) {
                     $this->addLog("  Не удалось переименовать корневой отдел: " . $e->getMessage());
                 }
             }
@@ -276,7 +284,7 @@ class MigrationService
                     $this->deptMapCache[$cloudId] = $newId;
                     $created++;
                 }
-            } catch (\Exception $e) {
+            } catch (\Throwable $e) {
                 $this->addLog("  Ошибка создания подразделения '{$name}': " . $e->getMessage());
             }
         }
@@ -320,31 +328,29 @@ class MigrationService
 
         // --- Create new users ---
         foreach ($newUsers as $i => $u) {
-            $this->rateLimit();
+            $this->rateLimit(true);
             $this->savePhaseProgress('users', $i + 1, $total + count($existingToUpdate));
+
+            // Skip users without email — user.add requires email
+            if (empty(trim($u['EMAIL'] ?? ''))) {
+                $this->addLog("  Пропуск пользователя без email: {$u['NAME']} {$u['LAST_NAME']}");
+                $errors++;
+                continue;
+            }
 
             try {
                 $boxDeptIds = $this->mapDepartmentIds($u['UF_DEPARTMENT'] ?? []);
 
-                // Determine if we should send invitation email
-                $sendInvite = ($this->plan['settings']['send_invite'] ?? 'N') === 'Y';
-
                 $fields = [
-                    'EMAIL' => $u['EMAIL'],
-                    'NAME' => $u['NAME'] ?? '',
-                    'LAST_NAME' => $u['LAST_NAME'] ?? '',
-                    'SECOND_NAME' => $u['SECOND_NAME'] ?? '',
-                    'WORK_POSITION' => $u['WORK_POSITION'] ?? '',
-                    'PERSONAL_PHONE' => $u['PERSONAL_PHONE'] ?? '',
-                    'PERSONAL_MOBILE' => $u['PERSONAL_MOBILE'] ?? '',
-                    'WORK_PHONE' => $u['WORK_PHONE'] ?? '',
-                    'ACTIVE' => 'Y',
-                    'EXTRANET' => 'N',
+                    'EMAIL' => trim($u['EMAIL']),
+                    'NAME' => trim($u['NAME'] ?? ''),
+                    'LAST_NAME' => trim($u['LAST_NAME'] ?? ''),
+                    'SECOND_NAME' => trim($u['SECOND_NAME'] ?? ''),
+                    'WORK_POSITION' => trim($u['WORK_POSITION'] ?? ''),
+                    'PERSONAL_PHONE' => trim($u['PERSONAL_PHONE'] ?? ''),
+                    'PERSONAL_MOBILE' => trim($u['PERSONAL_MOBILE'] ?? ''),
+                    'WORK_PHONE' => trim($u['WORK_PHONE'] ?? ''),
                 ];
-
-                if (!$sendInvite) {
-                    $fields['MESSAGE_TYPE'] = 'N';
-                }
 
                 // UF_DEPARTMENT is required for user.add on box — fallback to root dept
                 if (!empty($boxDeptIds)) {
@@ -357,30 +363,40 @@ class MigrationService
                     }
                 }
 
-                // Personal info
+                // Personal info — normalize birthday to YYYY-MM-DD
                 if (!empty($u['PERSONAL_GENDER'])) $fields['PERSONAL_GENDER'] = $u['PERSONAL_GENDER'];
-                if (!empty($u['PERSONAL_BIRTHDAY'])) $fields['PERSONAL_BIRTHDAY'] = $u['PERSONAL_BIRTHDAY'];
+                if (!empty($u['PERSONAL_BIRTHDAY'])) {
+                    // Strip time/timezone: "1991-10-17T03:00:00+02:00" → "1991-10-17"
+                    $bday = $u['PERSONAL_BIRTHDAY'];
+                    if (preg_match('/^(\d{4}-\d{2}-\d{2})/', $bday, $m)) {
+                        $bday = $m[1];
+                    }
+                    $fields['PERSONAL_BIRTHDAY'] = $bday;
+                }
                 if (!empty($u['PERSONAL_PHOTO'])) $fields['PERSONAL_PHOTO'] = $u['PERSONAL_PHOTO'];
 
-                $newId = $this->boxAPI->inviteUser($fields);
+                if ($this->isD7Mode()) {
+                    $sendInvite = ($this->plan['settings']['send_invite'] ?? 'N') === 'Y';
+                    $newId = BoxD7Service::createUser($fields, $sendInvite);
+                } else {
+                    $newId = $this->boxAPI->inviteUser($fields);
+                }
                 if ($newId) {
                     $this->userMapCache[(int)$u['ID']] = $newId;
                     $invited++;
                 }
-            } catch (\Exception $e) {
+            } catch (\Throwable $e) {
                 $errors++;
-                $errDetails = $e->getMessage();
+                $errDetails = $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine();
                 $this->addLog("  Ошибка создания пользователя {$u['EMAIL']}: $errDetails");
-                // Log first error with full fields for debugging
-                if ($errors <= 3) {
-                    $this->addLog("    Отправленные поля: " . json_encode($fields, JSON_UNESCAPED_UNICODE));
-                }
+                // Log full fields for debugging
+                $this->addLog("    Отправленные поля: " . json_encode($fields, JSON_UNESCAPED_UNICODE));
             }
         }
 
         // --- Update existing users (departments, position) ---
         foreach ($existingToUpdate as $j => $u) {
-            $this->rateLimit();
+            $this->rateLimit(true);
             $this->savePhaseProgress('users', $total + $j + 1, $total + count($existingToUpdate));
 
             $cloudId = (int)$u['ID'];
@@ -398,11 +414,15 @@ class MigrationService
                 }
 
                 if (!empty($updateFields)) {
-                    $this->boxAPI->updateUser($boxUserId, $updateFields);
+                    if ($this->isD7Mode()) {
+                        BoxD7Service::updateUser($boxUserId, $updateFields);
+                    } else {
+                        $this->boxAPI->updateUser($boxUserId, $updateFields);
+                    }
                     $updated++;
                 }
-            } catch (\Exception $e) {
-                $this->addLog("  Ошибка обновления пользователя {$u['EMAIL']}: " . $e->getMessage());
+            } catch (\Throwable $e) {
+                $this->addLog("  Ошибка обновления пользователя {$u['EMAIL']}: " . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
             }
         }
 
@@ -517,7 +537,7 @@ class MigrationService
             $bcId = (int)($bc['ID'] ?? 0);
             if ($bcId === 0) continue;
             $this->rateLimit();
-            try { $this->boxAPI->deleteDealCategory($bcId); } catch (\Exception $e) {
+            try { $this->boxAPI->deleteDealCategory($bcId); } catch (\Throwable $e) {
                 $this->addLog("  Ошибка удаления воронки '{$bc['NAME']}': " . $e->getMessage());
             }
         }
@@ -529,7 +549,7 @@ class MigrationService
                 && ($s['SYSTEM'] ?? 'N') !== 'Y'
             ) {
                 $this->rateLimit();
-                try { $this->boxAPI->deleteStatus((int)$s['ID']); } catch (\Exception $e) {}
+                try { $this->boxAPI->deleteStatus((int)$s['ID']); } catch (\Throwable $e) {}
             }
         }
         $this->addLog("Очистка воронок выполнена");
@@ -542,7 +562,7 @@ class MigrationService
         $deleted = 0;
         foreach ($groups as $g) {
             $this->rateLimit();
-            try { $this->boxAPI->deleteWorkgroup((int)$g['ID']); $deleted++; } catch (\Exception $e) {}
+            try { $this->boxAPI->deleteWorkgroup((int)$g['ID']); $deleted++; } catch (\Throwable $e) {}
         }
         $this->addLog("Очистка рабочих групп: удалено $deleted");
     }
@@ -558,11 +578,11 @@ class MigrationService
                 $items = $this->boxAPI->getSmartProcessItems($etId, ['id']);
                 foreach ($items as $item) {
                     $this->rateLimit();
-                    try { $this->boxAPI->deleteSmartProcessItem($etId, (int)$item['id']); } catch (\Exception $e) {}
+                    try { $this->boxAPI->deleteSmartProcessItem($etId, (int)$item['id']); } catch (\Throwable $e) {}
                 }
-            } catch (\Exception $e) {}
+            } catch (\Throwable $e) {}
             $this->rateLimit();
-            try { $this->boxAPI->deleteSmartProcessType((int)$t['id']); } catch (\Exception $e) {
+            try { $this->boxAPI->deleteSmartProcessType((int)$t['id']); } catch (\Throwable $e) {
                 $this->addLog("  Не удалось удалить SP '{$t['title']}': " . $e->getMessage());
             }
         }
@@ -594,7 +614,7 @@ class MigrationService
             try {
                 $this->boxAPI->{$cfg['delete']}((int)$item['ID']);
                 $deleted++;
-            } catch (\Exception $e) {}
+            } catch (\Throwable $e) {}
         }
 
         $this->addLog("Очистка $entityType: удалено $deleted из $total");
@@ -629,6 +649,19 @@ class MigrationService
             $cloudFields = $allCloudFields[$entityType];
             $boxFields = $this->boxAPI->getUserfields($entityType);
 
+            // Get formLabel from crm.*.fields — more reliable than EDIT_FORM_LABEL in userfield.list
+            $fieldSchema = [];
+            try {
+                $schema = $this->cloudAPI->getFields('crm.' . $entityType . '.fields');
+                foreach ($schema as $fname => $fdef) {
+                    if (!empty($fdef['formLabel'])) {
+                        $fieldSchema[$fname] = $fdef['formLabel'];
+                    }
+                }
+            } catch (\Throwable $e) {
+                // non-critical, fall back to EDIT_FORM_LABEL
+            }
+
             // --- Step 1: Delete existing userfields on box if enabled ---
             $shouldDelete = $deleteFieldsEnabled
                 && !in_array($entityType, $deleteFieldsSettings['skip_entities'] ?? []);
@@ -643,7 +676,7 @@ class MigrationService
                     try {
                         $this->boxAPI->deleteUserfield($entityType, $fId);
                         $totalDeleted++;
-                    } catch (\Exception $e) {
+                    } catch (\Throwable $e) {
                         $this->addLog("  Ошибка удаления поля $fName ($entityType): " . $e->getMessage());
                     }
                 }
@@ -675,22 +708,26 @@ class MigrationService
                     $listLabel   = $field['LIST_COLUMN_LABEL']  ?? [];
                     $filterLabel = $field['LIST_FILTER_LABEL']  ?? [];
 
-                    // EDIT_FORM_LABEL comes as {"ru": "Название", "en": "Name", ...}
-                    // If all values are empty, build fallback label from the field code
-                    $labelText = '';
-                    if (is_array($editLabel)) {
-                        foreach (['ru', 'en', 'de', 'pl', 'ua'] as $lang) {
-                            if (!empty($editLabel[$lang])) {
-                                $labelText = $editLabel[$lang];
-                                break;
+                    // Priority 1: formLabel from crm.*.fields (plain string, always populated)
+                    // Priority 2: EDIT_FORM_LABEL from userfield.list (language map)
+                    // Priority 3: XML_ID / FIELD_NAME as last resort
+                    if (!empty($fieldSchema[$fieldName])) {
+                        $labelText = $fieldSchema[$fieldName];
+                    } else {
+                        $labelText = '';
+                        if (is_array($editLabel)) {
+                            foreach (['ru', 'en', 'de', 'pl', 'ua'] as $lang) {
+                                if (!empty($editLabel[$lang])) {
+                                    $labelText = $editLabel[$lang];
+                                    break;
+                                }
                             }
                         }
+                        if ($labelText === '') {
+                            $labelText = $field['XML_ID'] ?? $fieldName;
+                        }
                     }
-                    if ($labelText === '') {
-                        // Nothing in EDIT_FORM_LABEL — use XML_ID or FIELD_NAME as readable fallback
-                        $labelText = $field['XML_ID'] ?? $fieldName;
-                        $editLabel = ['ru' => $labelText, 'en' => $labelText];
-                    }
+                    $editLabel = ['ru' => $labelText, 'en' => $labelText];
 
                     $newField = [
                         'FIELD_NAME' => $fieldName,
@@ -713,7 +750,7 @@ class MigrationService
 
                     $this->boxAPI->addUserfield($entityType, $newField);
                     $totalCreated++;
-                } catch (\Exception $e) {
+                } catch (\Throwable $e) {
                     $this->addLog("  Ошибка создания поля $fieldName ($entityType): " . $e->getMessage());
                 }
             }
@@ -752,7 +789,7 @@ class MigrationService
             try {
                 $this->boxAPI->updateDealCategory(0, ['NAME' => $cloudDefaultCat['NAME']]);
                 $this->addLog("Основная воронка переименована: '{$cloudDefaultCat['NAME']}'");
-            } catch (\Exception $e) {
+            } catch (\Throwable $e) {
                 $this->addLog("  Не удалось переименовать основную воронку: " . $e->getMessage());
             }
         }
@@ -792,7 +829,7 @@ class MigrationService
                         $this->pipelineMapCache[$catId] = $newCatId;
                         $created++;
                     }
-                } catch (\Exception $e) {
+                } catch (\Throwable $e) {
                     $this->addLog("  Ошибка создания воронки '{$name}': " . $e->getMessage());
                     continue;
                 }
@@ -842,7 +879,7 @@ class MigrationService
                         'SEMANTICS' => $stage['SEMANTICS'] ?? '',
                     ]);
                     $this->stageMapCache[$statusId] = $statusId;
-                } catch (\Exception $e) {
+                } catch (\Throwable $e) {
                     $this->stageMapCache[$statusId] = $statusId;
                 }
             }
@@ -867,7 +904,7 @@ class MigrationService
         $dupAction = $dupSettings['action'] ?? 'skip';
 
         foreach ($cloudCompanies as $i => $company) {
-            $this->rateLimit();
+            $this->rateLimit(true);
             $this->savePhaseProgress('companies', $i + 1, $total);
             $cloudId = (int)$company['ID'];
 
@@ -877,9 +914,13 @@ class MigrationService
                 if ($dupAction === 'update') {
                     try {
                         $fields = $this->buildCompanyFields($company);
-                        $this->boxAPI->updateCompany((int)$existing['ID'], $fields);
+                        if ($this->isD7Mode()) {
+                            BoxD7Service::updateCompany((int)$existing['ID'], $fields);
+                        } else {
+                            $this->boxAPI->updateCompany((int)$existing['ID'], $fields);
+                        }
                         $updated++;
-                    } catch (\Exception $e) {
+                    } catch (\Throwable $e) {
                         $this->addLog("  Ошибка обновления компании #{$cloudId}: " . $e->getMessage());
                     }
                 } else if ($dupAction === 'skip') {
@@ -890,12 +931,16 @@ class MigrationService
 
             try {
                 $fields = $this->buildCompanyFields($company);
-                $newId = $this->boxAPI->addCompany($fields);
+                if ($this->isD7Mode()) {
+                    $newId = BoxD7Service::createCompany($fields);
+                } else {
+                    $newId = $this->boxAPI->addCompany($fields);
+                }
                 if ($newId) {
                     $this->companyMapCache[$cloudId] = $newId;
                     $created++;
                 }
-            } catch (\Exception $e) {
+            } catch (\Throwable $e) {
                 $errors++;
                 $this->addLog("  Ошибка создания компании #{$cloudId}: " . $e->getMessage());
             }
@@ -952,7 +997,7 @@ class MigrationService
         $dupAction = $dupSettings['action'] ?? 'skip';
 
         foreach ($cloudContacts as $i => $contact) {
-            $this->rateLimit();
+            $this->rateLimit(true);
             $this->savePhaseProgress('contacts', $i + 1, $total);
             $cloudId = (int)$contact['ID'];
 
@@ -962,9 +1007,13 @@ class MigrationService
                 if ($dupAction === 'update') {
                     try {
                         $fields = $this->buildContactFields($contact);
-                        $this->boxAPI->updateContact((int)$existing['ID'], $fields);
+                        if ($this->isD7Mode()) {
+                            BoxD7Service::updateContact((int)$existing['ID'], $fields);
+                        } else {
+                            $this->boxAPI->updateContact((int)$existing['ID'], $fields);
+                        }
                         $updated++;
-                    } catch (\Exception $e) {
+                    } catch (\Throwable $e) {
                         $this->addLog("  Ошибка обновления контакта #{$cloudId}: " . $e->getMessage());
                     }
                 } else if ($dupAction === 'skip') {
@@ -975,14 +1024,18 @@ class MigrationService
 
             try {
                 $fields = $this->buildContactFields($contact);
-                $newId = $this->boxAPI->addContact($fields);
+                if ($this->isD7Mode()) {
+                    $newId = BoxD7Service::createContact($fields);
+                } else {
+                    $newId = $this->boxAPI->addContact($fields);
+                }
                 if ($newId) {
                     $this->contactMapCache[$cloudId] = $newId;
                     $created++;
 
                     $this->linkContactCompanies($cloudId, $newId, $contact);
                 }
-            } catch (\Exception $e) {
+            } catch (\Throwable $e) {
                 $errors++;
                 $this->addLog("  Ошибка создания контакта #{$cloudId}: " . $e->getMessage());
             }
@@ -1041,9 +1094,14 @@ class MigrationService
             }
 
             if (!empty($boxItems)) {
-                $this->boxAPI->setContactCompanyItems($boxContactId, $boxItems);
+                if ($this->isD7Mode()) {
+                    $companyIds = array_column($boxItems, 'COMPANY_ID');
+                    BoxD7Service::setContactCompanies($boxContactId, $companyIds);
+                } else {
+                    $this->boxAPI->setContactCompanyItems($boxContactId, $boxItems);
+                }
             }
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             // Non-critical
         }
     }
@@ -1066,7 +1124,7 @@ class MigrationService
         $dupAction = $dupSettings['action'] ?? 'skip';
 
         foreach ($cloudDeals as $i => $deal) {
-            $this->rateLimit();
+            $this->rateLimit(true);
             $this->savePhaseProgress('deals', $i + 1, $total);
             $cloudId = (int)$deal['ID'];
 
@@ -1076,9 +1134,13 @@ class MigrationService
                 if ($dupAction === 'update') {
                     try {
                         $fields = $this->buildDealFields($deal);
-                        $this->boxAPI->updateDeal((int)$existing['ID'], $fields);
+                        if ($this->isD7Mode()) {
+                            BoxD7Service::updateDeal((int)$existing['ID'], $fields);
+                        } else {
+                            $this->boxAPI->updateDeal((int)$existing['ID'], $fields);
+                        }
                         $updated++;
-                    } catch (\Exception $e) {
+                    } catch (\Throwable $e) {
                         $this->addLog("  Ошибка обновления сделки #{$cloudId}: " . $e->getMessage());
                     }
                 } else if ($dupAction === 'skip') {
@@ -1089,14 +1151,18 @@ class MigrationService
 
             try {
                 $fields = $this->buildDealFields($deal);
-                $newId = $this->boxAPI->addDeal($fields);
+                if ($this->isD7Mode()) {
+                    $newId = BoxD7Service::createDeal($fields);
+                } else {
+                    $newId = $this->boxAPI->addDeal($fields);
+                }
                 if ($newId) {
                     $this->dealMapCache[$cloudId] = $newId;
                     $created++;
 
                     $this->linkDealContacts($cloudId, $newId);
                 }
-            } catch (\Exception $e) {
+            } catch (\Throwable $e) {
                 $errors++;
                 $this->addLog("  Ошибка создания сделки #{$cloudId}: " . $e->getMessage());
             }
@@ -1161,9 +1227,14 @@ class MigrationService
             }
 
             if (!empty($boxItems)) {
-                $this->boxAPI->setDealContactItems($boxDealId, $boxItems);
+                if ($this->isD7Mode()) {
+                    $contactIds = array_column($boxItems, 'CONTACT_ID');
+                    BoxD7Service::setDealContacts($boxDealId, $contactIds);
+                } else {
+                    $this->boxAPI->setDealContactItems($boxDealId, $boxItems);
+                }
             }
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             // Non-critical
         }
     }
@@ -1186,7 +1257,7 @@ class MigrationService
         $dupAction = $dupSettings['action'] ?? 'skip';
 
         foreach ($cloudLeads as $i => $lead) {
-            $this->rateLimit();
+            $this->rateLimit(true);
             $this->savePhaseProgress('leads', $i + 1, $total);
             $cloudId = (int)$lead['ID'];
 
@@ -1196,9 +1267,13 @@ class MigrationService
                 if ($dupAction === 'update') {
                     try {
                         $fields = $this->buildLeadFields($lead);
-                        $this->boxAPI->updateLead((int)$existing['ID'], $fields);
+                        if ($this->isD7Mode()) {
+                            BoxD7Service::updateLead((int)$existing['ID'], $fields);
+                        } else {
+                            $this->boxAPI->updateLead((int)$existing['ID'], $fields);
+                        }
                         $updated++;
-                    } catch (\Exception $e) {
+                    } catch (\Throwable $e) {
                         $this->addLog("  Ошибка обновления лида #{$cloudId}: " . $e->getMessage());
                     }
                 } else if ($dupAction === 'skip') {
@@ -1209,12 +1284,16 @@ class MigrationService
 
             try {
                 $fields = $this->buildLeadFields($lead);
-                $newId = $this->boxAPI->addLead($fields);
+                if ($this->isD7Mode()) {
+                    $newId = BoxD7Service::createLead($fields);
+                } else {
+                    $newId = $this->boxAPI->addLead($fields);
+                }
                 if ($newId) {
                     $this->leadMapCache[$cloudId] = $newId;
                     $created++;
                 }
-            } catch (\Exception $e) {
+            } catch (\Throwable $e) {
                 $errors++;
                 $this->addLog("  Ошибка создания лида #{$cloudId}: " . $e->getMessage());
             }
@@ -1307,12 +1386,12 @@ class MigrationService
                         try {
                             $this->boxAPI->addActivity($fields);
                             $totalActivities++;
-                        } catch (\Exception $e) {
+                        } catch (\Throwable $e) {
                             $errors++;
                             // Skip "already exists" type errors silently
                         }
                     }
-                } catch (\Exception $e) {
+                } catch (\Throwable $e) {
                     // Getting activities failed — skip entity
                 }
 
@@ -1326,11 +1405,11 @@ class MigrationService
                         try {
                             $this->boxAPI->addTimelineComment($fields);
                             $totalComments++;
-                        } catch (\Exception $e) {
+                        } catch (\Throwable $e) {
                             $errors++;
                         }
                     }
-                } catch (\Exception $e) {
+                } catch (\Throwable $e) {
                     // Non-critical
                 }
             }
@@ -1420,40 +1499,92 @@ class MigrationService
             $name = trim($group['NAME'] ?? '');
             $lowerName = mb_strtolower($name);
 
+            $boxGroupId = 0;
+
             if (isset($boxByName[$lowerName])) {
+                $boxGroupId = (int)$boxByName[$lowerName]['ID'];
+                $this->groupMapCache[$cloudId] = $boxGroupId;
+                $matched++;
                 if ($conflictRes === 'skip') {
-                    $this->groupMapCache[$cloudId] = (int)$boxByName[$lowerName]['ID'];
-                    $matched++;
+                    $this->addWorkgroupMembers($cloudId, $boxGroupId);
                     continue;
                 }
             }
 
-            try {
-                $fields = [
-                    'NAME' => $name,
-                    'DESCRIPTION' => $group['DESCRIPTION'] ?? '',
-                    'VISIBLE' => $group['VISIBLE'] ?? 'Y',
-                    'OPENED' => $group['OPENED'] ?? 'Y',
-                    'PROJECT' => $group['PROJECT'] ?? 'N',
-                ];
+            if (!$boxGroupId) {
+                try {
+                    $fields = [
+                        'NAME'        => $name,
+                        'DESCRIPTION' => $group['DESCRIPTION'] ?? '',
+                        'VISIBLE'     => $group['VISIBLE'] ?? 'Y',
+                        'OPENED'      => $group['OPENED'] ?? 'Y',
+                        'PROJECT'     => $group['PROJECT'] ?? 'N',
+                    ];
 
-                if (!empty($group['OWNER_ID'])) {
-                    $boxOwner = $this->mapUser($group['OWNER_ID']);
-                    if ($boxOwner) $fields['OWNER_ID'] = $boxOwner;
-                }
+                    if (!empty($group['OWNER_ID'])) {
+                        $boxOwner = $this->mapUser($group['OWNER_ID']);
+                        if ($boxOwner) $fields['OWNER_ID'] = $boxOwner;
+                    }
 
-                $newId = $this->boxAPI->createWorkgroup($fields);
-                if ($newId) {
-                    $this->groupMapCache[$cloudId] = $newId;
-                    $created++;
+                    $newId = $this->boxAPI->createWorkgroup($fields);
+                    if ($newId) {
+                        $boxGroupId = (int)$newId;
+                        $this->groupMapCache[$cloudId] = $boxGroupId;
+                        $created++;
+                    }
+                } catch (\Throwable $e) {
+                    $errors++;
+                    $this->addLog("  Ошибка создания группы '{$name}': " . $e->getMessage());
                 }
-            } catch (\Exception $e) {
-                $errors++;
-                $this->addLog("  Ошибка создания группы '{$name}': " . $e->getMessage());
+            }
+
+            if ($boxGroupId > 0) {
+                $this->addWorkgroupMembers($cloudId, $boxGroupId);
             }
         }
 
         $this->addLog("Рабочие группы: совпали=$matched, создано=$created, ошибок=$errors из $total");
+    }
+
+    /**
+     * Fetch cloud group members and add them to the box group.
+     * Owner is already set via OWNER_ID during group creation; skipped here.
+     */
+    private function addWorkgroupMembers(int $cloudGroupId, int $boxGroupId)
+    {
+        try {
+            $members = $this->cloudAPI->getWorkgroupMembers($cloudGroupId);
+            if (empty($members)) return;
+
+            $added = 0;
+            foreach ($members as $member) {
+                $cloudUserId = (int)($member['USER_ID'] ?? 0);
+                if ($cloudUserId <= 0) continue;
+
+                $boxUserId = $this->mapUser($cloudUserId);
+                if ($boxUserId <= 0) continue;
+
+                // Map role: A=admin, K=moderator, E/M=member
+                $role = $member['ROLE'] ?? 'E';
+                if (!in_array($role, ['A', 'K', 'E'], true)) {
+                    $role = 'E';
+                }
+
+                try {
+                    $this->rateLimit();
+                    $this->boxAPI->addWorkgroupMember($boxGroupId, $boxUserId, $role);
+                    $added++;
+                } catch (\Throwable $e) {
+                    // non-critical — user may already be a member
+                }
+            }
+
+            if ($added > 0) {
+                $this->addLog("  Группа box#$boxGroupId: добавлено $added участников");
+            }
+        } catch (\Throwable $e) {
+            $this->addLog("  Ошибка загрузки участников группы cloud#$cloudGroupId: " . $e->getMessage());
+        }
     }
 
     // =========================================================================
@@ -1496,7 +1627,7 @@ class MigrationService
                         $boxEntityTypeId = (int)$newType['entityTypeId'];
                         $totalTypes++;
                     }
-                } catch (\Exception $e) {
+                } catch (\Throwable $e) {
                     $this->addLog("  Ошибка создания смарт-процесса '{$title}': " . $e->getMessage());
                     continue;
                 }
@@ -1521,13 +1652,13 @@ class MigrationService
                             if ($ufId) {
                                 try {
                                     $this->boxAPI->deleteSmartProcessUserfield($ufId);
-                                } catch (\Exception $e) {
+                                } catch (\Throwable $e) {
                                     $this->addLog("  Ошибка удаления UF #{$ufId}: " . $e->getMessage());
                                 }
                             }
                         }
                     }
-                } catch (\Exception $e) {
+                } catch (\Throwable $e) {
                     $this->addLog("  Ошибка получения UF-полей SP '{$title}': " . $e->getMessage());
                 }
             }
@@ -1541,11 +1672,11 @@ class MigrationService
                     try {
                         $this->boxAPI->addSmartProcessItem($boxEntityTypeId, $fields);
                         $totalItems++;
-                    } catch (\Exception $e) {
+                    } catch (\Throwable $e) {
                         $this->addLog("  Ошибка создания записи SP #{$item['id']}: " . $e->getMessage());
                     }
                 }
-            } catch (\Exception $e) {
+            } catch (\Throwable $e) {
                 $this->addLog("  Ошибка получения записей SP '{$title}': " . $e->getMessage());
             }
         }
@@ -1692,7 +1823,7 @@ class MigrationService
                             }
                         }
                     }
-                } catch (\Exception $e) {}
+                } catch (\Throwable $e) {}
                 return null;
             case 'PHONE':
                 $phones = $company['PHONE'] ?? [];
@@ -1797,15 +1928,28 @@ class MigrationService
     // Rate limiting & progress
     // =========================================================================
 
-    private function rateLimit()
+    /**
+     * Rate limit for REST API calls.
+     * In D7 mode box operations bypass REST — no pause needed.
+     * Cleanup still uses REST but is handled by 429 retry logic.
+     * @param bool $boxWrite  true = box write op (skips sleep in D7 mode)
+     */
+    private function rateLimit(bool $boxWrite = false)
     {
         $this->opCount++;
-        usleep(600000); // 600ms between operations (~1.6 req/s, within 2 req/s limit)
 
-        // Check stop flag every operation
+        // Skip sleep for box write operations in D7 mode (direct DB — no API rate limits)
+        $skipSleep = $boxWrite && $this->isD7Mode();
+
+        if (!$skipSleep) {
+            usleep(333000); // 333ms between operations (~3 req/s)
+        }
+
+        // Always check stop flag
         $this->checkStop();
 
-        if ($this->opCount % 100 === 0) {
+        // Periodic long pause only for REST mode
+        if (!$skipSleep && $this->opCount % 100 === 0) {
             $this->addLog("Пауза 10 сек (каждые 100 операций, op={$this->opCount})...");
             sleep(10);
         }

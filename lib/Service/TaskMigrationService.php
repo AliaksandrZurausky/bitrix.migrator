@@ -103,7 +103,7 @@ class TaskMigrationService
                     $this->stats['migrated']++;
                 } catch (MigrationStoppedException $e) {
                     throw $e;
-                } catch (\Exception $e) {
+                } catch (\Throwable $e) {
                     $this->stats['errors']++;
                     $this->addLog('ОШИБКА задача #' . $cloudTaskId . ': ' . $e->getMessage());
                 }
@@ -127,9 +127,9 @@ class TaskMigrationService
         } catch (MigrationStoppedException $e) {
             $this->addLog('=== Миграция задач остановлена пользователем ===');
             $this->saveStatus('stopped', 'Миграция задач остановлена');
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $this->saveStatus('error', $e->getMessage());
-            $this->addLog('ФАТАЛЬНАЯ ОШИБКА: ' . $e->getMessage());
+            $this->addLog('ФАТАЛЬНАЯ ОШИБКА: ' . $e->getMessage() . ' в ' . $e->getFile() . ':' . $e->getLine());
         }
 
         $this->saveResult();
@@ -254,7 +254,7 @@ class TaskMigrationService
             if (!empty($boxAccomplices)) {
                 try {
                     $this->boxAPI->updateTask($boxTaskId, ['ACCOMPLICES' => $boxAccomplices]);
-                } catch (\Exception $e) {
+                } catch (\Throwable $e) {
                     $this->addLog('  Соисполнители #' . $cloudTaskId . ': ' . $e->getMessage());
                 }
             }
@@ -267,13 +267,13 @@ class TaskMigrationService
             if (!empty($boxAuditors)) {
                 try {
                     $this->boxAPI->updateTask($boxTaskId, ['AUDITORS' => $boxAuditors]);
-                } catch (\Exception $e) {
+                } catch (\Throwable $e) {
                     $this->addLog('  Наблюдатели #' . $cloudTaskId . ': ' . $e->getMessage());
                 }
             }
         }
 
-        usleep(600000); // rate limit between tasks
+        usleep(333000); // rate limit between tasks
     }
 
     // =========================================================================
@@ -358,7 +358,7 @@ class TaskMigrationService
             }
 
             return $boxGroupId;
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $this->groupMapCache[$cloudGroupId] = 0;
             return 0;
         }
@@ -399,8 +399,8 @@ class TaskMigrationService
                     $this->addLog('  Файл "' . $fileName . '" → box ID ' . $boxFileId);
                 }
 
-                usleep(600000);
-            } catch (\Exception $e) {
+                usleep(333000);
+            } catch (\Throwable $e) {
                 $this->addLog('  Файл #' . ($ref ?? '') . ': ' . $e->getMessage());
             }
         }
@@ -460,8 +460,8 @@ class TaskMigrationService
                     $boxBindings[] = $entityType . '_' . $boxId;
                 }
 
-                usleep(600000);
-            } catch (\Exception $e) {
+                usleep(333000);
+            } catch (\Throwable $e) {
                 $this->addLog('  CRM привязка ' . $binding . ': ' . $e->getMessage());
             }
         }
@@ -488,12 +488,12 @@ class TaskMigrationService
 
                 try {
                     $this->boxAPI->addTaskChecklistItem($boxTaskId, $fields);
-                } catch (\Exception $e) {
+                } catch (\Throwable $e) {
                     // non-critical
                 }
                 usleep(100000);
             }
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $this->addLog('  Чеклист #' . $cloudTaskId . ': ' . $e->getMessage());
         }
     }
@@ -537,12 +537,12 @@ class TaskMigrationService
                     }
 
                     $this->boxAPI->addTaskComment($boxTaskId, $fields);
-                    usleep(600000);
-                } catch (\Exception $e) {
+                    usleep(333000);
+                } catch (\Throwable $e) {
                     $this->addLog('  Комментарий #' . $commentId . ': ' . $e->getMessage());
                 }
             }
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $this->addLog('  Комментарии #' . $cloudTaskId . ': ' . $e->getMessage());
         }
     }
@@ -570,8 +570,8 @@ class TaskMigrationService
                     $boxFileIds[] = 'n' . $boxFileId;
                 }
 
-                usleep(600000);
-            } catch (\Exception $e) {
+                usleep(333000);
+            } catch (\Throwable $e) {
                 // non-critical
             }
         }
@@ -592,7 +592,7 @@ class TaskMigrationService
             } elseif ($status === 6) {
                 $this->boxAPI->deferTask($boxTaskId);
             }
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             $this->addLog('  Статус box #' . $boxTaskId . ': ' . $e->getMessage());
         }
     }
@@ -618,8 +618,8 @@ class TaskMigrationService
                 try {
                     $this->boxAPI->updateTask($boxTaskId, ['PARENT_ID' => $boxParentId]);
                     $linked++;
-                    usleep(600000);
-                } catch (\Exception $e) {
+                    usleep(333000);
+                } catch (\Throwable $e) {
                     $this->addLog('Связь ' . $cloudTaskId . '→' . $cloudParentId . ': ' . $e->getMessage());
                 }
             }
@@ -683,7 +683,8 @@ class TaskMigrationService
 
     private function fetchAllTaskIds()
     {
-        $allTasks = $this->cloudAPI->fetchAll('tasks.task.list', ['select' => ['ID']]);
+        // tasks.task.list returns result.tasks (nested array), not result directly
+        $allTasks = $this->cloudAPI->fetchAll('tasks.task.list', ['select' => ['ID']], 'tasks');
         $ids = [];
         foreach ($allTasks as $t) {
             $id = (int)($t['id'] ?? $t['ID'] ?? 0);

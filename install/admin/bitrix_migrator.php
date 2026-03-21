@@ -160,17 +160,26 @@ function migratorStatusText($status) {
                 </div>
                 <div class="migrator-accordion-body" id="plan-settings-body">
                     <div class="migrator-form-group" style="margin-bottom:16px;">
+                        <label class="migrator-label">Режим работы с коробкой:</label>
+                        <select id="plan-box-mode" class="migrator-input" style="width:auto;">
+                            <option value="api">REST API (через вебхук)</option>
+                            <option value="d7" selected>D7 (прямое подключение на сервере)</option>
+                        </select>
+                        <p style="margin:4px 0 0;font-size:12px;color:#888;">D7 — прямая работа с БД через ядро Bitrix. Доступно только при запуске CLI на сервере коробки.</p>
+                    </div>
+                    <div class="migrator-form-group" style="margin-bottom:16px;">
                         <label class="migrator-label">Маппинг пользователей:</label>
                         <select id="plan-user-strategy" class="migrator-input" style="width:auto;">
                             <option value="email">По совпадению email</option>
                         </select>
                     </div>
-                    <div class="migrator-form-group" style="margin-bottom:16px;">
+                    <div class="migrator-form-group" id="plan-send-invite-group" style="margin-bottom:16px;display:none;">
                         <label class="migrator-label">Приглашение пользователей:</label>
                         <select id="plan-send-invite" class="migrator-input" style="width:auto;">
                             <option value="N">Не отправлять приглашение на email</option>
                             <option value="Y">Отправлять приглашение на email</option>
                         </select>
+                        <p style="margin:4px 0 0;font-size:12px;color:#888;">Работает только в режиме D7. В режиме REST API приглашение отправляется автоматически.</p>
                     </div>
                     <div class="migrator-form-group" style="margin-bottom:16px;">
                         <label class="migrator-label">Рабочие группы — при совпадении по названию:</label>
