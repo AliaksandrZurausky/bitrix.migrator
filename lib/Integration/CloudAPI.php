@@ -660,6 +660,12 @@ class CloudAPI
         return $result['result'] ?? null;
     }
 
+    public function deleteCompany($id)
+    {
+        $result = $this->request('crm.company.delete', ['id' => (int)$id]);
+        return $result['result'] ?? false;
+    }
+
     public function updateCompany($id, $fields)
     {
         return $this->request('crm.company.update', ['id' => (int)$id, 'fields' => $fields]);
@@ -689,6 +695,12 @@ class CloudAPI
     {
         $result = $this->request('crm.contact.add', ['fields' => $fields]);
         return $result['result'] ?? null;
+    }
+
+    public function deleteContact($id)
+    {
+        $result = $this->request('crm.contact.delete', ['id' => (int)$id]);
+        return $result['result'] ?? false;
     }
 
     public function updateContact($id, $fields)
@@ -722,6 +734,12 @@ class CloudAPI
         return $result['result'] ?? null;
     }
 
+    public function deleteDeal($id)
+    {
+        $result = $this->request('crm.deal.delete', ['id' => (int)$id]);
+        return $result['result'] ?? false;
+    }
+
     public function updateDeal($id, $fields)
     {
         return $this->request('crm.deal.update', ['id' => (int)$id, 'fields' => $fields]);
@@ -743,6 +761,12 @@ class CloudAPI
         return $result['result'] ?? null;
     }
 
+    public function deleteLead($id)
+    {
+        $result = $this->request('crm.lead.delete', ['id' => (int)$id]);
+        return $result['result'] ?? false;
+    }
+
     public function updateLead($id, $fields)
     {
         return $this->request('crm.lead.update', ['id' => (int)$id, 'fields' => $fields]);
@@ -756,6 +780,18 @@ class CloudAPI
     {
         $result = $this->request('crm.dealcategory.add', ['fields' => $fields]);
         return $result['result'] ?? null;
+    }
+
+    public function deleteDealCategory($id)
+    {
+        $result = $this->request('crm.dealcategory.delete', ['id' => (int)$id]);
+        return $result['result'] ?? false;
+    }
+
+    public function updateDealCategory($id, $fields)
+    {
+        $result = $this->request('crm.dealcategory.update', ['id' => (int)$id, 'fields' => $fields]);
+        return $result['result'] ?? false;
     }
 
     public function getDealCategoryStages($categoryId)
@@ -783,6 +819,12 @@ class CloudAPI
     {
         $result = $this->request('crm.status.add', ['fields' => $fields]);
         return $result['result'] ?? null;
+    }
+
+    public function deleteStatus($id)
+    {
+        $result = $this->request('crm.status.delete', ['id' => (int)$id]);
+        return $result['result'] ?? false;
     }
 
     // =========================================================================
@@ -843,6 +885,12 @@ class CloudAPI
         return $result['result'] ?? null;
     }
 
+    public function deleteWorkgroup($id)
+    {
+        $result = $this->request('sonet_group.delete', ['GROUP_ID' => (int)$id]);
+        return $result['result'] ?? false;
+    }
+
     // =========================================================================
     // Smart Processes
     // =========================================================================
@@ -879,6 +927,21 @@ class CloudAPI
             'entityTypeId' => (int)$entityTypeId,
             'select' => $select,
         ]);
+    }
+
+    public function deleteSmartProcessItem($entityTypeId, $id)
+    {
+        $result = $this->request('crm.item.delete', [
+            'entityTypeId' => (int)$entityTypeId,
+            'id' => (int)$id,
+        ]);
+        return $result['result'] ?? false;
+    }
+
+    public function deleteSmartProcessType($id)
+    {
+        $result = $this->request('crm.type.delete', ['id' => (int)$id]);
+        return $result['result'] ?? false;
     }
 
     public function addSmartProcessItem($entityTypeId, $fields)

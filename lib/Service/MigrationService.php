@@ -448,6 +448,45 @@ class MigrationService
         return $this->userMapCache[(int)$cloudUserId] ?? null;
     }
 
+    /**
+     * Check if cleanup is enabled for a given phase in the plan.
+     */
+    private function isCleanupEnabled($phase)
+    {
+        return ($this->plan['cleanup'] ?? [])[$phase] ?? false;
+    }
+
+    /**
+     * Delete all items of a CRM entity type on box (companies, contacts, deals, leads).
+     */
+    private function cleanupCrmEntity($entityType)
+    {
+        $methodMap = [
+            'companies' => ['list' => 'crm.company.list', 'delete' => 'deleteCompany'],
+            'contacts'  => ['list' => 'crm.contact.list', 'delete' => 'deleteContact'],
+            'deals'     => ['list' => 'crm.deal.list',    'delete' => 'deleteDeal'],
+            'leads'     => ['list' => 'crm.lead.list',    'delete' => 'deleteLead'],
+        ];
+
+        $cfg = $methodMap[$entityType] ?? null;
+        if (!$cfg) return;
+
+        $this->addLog("Очистка $entityType на box...");
+        $items = $this->boxAPI->fetchAll($cfg['list'], ['select' => ['ID']]);
+        $total = count($items);
+        $deleted = 0;
+
+        foreach ($items as $item) {
+            $this->rateLimit();
+            try {
+                $this->boxAPI->{$cfg['delete']}((int)$item['ID']);
+                $deleted++;
+            } catch (\Exception $e) {}
+        }
+
+        $this->addLog("Очистка $entityType: удалено $deleted из $total");
+    }
+
     // =========================================================================
     // Phase 3: CRM Custom Fields
     // =========================================================================
@@ -458,17 +497,26 @@ class MigrationService
         $totalCreated = 0;
         $totalDeleted = 0;
 
+        // Count total fields across all entity types for progress
+        $allCloudFields = [];
+        foreach ($entityTypes as $et) {
+            $allCloudFields[$et] = $this->cloudAPI->getUserfields($et);
+        }
+        $grandTotal = 0;
+        foreach ($allCloudFields as $fields) {
+            $grandTotal += count($fields);
+        }
+        $progressCounter = 0;
+
         // Setting: which entity types should have fields deleted before migration
-        // Default: delete all. User can exclude specific entity types.
         $deleteFieldsSettings = $this->plan['delete_userfields'] ?? [];
-        // Default is enabled for all types
         $deleteFieldsEnabled = ($deleteFieldsSettings['enabled'] ?? true) === true;
 
         foreach ($entityTypes as $entityType) {
-            $cloudFields = $this->cloudAPI->getUserfields($entityType);
+            $cloudFields = $allCloudFields[$entityType];
             $boxFields = $this->boxAPI->getUserfields($entityType);
 
-            // --- Step 1: Delete existing userfields on box if enabled for this entity type ---
+            // --- Step 1: Delete existing userfields on box if enabled ---
             $shouldDelete = $deleteFieldsEnabled
                 && !in_array($entityType, $deleteFieldsSettings['skip_entities'] ?? []);
 
@@ -486,7 +534,6 @@ class MigrationService
                         $this->addLog("  Ошибка удаления поля $fName ($entityType): " . $e->getMessage());
                     }
                 }
-                // After deletion, no existing fields to skip
                 $boxFieldNames = [];
             } else {
                 $boxFieldNames = [];
@@ -498,6 +545,8 @@ class MigrationService
             // --- Step 2: Create fields from cloud ---
             foreach ($cloudFields as $field) {
                 $this->rateLimit();
+                $progressCounter++;
+                $this->savePhaseProgress('crm_fields', $progressCounter, $grandTotal);
                 $fieldName = $field['FIELD_NAME'] ?? '';
 
                 if (isset($this->plan['crm_custom_fields'][$entityType]['excluded_fields'])) {
@@ -562,27 +611,79 @@ class MigrationService
         $cloudCategories = $this->cloudAPI->getDealCategories();
         $boxCategories = $this->boxAPI->getDealCategories();
 
+        // Cleanup: delete all non-default pipelines on box if enabled
+        $cleanupEnabled = ($this->plan['cleanup'] ?? [])['pipelines'] ?? false;
+        if ($cleanupEnabled) {
+            foreach ($boxCategories as $bc) {
+                $bcId = (int)($bc['ID'] ?? 0);
+                if ($bcId === 0) continue; // Cannot delete default pipeline
+                $this->rateLimit();
+                try {
+                    $this->boxAPI->deleteDealCategory($bcId);
+                } catch (\Exception $e) {
+                    $this->addLog("  Ошибка удаления воронки '{$bc['NAME']}': " . $e->getMessage());
+                }
+            }
+            // Also clean up deal stages for default pipeline (except system ones)
+            $boxStatuses = $this->boxAPI->getStatuses();
+            foreach ($boxStatuses as $s) {
+                $eid = $s['ENTITY_ID'] ?? '';
+                if ($eid === 'DEAL_STAGE' || strncmp($eid, 'DEAL_STAGE_', 11) === 0) {
+                    $sysType = $s['SYSTEM'] ?? 'N';
+                    if ($sysType === 'Y') continue;
+                    $this->rateLimit();
+                    try {
+                        $this->boxAPI->deleteStatus((int)$s['ID']);
+                    } catch (\Exception $e) {}
+                }
+            }
+            $this->addLog("Очистка воронок выполнена");
+            // Refresh box categories after cleanup
+            $boxCategories = $this->boxAPI->getDealCategories();
+        }
+
+        $cloudStagesGrouped = $this->cloudAPI->getAllDealStagesGrouped();
+
+        // --- Default pipeline (ID=0) ---
+        $this->pipelineMapCache[0] = 0;
+
+        // Rename default pipeline on box to match cloud
+        $cloudDefaultCat = null;
+        foreach ($cloudCategories as $cat) {
+            if ((int)($cat['ID'] ?? -1) === 0) {
+                $cloudDefaultCat = $cat;
+                break;
+            }
+        }
+        // If crm.dealcategory.list doesn't return ID=0, try crm.dealcategory.get
+        if (!$cloudDefaultCat) {
+            $cloudDefaultCat = $this->cloudAPI->getDealCategoryById(0);
+        }
+        if ($cloudDefaultCat && !empty($cloudDefaultCat['NAME'])) {
+            try {
+                $this->boxAPI->updateDealCategory(0, ['NAME' => $cloudDefaultCat['NAME']]);
+                $this->addLog("Основная воронка переименована: '{$cloudDefaultCat['NAME']}'");
+            } catch (\Exception $e) {
+                $this->addLog("  Не удалось переименовать основную воронку: " . $e->getMessage());
+            }
+        }
+
+        // Sync default pipeline stages
+        $this->syncPipelineStages('DEAL_STAGE', 'DEAL_STAGE', $cloudStagesGrouped['DEAL_STAGE'] ?? []);
+
+        // --- Custom pipelines ---
         $boxCatByName = [];
         foreach ($boxCategories as $c) {
             $boxCatByName[mb_strtolower(trim($c['NAME'] ?? ''))] = $c;
         }
 
-        $this->pipelineMapCache[0] = 0;
-
-        $cloudStagesGrouped = $this->cloudAPI->getAllDealStagesGrouped();
-        $boxStatuses = $this->boxAPI->getStatuses();
-        $boxStatusByEntityAndId = [];
-        foreach ($boxStatuses as $s) {
-            $boxStatusByEntityAndId[$s['ENTITY_ID'] . ':' . $s['STATUS_ID']] = $s;
-        }
-
-        $this->mapPipelineStages('DEAL_STAGE', $cloudStagesGrouped['DEAL_STAGE'] ?? [], $boxStatusByEntityAndId);
-
         $created = 0;
-        foreach ($cloudCategories as $cat) {
+        $total = count($cloudCategories);
+        foreach ($cloudCategories as $i => $cat) {
             $this->rateLimit();
-            $catId = (int)$cat['ID'];
-            if ($catId === 0) continue;
+            $this->savePhaseProgress('pipelines', $i + 1, $total);
+            $catId = (int)($cat['ID'] ?? 0);
+            if ($catId === 0) continue; // Already handled above
 
             if ($this->isItemExcluded('pipelines', $catId)) continue;
 
@@ -608,45 +709,48 @@ class MigrationService
                 }
             }
 
-            $entityId = 'DEAL_STAGE_' . $catId;
-            $stages = $cloudStagesGrouped[$entityId] ?? [];
-            if (!empty($stages) && isset($this->pipelineMapCache[$catId])) {
-                $boxStatuses = $this->boxAPI->getStatuses();
-                $boxStatusByEntityAndId = [];
-                foreach ($boxStatuses as $s) {
-                    $boxStatusByEntityAndId[$s['ENTITY_ID'] . ':' . $s['STATUS_ID']] = $s;
-                }
-                $this->mapPipelineStages($entityId, $stages, $boxStatusByEntityAndId);
+            // Sync stages for this pipeline
+            if (isset($this->pipelineMapCache[$catId])) {
+                $cloudEntityId = 'DEAL_STAGE_' . $catId;
+                $boxEntityId = 'DEAL_STAGE_' . $this->pipelineMapCache[$catId];
+                $stages = $cloudStagesGrouped[$cloudEntityId] ?? [];
+                $this->syncPipelineStages($cloudEntityId, $boxEntityId, $stages);
             }
         }
 
         $this->addLog("Воронки: создано $created, всего маппингов=" . count($this->pipelineMapCache));
     }
 
-    private function mapPipelineStages($cloudEntityId, $stages, $boxStatusMap)
+    private function syncPipelineStages($cloudEntityId, $boxEntityId, $cloudStages)
     {
-        foreach ($stages as $stage) {
+        if (empty($cloudStages)) return;
+
+        // Get current box stages for this entity
+        $boxStatuses = $this->boxAPI->getStatuses();
+        $boxStagesByStatusId = [];
+        foreach ($boxStatuses as $s) {
+            if (($s['ENTITY_ID'] ?? '') === $boxEntityId) {
+                $boxStagesByStatusId[$s['STATUS_ID']] = $s;
+            }
+        }
+
+        foreach ($cloudStages as $stage) {
+            $this->rateLimit();
             $statusId = $stage['STATUS_ID'] ?? '';
-            $boxKey = $cloudEntityId . ':' . $statusId;
-            if (isset($boxStatusMap[$boxKey])) {
+
+            if (isset($boxStagesByStatusId[$statusId])) {
+                // Stage exists — map it
                 $this->stageMapCache[$statusId] = $statusId;
             } else {
+                // Create stage on box
                 try {
-                    $this->rateLimit();
-                    $boxEntityId = $cloudEntityId;
-                    if (strncmp($cloudEntityId, 'DEAL_STAGE_', 11) === 0) {
-                        $cloudCatId = (int)substr($cloudEntityId, 11);
-                        if (isset($this->pipelineMapCache[$cloudCatId])) {
-                            $boxEntityId = 'DEAL_STAGE_' . $this->pipelineMapCache[$cloudCatId];
-                        }
-                    }
-
                     $this->boxAPI->addStatus([
                         'ENTITY_ID' => $boxEntityId,
                         'STATUS_ID' => $statusId,
                         'NAME' => $stage['NAME'] ?? $statusId,
                         'SORT' => $stage['SORT'] ?? 10,
                         'COLOR' => $stage['COLOR'] ?? '',
+                        'SEMANTICS' => $stage['SEMANTICS'] ?? '',
                     ]);
                     $this->stageMapCache[$statusId] = $statusId;
                 } catch (\Exception $e) {
@@ -662,6 +766,10 @@ class MigrationService
 
     private function migrateCompanies()
     {
+        if ($this->isCleanupEnabled('companies')) {
+            $this->cleanupCrmEntity('companies');
+        }
+
         $cloudCompanies = $this->cloudAPI->getCompanies(['*', 'UF_*', 'PHONE', 'EMAIL']);
         $total = count($cloudCompanies);
         $created = 0;
@@ -747,6 +855,10 @@ class MigrationService
 
     private function migrateContacts()
     {
+        if ($this->isCleanupEnabled('contacts')) {
+            $this->cleanupCrmEntity('contacts');
+        }
+
         $cloudContacts = $this->cloudAPI->getContacts(['*', 'UF_*', 'PHONE', 'EMAIL']);
         $total = count($cloudContacts);
         $created = 0;
@@ -861,6 +973,10 @@ class MigrationService
 
     private function migrateDeals()
     {
+        if ($this->isCleanupEnabled('deals')) {
+            $this->cleanupCrmEntity('deals');
+        }
+
         $cloudDeals = $this->cloudAPI->getDeals(['*', 'UF_*']);
         $total = count($cloudDeals);
         $created = 0;
@@ -982,6 +1098,10 @@ class MigrationService
 
     private function migrateLeads()
     {
+        if ($this->isCleanupEnabled('leads')) {
+            $this->cleanupCrmEntity('leads');
+        }
+
         $cloudLeads = $this->cloudAPI->getLeads(['*', 'UF_*', 'PHONE', 'EMAIL']);
         $total = count($cloudLeads);
         $created = 0;
@@ -1205,6 +1325,20 @@ class MigrationService
 
     private function migrateWorkgroups()
     {
+        if ($this->isCleanupEnabled('workgroups')) {
+            $this->addLog("Очистка рабочих групп на box...");
+            $boxGroupsToDelete = $this->boxAPI->getWorkgroups();
+            $delCount = 0;
+            foreach ($boxGroupsToDelete as $g) {
+                $this->rateLimit();
+                try {
+                    $this->boxAPI->deleteWorkgroup((int)$g['ID']);
+                    $delCount++;
+                } catch (\Exception $e) {}
+            }
+            $this->addLog("Очистка рабочих групп: удалено $delCount");
+        }
+
         $cloudGroups = $this->cloudAPI->getWorkgroups();
         $boxGroups = $this->boxAPI->getWorkgroups();
 
@@ -1270,6 +1404,33 @@ class MigrationService
 
     private function migrateSmartProcesses()
     {
+        if ($this->isCleanupEnabled('smart_processes')) {
+            $this->addLog("Очистка смарт-процессов на box...");
+            $boxTypesToClean = $this->boxAPI->getSmartProcessTypes();
+            foreach ($boxTypesToClean as $t) {
+                $etId = (int)($t['entityTypeId'] ?? 0);
+                if (!$etId) continue;
+                // Delete all items first
+                try {
+                    $items = $this->boxAPI->getSmartProcessItems($etId, ['id']);
+                    foreach ($items as $item) {
+                        $this->rateLimit();
+                        try {
+                            $this->boxAPI->deleteSmartProcessItem($etId, (int)$item['id']);
+                        } catch (\Exception $e) {}
+                    }
+                } catch (\Exception $e) {}
+                // Delete type
+                $this->rateLimit();
+                try {
+                    $this->boxAPI->deleteSmartProcessType((int)$t['id']);
+                } catch (\Exception $e) {
+                    $this->addLog("  Не удалось удалить SP '{$t['title']}': " . $e->getMessage());
+                }
+            }
+            $this->addLog("Очистка смарт-процессов выполнена");
+        }
+
         $cloudTypes = $this->cloudAPI->getSmartProcessTypes();
         $boxTypes = $this->boxAPI->getSmartProcessTypes();
 
@@ -1385,14 +1546,36 @@ class MigrationService
 
         $excludedFields = $this->plan['smart_process_fields'][$spId]['excluded_fields'] ?? [];
         foreach ($item as $k => $v) {
-            if ((strncmp($k, 'uf_', 3) === 0 || strncmp($k, 'UF_', 3) === 0) && $v !== '' && $v !== null) {
-                if (!in_array($k, $excludedFields)) {
-                    $fields[$k] = $v;
+            if ($v === '' || $v === null) continue;
+            // Match UF fields in any case: ufCrm..., uf_crm..., UF_CRM_...
+            if (strncmp($k, 'uf', 2) === 0 || strncmp($k, 'UF', 2) === 0) {
+                // Convert camelCase to UPPER_SNAKE_CASE for crm.item.add
+                $upperKey = $this->ufFieldToUpperCase($k);
+                if (!in_array($k, $excludedFields) && !in_array($upperKey, $excludedFields)) {
+                    $fields[$upperKey] = $v;
                 }
             }
         }
 
         return $fields;
+    }
+
+    /**
+     * Convert camelCase UF field name to UPPER_SNAKE_CASE.
+     * e.g. ufCrm5_1234567890 → UF_CRM_5_1234567890
+     *      ufCrmBigTask → UF_CRM_BIG_TASK
+     *      UF_CRM_FIELD → UF_CRM_FIELD (already uppercase)
+     */
+    private function ufFieldToUpperCase($fieldName)
+    {
+        // Already uppercase
+        if (strtoupper($fieldName) === $fieldName) {
+            return $fieldName;
+        }
+
+        // Insert underscore before uppercase letters, then uppercase all
+        $result = preg_replace('/([a-z\d])([A-Z])/', '$1_$2', $fieldName);
+        return strtoupper($result);
     }
 
     // =========================================================================

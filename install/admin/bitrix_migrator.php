@@ -212,6 +212,41 @@ function migratorStatusText($status) {
             </div>
         </div>
 
+        <div id="plan-cleanup-settings" style="display:none; margin-top:24px;">
+            <div class="migrator-accordion">
+                <div class="migrator-accordion-header" id="plan-cleanup-header" style="cursor:pointer;">
+                    <span class="migrator-accordion-arrow">&#9654;</span>
+                    <span class="migrator-accordion-title" style="color:#c00;">Очистка перед миграцией (удаление данных на box)</span>
+                </div>
+                <div class="migrator-accordion-body" id="plan-cleanup-body">
+                    <p style="margin:0 0 12px;font-size:13px;color:#888;">Отмеченные этапы — перед переносом все существующие данные этого типа на box будут <b style="color:#c00;">удалены</b>. Полезно для повторного тестирования.</p>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 24px;">
+                        <label style="display:flex;align-items:center;gap:6px;">
+                            <input type="checkbox" class="plan-cleanup-phase" data-phase="pipelines"> Воронки сделок
+                        </label>
+                        <label style="display:flex;align-items:center;gap:6px;">
+                            <input type="checkbox" class="plan-cleanup-phase" data-phase="companies"> Компании
+                        </label>
+                        <label style="display:flex;align-items:center;gap:6px;">
+                            <input type="checkbox" class="plan-cleanup-phase" data-phase="contacts"> Контакты
+                        </label>
+                        <label style="display:flex;align-items:center;gap:6px;">
+                            <input type="checkbox" class="plan-cleanup-phase" data-phase="deals"> Сделки
+                        </label>
+                        <label style="display:flex;align-items:center;gap:6px;">
+                            <input type="checkbox" class="plan-cleanup-phase" data-phase="leads"> Лиды
+                        </label>
+                        <label style="display:flex;align-items:center;gap:6px;">
+                            <input type="checkbox" class="plan-cleanup-phase" data-phase="workgroups"> Рабочие группы
+                        </label>
+                        <label style="display:flex;align-items:center;gap:6px;">
+                            <input type="checkbox" class="plan-cleanup-phase" data-phase="smart_processes"> Смарт-процессы
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div id="plan-summary" style="display:none; margin-top:24px;"></div>
 
         <div id="plan-actions" style="display:none; margin-top:20px;" class="migrator-form-actions">

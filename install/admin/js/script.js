@@ -288,6 +288,17 @@
                 }
             });
         }
+
+        // Cleanup accordion toggle
+        var cleanupHeader = document.getElementById('plan-cleanup-header');
+        if (cleanupHeader) {
+            cleanupHeader.addEventListener('click', function() {
+                var acc = cleanupHeader.parentElement;
+                var arrow = cleanupHeader.querySelector('.migrator-accordion-arrow');
+                acc.classList.toggle('open');
+                arrow.textContent = acc.classList.contains('open') ? '\u25BC' : '\u25B6';
+            });
+        }
     }
 
     function loadPlan() {
@@ -307,10 +318,13 @@
         var summary = document.getElementById('plan-summary');
         var actions = document.getElementById('plan-actions');
 
+        var cleanupSettings = document.getElementById('plan-cleanup-settings');
+
         if (!dryRunData) {
             noDryRun.style.display = 'block';
             builder.style.display = 'none';
             settings.style.display = 'none';
+            if (cleanupSettings) cleanupSettings.style.display = 'none';
             summary.style.display = 'none';
             actions.style.display = 'none';
             return;
@@ -319,6 +333,7 @@
         noDryRun.style.display = 'none';
         builder.style.display = 'block';
         settings.style.display = 'block';
+        if (cleanupSettings) cleanupSettings.style.display = 'block';
         actions.style.display = 'flex';
         builder.innerHTML = '';
 
@@ -345,6 +360,14 @@
             document.querySelectorAll('.plan-delete-uf-entity').forEach(function(cb) {
                 var entity = cb.getAttribute('data-entity');
                 cb.checked = skipEntities.indexOf(entity) === -1;
+            });
+        }
+
+        // Restore cleanup settings
+        if (plan.cleanup) {
+            document.querySelectorAll('.plan-cleanup-phase').forEach(function(cb) {
+                var phase = cb.getAttribute('data-phase');
+                cb.checked = !!plan.cleanup[phase];
             });
         }
 
@@ -780,6 +803,14 @@
             enabled: deleteUfEnabled,
             skip_entities: skipEntities
         };
+
+        // Cleanup settings (delete existing data before migration)
+        var cleanup = {};
+        document.querySelectorAll('.plan-cleanup-phase').forEach(function(cb) {
+            var phase = cb.getAttribute('data-phase');
+            if (cb.checked) cleanup[phase] = true;
+        });
+        plan.cleanup = cleanup;
 
         return plan;
     }
