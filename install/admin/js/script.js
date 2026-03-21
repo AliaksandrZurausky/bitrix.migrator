@@ -566,6 +566,25 @@
             });
         });
 
+        // Build smart process checkboxes for delete-userfields setting
+        var spContainer = document.getElementById('plan-delete-userfields-smart');
+        if (spContainer && smartProcs.length > 0) {
+            spContainer.innerHTML = '<div style="font-weight:600;margin-bottom:4px;font-size:13px;">Смарт-процессы:</div>';
+            var skipEntities = (plan.delete_userfields || {}).skip_entities || [];
+            smartProcs.forEach(function(sp) {
+                var spId = String(sp.entityTypeId);
+                var lbl = el('label', { style: 'display:flex;align-items:center;gap:6px;margin-bottom:4px;' });
+                var cb = el('input');
+                cb.type = 'checkbox';
+                cb.className = 'plan-delete-uf-entity';
+                cb.setAttribute('data-entity', 'smart_' + spId);
+                cb.checked = skipEntities.indexOf('smart_' + spId) === -1;
+                lbl.appendChild(cb);
+                lbl.appendChild(el('span', {}, sp.title));
+                spContainer.appendChild(lbl);
+            });
+        }
+
         updatePlanSummary();
         builder.addEventListener('change', function() { updatePlanSummary(); });
     }

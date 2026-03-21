@@ -853,6 +853,26 @@ class CloudAPI
         return $result['result']['type'] ?? $result['result'] ?? null;
     }
 
+    /**
+     * Get userfields for a smart process by entityId (e.g. "CRM_128")
+     * Uses userfieldconfig.list to get field configs with IDs for deletion
+     */
+    public function getSmartProcessUserfields($entityId)
+    {
+        return $this->fetchAll('userfieldconfig.list', [
+            'filter' => ['entityId' => $entityId],
+        ]);
+    }
+
+    /**
+     * Delete a userfield config by ID
+     */
+    public function deleteSmartProcessUserfield($id)
+    {
+        $result = $this->request('userfieldconfig.delete', ['id' => (int)$id]);
+        return $result['result'] ?? false;
+    }
+
     public function getSmartProcessItems($entityTypeId, $select = ['*', 'uf_*'])
     {
         return $this->fetchAll('crm.item.list', [

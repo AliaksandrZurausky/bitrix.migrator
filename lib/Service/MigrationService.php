@@ -1274,6 +1274,34 @@ class MigrationService
 
             if (!$boxEntityTypeId) continue;
 
+            // Delete existing userfields on box SP if enabled
+            $deleteUfSettings = $this->plan['delete_userfields'] ?? [];
+            $deleteUfEnabled = ($deleteUfSettings['enabled'] ?? true) === true;
+            $skipEntities = $deleteUfSettings['skip_entities'] ?? [];
+
+            if ($deleteUfEnabled && !in_array('smart_' . $spId, $skipEntities)) {
+                try {
+                    $boxEntityId = 'CRM_' . $boxEntityTypeId;
+                    $boxUfFields = $this->boxAPI->getSmartProcessUserfields($boxEntityId);
+                    if (!empty($boxUfFields)) {
+                        $this->addLog("Удаление UF-полей смарт-процесса '{$title}': " . count($boxUfFields) . " шт.");
+                        foreach ($boxUfFields as $uf) {
+                            $this->rateLimit();
+                            $ufId = (int)($uf['id'] ?? $uf['ID'] ?? 0);
+                            if ($ufId) {
+                                try {
+                                    $this->boxAPI->deleteSmartProcessUserfield($ufId);
+                                } catch (\Exception $e) {
+                                    $this->addLog("  Ошибка удаления UF #{$ufId}: " . $e->getMessage());
+                                }
+                            }
+                        }
+                    }
+                } catch (\Exception $e) {
+                    $this->addLog("  Ошибка получения UF-полей SP '{$title}': " . $e->getMessage());
+                }
+            }
+
             try {
                 $cloudItems = $this->cloudAPI->getSmartProcessItems($cloudEntityTypeId);
                 foreach ($cloudItems as $item) {

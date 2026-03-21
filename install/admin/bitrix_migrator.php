@@ -197,7 +197,8 @@ function migratorStatusText($status) {
                                     Лиды
                                 </label>
                             </div>
-                            <p style="margin:8px 0 0;font-size:12px;color:#888;">Отмеченные типы сущностей — поля будут удалены и пересозданы из облака. Снимите галочку, чтобы не удалять поля для конкретного типа.</p>
+                            <div id="plan-delete-userfields-smart" style="margin-left:24px;margin-top:8px;"></div>
+                            <p style="margin:8px 0 0;font-size:12px;color:#888;">Отмеченные типы сущностей — поля будут удалены и пересозданы из облака. Снимите галочку, чтобы не удалять поля для конкретного типа. Смарт-процессы появятся после загрузки данных.</p>
                         </div>
                     </div>
                 </div>
