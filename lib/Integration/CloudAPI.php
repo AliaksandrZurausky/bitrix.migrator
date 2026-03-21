@@ -614,6 +614,19 @@ class CloudAPI
         return $result['result'] ?? null;
     }
 
+    public function deleteDepartment($id)
+    {
+        $result = $this->request('department.delete', ['ID' => (int)$id]);
+        return $result['result'] ?? false;
+    }
+
+    public function updateDepartment($id, $fields)
+    {
+        $fields['ID'] = (int)$id;
+        $result = $this->request('department.update', $fields);
+        return $result['result'] ?? false;
+    }
+
     // =========================================================================
     // User management
     // =========================================================================
@@ -622,6 +635,13 @@ class CloudAPI
     {
         $result = $this->request('user.add', $fields);
         return $result['result'] ?? null;
+    }
+
+    public function updateUser($id, $fields)
+    {
+        $fields['ID'] = (int)$id;
+        $result = $this->request('user.update', $fields);
+        return $result['result'] ?? false;
     }
 
     // =========================================================================

@@ -4,14 +4,33 @@
  * CLI worker for background migration.
  * Runs outside PHP-FPM — does not block web workers.
  *
- * Usage:  php migrate.php <document_root> [full|tasks]
+ * Usage:  php migrate.php [document_root] [full|tasks]
+ *
+ * If document_root is omitted, it is auto-detected from this file's location:
+ *   .../local/modules/bitrix_migrator/install/cli/migrate.php
+ *   => document_root = 5 levels up
  */
 
 set_time_limit(0);
 ini_set('memory_limit', '512M');
 
-$documentRoot = $argv[1] ?? '/home/bitrix/www';
+// Auto-detect document root from this file's path
+$autoRoot = dirname(__DIR__, 5); // install/cli -> install -> bitrix_migrator -> modules -> local -> ROOT
+
+$documentRoot = $argv[1] ?? $autoRoot;
 $migrateType  = $argv[2] ?? 'full';
+
+// Verify the document root is valid
+if (!is_file($documentRoot . '/bitrix/modules/main/include/prolog_before.php')) {
+    // Try auto-detected path as fallback
+    if ($documentRoot !== $autoRoot && is_file($autoRoot . '/bitrix/modules/main/include/prolog_before.php')) {
+        $documentRoot = $autoRoot;
+    } else {
+        fwrite(STDERR, "ERROR: Invalid document root: $documentRoot\n");
+        fwrite(STDERR, "Bitrix core not found at: $documentRoot/bitrix/modules/main/include/prolog_before.php\n");
+        exit(1);
+    }
+}
 
 // Emulate server environment for Bitrix core
 $_SERVER['DOCUMENT_ROOT']  = $documentRoot;
@@ -61,7 +80,7 @@ function cliLog($message, $logFile) {
     fwrite(STDOUT, $line);
 }
 
-cliLog("Migration worker started (PID=$pid, type=$migrateType)", $logFile);
+cliLog("Migration worker started (PID=$pid, type=$migrateType, root=$documentRoot)", $logFile);
 
 $cloudWebhookUrl = Option::get($moduleId, 'cloud_webhook_url', '');
 $boxWebhookUrl   = Option::get($moduleId, 'box_webhook_url', '');

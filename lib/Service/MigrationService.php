@@ -163,51 +163,123 @@ class MigrationService
         $cloudDepts = $this->cloudAPI->getDepartments();
         $boxDepts = $this->boxAPI->getDepartments();
 
-        $boxDeptByName = [];
+        // --- Step 1: Delete all non-root departments on box ---
+        // Find the root department (PARENT=0 or no PARENT)
+        $rootDeptId = null;
         foreach ($boxDepts as $d) {
-            $boxDeptByName[mb_strtolower(trim($d['NAME']))] = $d;
+            if (empty($d['PARENT']) || (int)$d['PARENT'] === 0) {
+                $rootDeptId = (int)$d['ID'];
+                break;
+            }
         }
 
+        // Sort by depth descending (deepest first) so children are deleted before parents
+        $nonRootDepts = array_filter($boxDepts, function ($d) use ($rootDeptId) {
+            return (int)$d['ID'] !== $rootDeptId;
+        });
+
+        // Build depth map for proper deletion order
+        $deptById = [];
+        foreach ($boxDepts as $d) {
+            $deptById[(int)$d['ID']] = $d;
+        }
+        $depthOf = function ($id) use ($deptById, &$depthOf) {
+            if (!isset($deptById[$id]) || empty($deptById[$id]['PARENT']) || (int)$deptById[$id]['PARENT'] === 0) {
+                return 0;
+            }
+            return 1 + $depthOf((int)$deptById[$id]['PARENT']);
+        };
+
+        // Sort deepest first
+        usort($nonRootDepts, function ($a, $b) use ($depthOf) {
+            return $depthOf((int)$b['ID']) - $depthOf((int)$a['ID']);
+        });
+
+        $deleted = 0;
+        foreach ($nonRootDepts as $d) {
+            $this->rateLimit();
+            try {
+                $this->boxAPI->deleteDepartment((int)$d['ID']);
+                $deleted++;
+            } catch (\Exception $e) {
+                $this->addLog("  Ошибка удаления подразделения '{$d['NAME']}' (ID={$d['ID']}): " . $e->getMessage());
+            }
+        }
+        $this->addLog("Удалено подразделений на box: $deleted");
+
+        // --- Step 2: Find the cloud root department ---
+        $cloudRootId = null;
+        foreach ($cloudDepts as $d) {
+            if (empty($d['PARENT']) || (int)$d['PARENT'] === 0) {
+                $cloudRootId = (int)$d['ID'];
+                break;
+            }
+        }
+
+        // Map cloud root → box root
+        if ($cloudRootId && $rootDeptId) {
+            $this->deptMapCache[$cloudRootId] = $rootDeptId;
+
+            // Rename box root to match cloud root name
+            $cloudRootName = null;
+            foreach ($cloudDepts as $d) {
+                if ((int)$d['ID'] === $cloudRootId) {
+                    $cloudRootName = trim($d['NAME']);
+                    break;
+                }
+            }
+            if ($cloudRootName) {
+                try {
+                    $this->boxAPI->updateDepartment($rootDeptId, ['NAME' => $cloudRootName]);
+                } catch (\Exception $e) {
+                    $this->addLog("  Не удалось переименовать корневой отдел: " . $e->getMessage());
+                }
+            }
+        }
+
+        // --- Step 3: Create cloud structure on box ---
+        // Sort by parent (top-level first so parents exist before children)
         usort($cloudDepts, function ($a, $b) {
             return ((int)($a['PARENT'] ?? 0)) - ((int)($b['PARENT'] ?? 0));
         });
 
         $total = count($cloudDepts);
         $created = 0;
-        $matched = 0;
 
         foreach ($cloudDepts as $i => $dept) {
             $this->rateLimit();
             $this->savePhaseProgress('departments', $i + 1, $total);
 
-            $name = trim($dept['NAME']);
-            $lowerName = mb_strtolower($name);
+            $cloudId = (int)$dept['ID'];
 
-            if (isset($boxDeptByName[$lowerName])) {
-                $this->deptMapCache[$dept['ID']] = $boxDeptByName[$lowerName]['ID'];
-                $matched++;
+            // Skip root — already mapped
+            if ($cloudId === $cloudRootId) {
                 continue;
             }
+
+            $name = trim($dept['NAME']);
 
             $fields = ['NAME' => $name];
             if (!empty($dept['PARENT']) && isset($this->deptMapCache[$dept['PARENT']])) {
                 $fields['PARENT'] = $this->deptMapCache[$dept['PARENT']];
+            } elseif ($rootDeptId) {
+                // If parent not in map, attach to box root
+                $fields['PARENT'] = $rootDeptId;
             }
 
             try {
                 $newId = $this->boxAPI->addDepartment($fields);
                 if ($newId) {
-                    $this->deptMapCache[$dept['ID']] = $newId;
+                    $this->deptMapCache[$cloudId] = $newId;
                     $created++;
-                    $boxDeptByName[$lowerName] = ['ID' => $newId, 'NAME' => $name];
                 }
             } catch (\Exception $e) {
                 $this->addLog("  Ошибка создания подразделения '{$name}': " . $e->getMessage());
             }
         }
 
-        $this->addLog("Подразделения: совпали=$matched, создано=$created из $total");
-        $this->saveStats(['departments' => ['total' => $total, 'matched' => $matched, 'created' => $created]]);
+        $this->addLog("Подразделения: удалено=$deleted, создано=$created из $total");
+        $this->saveStats(['departments' => ['total' => $total, 'deleted' => $deleted, 'created' => $created]]);
     }
 
     // =========================================================================
@@ -218,26 +290,38 @@ class MigrationService
     {
         $this->buildUserMapCache();
 
-        $newUsers = [];
         $cloudUsers = $this->cloudAPI->getUsers();
+
+        // Separate new users and existing users that need department update
+        $newUsers = [];
+        $existingToUpdate = [];
 
         foreach ($cloudUsers as $u) {
             if (($u['ACTIVE'] ?? 'Y') !== 'Y') continue;
             $cloudId = (int)$u['ID'];
-            if (isset($this->userMapCache[$cloudId])) continue;
             if ($this->isItemExcluded('users', $cloudId)) continue;
-            $newUsers[] = $u;
+
+            if (isset($this->userMapCache[$cloudId])) {
+                // User already exists — update departments and position
+                $existingToUpdate[] = $u;
+            } else {
+                $newUsers[] = $u;
+            }
         }
 
         $total = count($newUsers);
         $invited = 0;
+        $updated = 0;
         $errors = 0;
 
+        // --- Create new users ---
         foreach ($newUsers as $i => $u) {
             $this->rateLimit();
-            $this->savePhaseProgress('users', $i + 1, $total);
+            $this->savePhaseProgress('users', $i + 1, $total + count($existingToUpdate));
 
             try {
+                $boxDeptIds = $this->mapDepartmentIds($u['UF_DEPARTMENT'] ?? []);
+
                 $fields = [
                     'EMAIL' => $u['EMAIL'],
                     'NAME' => $u['NAME'] ?? '',
@@ -247,19 +331,19 @@ class MigrationService
                     'PERSONAL_PHONE' => $u['PERSONAL_PHONE'] ?? '',
                     'PERSONAL_MOBILE' => $u['PERSONAL_MOBILE'] ?? '',
                     'WORK_PHONE' => $u['WORK_PHONE'] ?? '',
+                    'ACTIVE' => true,
+                    'EXTRANET' => 'N',
+                    'MESSAGE_TYPE' => 'N', // Do not send invitation email
                 ];
 
-                $deptIds = $u['UF_DEPARTMENT'] ?? [];
-                if (!is_array($deptIds)) $deptIds = [$deptIds];
-                $boxDeptIds = [];
-                foreach ($deptIds as $did) {
-                    if (isset($this->deptMapCache[$did])) {
-                        $boxDeptIds[] = $this->deptMapCache[$did];
-                    }
-                }
                 if (!empty($boxDeptIds)) {
                     $fields['UF_DEPARTMENT'] = $boxDeptIds;
                 }
+
+                // Personal info
+                if (!empty($u['PERSONAL_GENDER'])) $fields['PERSONAL_GENDER'] = $u['PERSONAL_GENDER'];
+                if (!empty($u['PERSONAL_BIRTHDAY'])) $fields['PERSONAL_BIRTHDAY'] = $u['PERSONAL_BIRTHDAY'];
+                if (!empty($u['PERSONAL_PHOTO'])) $fields['PERSONAL_PHOTO'] = $u['PERSONAL_PHOTO'];
 
                 $newId = $this->boxAPI->inviteUser($fields);
                 if ($newId) {
@@ -268,11 +352,52 @@ class MigrationService
                 }
             } catch (\Exception $e) {
                 $errors++;
-                $this->addLog("  Ошибка приглашения пользователя {$u['EMAIL']}: " . $e->getMessage());
+                $this->addLog("  Ошибка создания пользователя {$u['EMAIL']}: " . $e->getMessage());
             }
         }
 
-        $this->addLog("Пользователи: совпали=" . (count($this->userMapCache) - $invited) . ", приглашено=$invited, ошибок=$errors из $total");
+        // --- Update existing users (departments, position) ---
+        foreach ($existingToUpdate as $j => $u) {
+            $this->rateLimit();
+            $this->savePhaseProgress('users', $total + $j + 1, $total + count($existingToUpdate));
+
+            $cloudId = (int)$u['ID'];
+            $boxUserId = $this->userMapCache[$cloudId];
+
+            try {
+                $boxDeptIds = $this->mapDepartmentIds($u['UF_DEPARTMENT'] ?? []);
+                $updateFields = [];
+
+                if (!empty($boxDeptIds)) {
+                    $updateFields['UF_DEPARTMENT'] = $boxDeptIds;
+                }
+                if (!empty($u['WORK_POSITION'])) {
+                    $updateFields['WORK_POSITION'] = $u['WORK_POSITION'];
+                }
+
+                if (!empty($updateFields)) {
+                    $this->boxAPI->updateUser($boxUserId, $updateFields);
+                    $updated++;
+                }
+            } catch (\Exception $e) {
+                $this->addLog("  Ошибка обновления пользователя {$u['EMAIL']}: " . $e->getMessage());
+            }
+        }
+
+        $matched = count($this->userMapCache) - $invited;
+        $this->addLog("Пользователи: совпали=$matched, создано=$invited, обновлено=$updated, ошибок=$errors");
+    }
+
+    private function mapDepartmentIds($cloudDeptIds)
+    {
+        if (!is_array($cloudDeptIds)) $cloudDeptIds = [$cloudDeptIds];
+        $boxDeptIds = [];
+        foreach ($cloudDeptIds as $did) {
+            if (isset($this->deptMapCache[$did])) {
+                $boxDeptIds[] = $this->deptMapCache[$did];
+            }
+        }
+        return $boxDeptIds;
     }
 
     private function buildUserMapCache()
