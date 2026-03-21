@@ -12,6 +12,7 @@ class MigrationService
     private $plan;
     private $moduleId = 'bitrix_migrator';
     private $logFile = null;
+    private $errorLogFile = null; // separate file for detailed error traces
     private $boxMode = 'api'; // 'api' or 'd7'
 
     // Caches
@@ -79,6 +80,8 @@ class MigrationService
     public function setLogFile($path)
     {
         $this->logFile = $path;
+        // Errors-only file: bitrix_migrator_DATE-errors.log
+        $this->errorLogFile = preg_replace('/\.log$/', '-errors.log', $path);
     }
 
     public function migrate()
@@ -1595,6 +1598,15 @@ class MigrationService
         $totalComments = 0;
         $errors = 0;
 
+        // For deduplication in main log: track first 3 unique error messages per phase
+        $seenActivityErrors = [];
+        $seenCommentErrors = [];
+
+        // Log the errors file path so user knows where to look
+        if ($this->errorLogFile) {
+            $this->addLog("Детальные ошибки таймлайна пишутся в: " . basename($this->errorLogFile));
+        }
+
         // Count total entities for progress
         $totalEntities = 0;
         foreach ($entityTypes as $config) {
@@ -1626,7 +1638,15 @@ class MigrationService
                             $totalActivities++;
                         } catch (\Throwable $e) {
                             $errors++;
-                            $this->addLog('  Активность #' . ($activity['ID'] ?? '?') . ' [type=' . ($activity['TYPE_ID'] ?? '?') . ']: ' . $e->getMessage());
+                            $errKey = substr($e->getMessage(), 0, 80);
+                            $actInfo = $entityName . '#' . $cloudId . ' activity#' . ($activity['ID'] ?? '?') . ' type=' . ($activity['TYPE_ID'] ?? '?');
+                            $this->addErrorDetail('timeline', $actInfo, $e->getMessage());
+                            // Show first 3 unique error types in main log
+                            if (!isset($seenActivityErrors[$errKey])) {
+                                $seenActivityErrors[$errKey] = 0;
+                                $this->addLog("  Активность [$actInfo]: " . $e->getMessage());
+                            }
+                            $seenActivityErrors[$errKey]++;
                         }
                     }
                 } catch (\Throwable $e) {
@@ -1645,10 +1665,26 @@ class MigrationService
                             $totalComments++;
                         } catch (\Throwable $e) {
                             $errors++;
+                            $errKey = substr($e->getMessage(), 0, 80);
+                            $this->addErrorDetail('timeline-comment', $entityName . '#' . $cloudId, $e->getMessage());
+                            if (!isset($seenCommentErrors[$errKey])) {
+                                $seenCommentErrors[$errKey] = 0;
+                                $this->addLog("  Комментарий (" . $entityName . ' #' . $cloudId . '): ' . $e->getMessage());
+                            }
+                            $seenCommentErrors[$errKey]++;
                         }
                     }
                 } catch (\Throwable $e) {
                     // Non-critical
+                }
+            }
+        }
+
+        // Summary of unique error types
+        if (!empty($seenActivityErrors)) {
+            foreach ($seenActivityErrors as $msg => $count) {
+                if ($count > 1) {
+                    $this->addLog("  ^ Ошибка повторилась ещё $count раз: $msg");
                 }
             }
         }
@@ -2254,6 +2290,17 @@ class MigrationService
         if ($this->logFile) {
             @file_put_contents($this->logFile, date('Y-m-d ') . $line . "\n", FILE_APPEND);
         }
+    }
+
+    /**
+     * Write a detailed error entry ONLY to the errors file (not to the main UI buffer).
+     * Use this for high-volume errors (e.g. timeline) to avoid polluting the 500-line UI log.
+     */
+    private function addErrorDetail(string $context, string $entityInfo, string $errorMsg): void
+    {
+        if (!$this->errorLogFile) return;
+        $line = date('Y-m-d H:i:s') . " [ERROR] [$context] $entityInfo: $errorMsg\n";
+        @file_put_contents($this->errorLogFile, $line, FILE_APPEND);
     }
 
     private function saveLog()

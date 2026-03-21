@@ -944,7 +944,10 @@ class CloudAPI
      */
     public function getWorkgroupMembers($groupId)
     {
-        return $this->fetchAll('sonet_group.user.get', ['GROUP_ID' => (int)$groupId]);
+        // Parameter name: verify against docs at
+        // https://apidocs.bitrix24.ru/api-reference/sonet-group/members/sonet-group-user-get.html
+        // Using 'id' — 'GROUP_ID' returns "Wrong socialnetwork group ID" on all calls
+        return $this->fetchAll('sonet_group.user.get', ['id' => (int)$groupId]);
     }
 
     /**
@@ -977,8 +980,10 @@ class CloudAPI
      */
     public function getSmartProcessUserfields($entityId)
     {
+        // moduleId is required; filter key casing follows Bitrix uppercase convention
         return $this->fetchAll('userfieldconfig.list', [
-            'filter' => ['entityId' => $entityId],
+            'moduleId' => 'crm',
+            'filter'   => ['ENTITY_ID' => $entityId],
         ]);
     }
 
