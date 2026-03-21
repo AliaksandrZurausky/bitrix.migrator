@@ -78,6 +78,21 @@ class CloudAPI
     }
 
     /**
+     * Get available currencies (returns set of CURRENCY codes)
+     */
+    public function getCurrencyCodes(): array
+    {
+        $result = $this->request('crm.currency.list');
+        $items = $result['result'] ?? [];
+        $codes = [];
+        foreach ($items as $item) {
+            $code = $item['CURRENCY'] ?? '';
+            if ($code) $codes[$code] = true;
+        }
+        return $codes;
+    }
+
+    /**
      * Get entity count (uses 'total' from first request)
      */
     public function getCount($method, $params = [])

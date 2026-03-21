@@ -1184,6 +1184,15 @@ class MigrationService
         $matchBy = $dupSettings['match_by'] ?? ['TITLE'];
         $dupAction = $dupSettings['action'] ?? 'skip';
 
+        // Pre-fetch box currencies to validate CURRENCY_ID before creation
+        $boxCurrencies = [];
+        try {
+            $boxCurrencies = $this->boxAPI->getCurrencyCodes();
+            $this->addLog('Валюты box: ' . implode(', ', array_keys($boxCurrencies)));
+        } catch (\Throwable $e) {
+            $this->addLog('Не удалось загрузить валюты box: ' . $e->getMessage());
+        }
+
         // Pre-build box deals title cache to avoid per-item API calls
         $boxDealsByTitle = [];
         if (in_array('TITLE', $matchBy)) {
@@ -1217,6 +1226,10 @@ class MigrationService
                 if ($dupAction === 'update') {
                     try {
                         $fields = $this->buildDealFields($deal);
+                        if (!empty($fields['CURRENCY_ID']) && !empty($boxCurrencies)
+                            && !isset($boxCurrencies[$fields['CURRENCY_ID']])) {
+                            unset($fields['CURRENCY_ID'], $fields['OPPORTUNITY'], $fields['TAX_VALUE']);
+                        }
                         if ($this->isD7Mode()) {
                             BoxD7Service::updateDeal((int)$existing['ID'], $fields);
                         } else {
@@ -1234,6 +1247,11 @@ class MigrationService
 
             try {
                 $fields = $this->buildDealFields($deal);
+                // Drop CURRENCY_ID if it doesn't exist on box (avoids HTTP 400)
+                if (!empty($fields['CURRENCY_ID']) && !empty($boxCurrencies)
+                    && !isset($boxCurrencies[$fields['CURRENCY_ID']])) {
+                    unset($fields['CURRENCY_ID'], $fields['OPPORTUNITY'], $fields['TAX_VALUE']);
+                }
                 if ($this->isD7Mode()) {
                     if (!empty($deal['DATE_CREATE'])) $fields['DATE_CREATE'] = $deal['DATE_CREATE'];
                     if (!empty($deal['CREATED_BY_ID'])) {
@@ -1344,6 +1362,12 @@ class MigrationService
         $matchBy = $dupSettings['match_by'] ?? ['TITLE'];
         $dupAction = $dupSettings['action'] ?? 'skip';
 
+        // Reuse box currencies already fetched during deals phase (or fetch now)
+        $boxCurrencies = [];
+        try {
+            $boxCurrencies = $this->boxAPI->getCurrencyCodes();
+        } catch (\Throwable $e) {}
+
         foreach ($cloudLeads as $i => $lead) {
             $this->rateLimit(true);
             $this->savePhaseProgress('leads', $i + 1, $total);
@@ -1372,6 +1396,10 @@ class MigrationService
 
             try {
                 $fields = $this->buildLeadFields($lead);
+                if (!empty($fields['CURRENCY_ID']) && !empty($boxCurrencies)
+                    && !isset($boxCurrencies[$fields['CURRENCY_ID']])) {
+                    unset($fields['CURRENCY_ID'], $fields['OPPORTUNITY']);
+                }
                 if ($this->isD7Mode()) {
                     if (!empty($lead['DATE_CREATE'])) $fields['DATE_CREATE'] = $lead['DATE_CREATE'];
                     if (!empty($lead['CREATED_BY_ID'])) {
