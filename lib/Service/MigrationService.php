@@ -1953,6 +1953,7 @@ class MigrationService
                         'VISIBLE'     => $group['VISIBLE'] ?? 'Y',
                         'OPENED'      => $group['OPENED'] ?? 'Y',
                         'PROJECT'     => $group['PROJECT'] ?? 'N',
+                        'SUBJECT_ID'  => (int)($group['SUBJECT_ID'] ?? 0), // 0 → BoxD7Service picks first available
                     ];
 
                     // Map owner — default to admin (1) if not found

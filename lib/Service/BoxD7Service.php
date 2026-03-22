@@ -352,12 +352,25 @@ class BoxD7Service
     {
         self::ensureSocialnetworkLoaded();
 
+        // SUBJECT_ID is required by CSocNetGroup::createGroup.
+        // Use provided value or fall back to first available subject (ID=1).
+        $subjectId = (int)($fields['SUBJECT_ID'] ?? 0);
+        if ($subjectId <= 0) {
+            $subjectRow = \Bitrix\Socialnetwork\WorkgroupSubjectTable::getList([
+                'select' => ['ID'],
+                'order'  => ['ID' => 'ASC'],
+                'limit'  => 1,
+            ])->fetch();
+            $subjectId = $subjectRow ? (int)$subjectRow['ID'] : 1;
+        }
+
         $arFields = [
             'NAME'        => $fields['NAME'] ?? '',
             'DESCRIPTION' => $fields['DESCRIPTION'] ?? '',
             'VISIBLE'     => $fields['VISIBLE'] ?? 'Y',
             'OPENED'      => $fields['OPENED'] ?? 'Y',
             'PROJECT'     => $fields['PROJECT'] ?? 'N',
+            'SUBJECT_ID'  => $subjectId,
             'ACTIVE'      => 'Y',
             'SITE_ID'     => [defined('SITE_ID') ? SITE_ID : 's1'],
         ];
