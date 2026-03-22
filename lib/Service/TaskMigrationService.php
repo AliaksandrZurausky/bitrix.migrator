@@ -4,13 +4,12 @@ namespace BitrixMigrator\Service;
 
 use BitrixMigrator\Integration\CloudAPI;
 use Bitrix\Main\Config\Option;
+use BitrixMigrator\Service\BoxD7Service;
 
 class TaskMigrationService
 {
     const MODULE_ID = 'bitrix_migrator';
-    const FOLDER_NAME = 'Миграция задач';
-    const BATCH_PAUSE_EVERY = 100;
-    const BATCH_PAUSE_SECONDS = 10;
+    const FOLDER_NAME = 'Миграция с облака';
 
     private $cloudAPI;
     private $boxAPI;
@@ -23,7 +22,6 @@ class TaskMigrationService
     private $crmEntityCache  = []; // "TYPE_TITLE" => box entity ID
 
     private $migrationFolderId = 0;
-    private $counter           = 0;
     private $log               = [];
     private $logFile           = null;
     private $stats             = [
@@ -56,11 +54,25 @@ class TaskMigrationService
         $this->logFile = $path;
     }
 
+    public function setMigrationFolderId(int $id)
+    {
+        $this->migrationFolderId = $id;
+    }
+
     private function checkStop()
     {
-        $stop = Option::get(self::MODULE_ID, 'migration_stop', '0');
-        if ($stop === '1') {
+        $flag = Option::get(self::MODULE_ID, 'migration_stop', '0');
+        if ($flag === '1') {
             throw new MigrationStoppedException('Остановлено пользователем');
+        }
+        while ($flag === 'pause') {
+            Option::set(self::MODULE_ID, 'migration_status', 'paused');
+            Option::set(self::MODULE_ID, 'migration_message', 'Миграция на паузе');
+            sleep(3);
+            $flag = Option::get(self::MODULE_ID, 'migration_stop', '0');
+            if ($flag === '1') {
+                throw new MigrationStoppedException('Остановлено пользователем');
+            }
         }
     }
 
@@ -368,7 +380,7 @@ class TaskMigrationService
     // Files
     // =========================================================================
 
-    private function migrateTaskFiles(array $cloudFileRefs)
+    private function migrateTaskFiles(array $cloudFileRefs): array
     {
         $boxFileIds = [];
 
@@ -377,29 +389,27 @@ class TaskMigrationService
                 $attachId = $this->extractAttachId($ref);
                 if ($attachId <= 0) continue;
 
-                // Get file info from cloud
+                // Get attached object info from cloud (REST call)
                 $attachInfo = $this->cloudAPI->getAttachedObject($attachId);
+                usleep(333000);
+
                 $downloadUrl = $attachInfo['DOWNLOAD_URL'] ?? '';
                 $fileName    = $attachInfo['NAME'] ?? ('file_' . $attachId);
 
                 if (empty($downloadUrl)) {
-                    $this->addLog('  Файл #' . $attachId . ': нет URL для загрузки');
+                    $this->addLog('  Файл #' . $attachId . ': нет DOWNLOAD_URL');
                     continue;
                 }
 
-                // Download file
-                $content = $this->cloudAPI->downloadFile($downloadUrl);
-
-                // Upload to box migration folder
-                $uploaded = $this->boxAPI->uploadFileToFolder($this->migrationFolderId, $fileName, $content);
-                $boxFileId = (int)($uploaded['ID'] ?? 0);
+                // Download to temp file, upload via D7
+                $boxFileId = $this->downloadAndUploadFile($downloadUrl, $fileName);
 
                 if ($boxFileId > 0) {
-                    $boxFileIds[] = 'n' . $boxFileId; // "n" prefix for new disk file attachment
-                    $this->addLog('  Файл "' . $fileName . '" → box ID ' . $boxFileId);
+                    $boxFileIds[] = 'n' . $boxFileId;
+                    $this->addLog('  Файл "' . $fileName . '" → box disk ID ' . $boxFileId);
+                } else {
+                    $this->addLog('  Файл "' . $fileName . '": не удалось загрузить на диск');
                 }
-
-                usleep(333000);
             } catch (\Throwable $e) {
                 $this->addLog('  Файл #' . ($ref ?? '') . ': ' . $e->getMessage());
             }
@@ -547,7 +557,7 @@ class TaskMigrationService
         }
     }
 
-    private function migrateCommentFiles(array $attachedObjects)
+    private function migrateCommentFiles(array $attachedObjects): array
     {
         $boxFileIds = [];
 
@@ -557,26 +567,58 @@ class TaskMigrationService
                 if ($fileId <= 0) continue;
 
                 $fileInfo = $this->cloudAPI->getDiskFile($fileId);
+                usleep(333000);
+
                 $downloadUrl = $fileInfo['DOWNLOAD_URL'] ?? '';
                 $fileName    = $fileInfo['NAME'] ?? ('comment_file_' . $fileId);
 
                 if (empty($downloadUrl)) continue;
 
-                $content = $this->cloudAPI->downloadFile($downloadUrl);
-                $uploaded = $this->boxAPI->uploadFileToFolder($this->migrationFolderId, $fileName, $content);
-                $boxFileId = (int)($uploaded['ID'] ?? 0);
-
+                $boxFileId = $this->downloadAndUploadFile($downloadUrl, $fileName);
                 if ($boxFileId > 0) {
                     $boxFileIds[] = 'n' . $boxFileId;
                 }
-
-                usleep(333000);
             } catch (\Throwable $e) {
-                // non-critical
+                $this->addLog('  Файл комментария #' . ($obj['FILE_ID'] ?? $obj['fileId'] ?? '?') . ': ' . $e->getMessage());
             }
         }
 
         return $boxFileIds;
+    }
+
+    /**
+     * Download file from URL to temp file, upload to migration folder via D7.
+     * Returns box disk file ID or 0.
+     */
+    private function downloadAndUploadFile(string $downloadUrl, string $fileName): int
+    {
+        $tmpPath = tempnam(sys_get_temp_dir(), 'bx_mig_');
+
+        try {
+            $ch = curl_init($downloadUrl);
+            $fp = fopen($tmpPath, 'wb');
+            curl_setopt_array($ch, [
+                CURLOPT_FILE           => $fp,
+                CURLOPT_TIMEOUT        => 60,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_SSL_VERIFYPEER => false,
+            ]);
+            curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            fclose($fp);
+
+            if ($httpCode !== 200 || filesize($tmpPath) === 0) {
+                $this->addLog('  Скачивание "' . $fileName . '": HTTP ' . $httpCode);
+                return 0;
+            }
+
+            $boxFileId = BoxD7Service::uploadFileToFolder($this->migrationFolderId, $tmpPath, $fileName);
+            return $boxFileId ?? 0;
+
+        } finally {
+            @unlink($tmpPath);
+        }
     }
 
     // =========================================================================
@@ -635,46 +677,12 @@ class TaskMigrationService
     // Migration folder
     // =========================================================================
 
-    private function getOrCreateMigrationFolder()
+    private function getOrCreateMigrationFolder(): int
     {
-        // Find common storage on box
-        $storages = $this->boxAPI->getStorages();
-        $rootFolderId = 0;
-
-        foreach ($storages as $storage) {
-            $entityType = $storage['ENTITY_TYPE'] ?? '';
-            if ($entityType === 'common') {
-                $rootFolderId = (int)($storage['ROOT_OBJECT_ID'] ?? 0);
-                break;
-            }
+        if ($this->migrationFolderId > 0) {
+            return $this->migrationFolderId;
         }
-
-        // Fallback: use first storage
-        if ($rootFolderId <= 0 && !empty($storages)) {
-            $rootFolderId = (int)($storages[0]['ROOT_OBJECT_ID'] ?? 0);
-        }
-
-        if ($rootFolderId <= 0) {
-            throw new \Exception('Не удалось найти хранилище диска на коробке');
-        }
-
-        // Check if migration folder already exists
-        $children = $this->boxAPI->getFolderChildren($rootFolderId);
-        foreach ($children as $child) {
-            if (($child['TYPE'] ?? '') === 'folder' && ($child['NAME'] ?? '') === self::FOLDER_NAME) {
-                return (int)$child['ID'];
-            }
-        }
-
-        // Create folder
-        $folder = $this->boxAPI->createSubfolder($rootFolderId, self::FOLDER_NAME);
-        $folderId = (int)($folder['ID'] ?? 0);
-
-        if ($folderId <= 0) {
-            throw new \Exception('Не удалось создать папку миграции');
-        }
-
-        return $folderId;
+        return BoxD7Service::getOrCreateMigrationFolder(self::FOLDER_NAME);
     }
 
     // =========================================================================
@@ -699,14 +707,7 @@ class TaskMigrationService
 
     private function rateLimitPause()
     {
-        $this->counter++;
         $this->checkStop();
-
-        if ($this->counter >= self::BATCH_PAUSE_EVERY) {
-            $this->counter = 0;
-            $this->addLog('Пауза ' . self::BATCH_PAUSE_SECONDS . ' сек (rate limit)...');
-            sleep(self::BATCH_PAUSE_SECONDS);
-        }
     }
 
     // =========================================================================

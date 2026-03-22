@@ -209,7 +209,7 @@ function migratorStatusText($status) {
                         <label class="migrator-label">Удаление пользовательских полей перед миграцией:</label>
                         <div style="margin-top:8px;">
                             <label style="display:flex;align-items:center;gap:6px;margin-bottom:6px;font-weight:600;">
-                                <input type="checkbox" id="plan-delete-userfields" checked>
+                                <input type="checkbox" id="plan-delete-userfields">
                                 Удалять существующие поля на box перед созданием
                             </label>
                             <div id="plan-delete-userfields-entities" style="margin-left:24px;">
@@ -268,6 +268,9 @@ function migratorStatusText($status) {
                         <label style="display:flex;align-items:center;gap:6px;">
                             <input type="checkbox" class="plan-cleanup-phase" data-phase="smart_processes"> Смарт-процессы
                         </label>
+                        <label style="display:block;margin:6px 0;">
+                            <input type="checkbox" class="plan-cleanup-phase" data-phase="tasks"> Задачи
+                        </label>
                     </div>
                 </div>
             </div>
@@ -288,6 +291,12 @@ function migratorStatusText($status) {
         <div id="migration-controls" style="margin-top:20px; display:flex; gap:10px; align-items:center;">
             <button type="button" id="btn-start-migration" class="adm-btn-save">
                 Запустить миграцию
+            </button>
+            <button type="button" id="btn-pause-migration" class="adm-btn" style="display:none;">
+                Пауза
+            </button>
+            <button type="button" id="btn-resume-migration" class="adm-btn-save" style="display:none;">
+                Продолжить
             </button>
             <button type="button" id="btn-stop-migration" class="adm-btn migrator-btn-stop" style="display:none;">
                 Остановить миграцию

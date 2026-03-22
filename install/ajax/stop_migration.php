@@ -23,8 +23,8 @@ if (!Loader::includeModule('bitrix_migrator')) {
 $moduleId = 'bitrix_migrator';
 
 $currentStatus = Option::get($moduleId, 'migration_status', 'idle');
-if ($currentStatus !== 'running') {
-    echo json_encode(['success' => false, 'error' => 'Migration is not running']);
+if (!in_array($currentStatus, ['running', 'paused', 'stopping'])) {
+    echo json_encode(['success' => false, 'error' => 'Migration is not running or paused']);
     die();
 }
 

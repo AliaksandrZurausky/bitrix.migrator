@@ -884,6 +884,8 @@
     function initMigrationHandlers() {
         document.getElementById('btn-start-migration')?.addEventListener('click', startMigration);
         document.getElementById('btn-stop-migration')?.addEventListener('click', stopMigration);
+        document.getElementById('btn-pause-migration')?.addEventListener('click', pauseMigration);
+        document.getElementById('btn-resume-migration')?.addEventListener('click', resumeMigration);
         checkMigrationStatus();
     }
 
@@ -939,11 +941,75 @@
             });
     }
 
+    function pauseMigration() {
+        var btn = document.getElementById('btn-pause-migration');
+        btn.disabled = true; btn.textContent = 'Пауза...';
+
+        var fd = new FormData();
+        fd.append('sessid', window.BITRIX_MIGRATOR.sessid);
+
+        fetch('/local/ajax/bitrix_migrator/pause_migration.php', { method: 'POST', body: fd })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (!data.success) {
+                    alert('Ошибка: ' + (data.error || ''));
+                    btn.disabled = false; btn.textContent = 'Пауза';
+                }
+            })
+            .catch(function() {
+                alert('Ошибка паузы');
+                btn.disabled = false; btn.textContent = 'Пауза';
+            });
+    }
+
+    function resumeMigration() {
+        var btn = document.getElementById('btn-resume-migration');
+        btn.disabled = true; btn.textContent = 'Продолжение...';
+
+        var fd = new FormData();
+        fd.append('sessid', window.BITRIX_MIGRATOR.sessid);
+
+        fetch('/local/ajax/bitrix_migrator/resume_migration.php', { method: 'POST', body: fd })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (!data.success) {
+                    alert('Ошибка: ' + (data.error || ''));
+                    btn.disabled = false; btn.textContent = 'Продолжить';
+                }
+            })
+            .catch(function() {
+                alert('Ошибка возобновления');
+                btn.disabled = false; btn.textContent = 'Продолжить';
+            });
+    }
+
     function showMigrationRunningUI() {
         var startBtn = document.getElementById('btn-start-migration');
         var stopBtn = document.getElementById('btn-stop-migration');
+        var pauseBtn = document.getElementById('btn-pause-migration');
+        var resumeBtn = document.getElementById('btn-resume-migration');
         startBtn.disabled = true;
         startBtn.textContent = 'Миграция выполняется...';
+        stopBtn.style.display = 'inline-flex';
+        stopBtn.disabled = false;
+        stopBtn.textContent = 'Остановить миграцию';
+        pauseBtn.style.display = 'inline-flex';
+        pauseBtn.disabled = false;
+        pauseBtn.textContent = 'Пауза';
+        resumeBtn.style.display = 'none';
+    }
+
+    function showMigrationPausedUI() {
+        var startBtn = document.getElementById('btn-start-migration');
+        var stopBtn = document.getElementById('btn-stop-migration');
+        var pauseBtn = document.getElementById('btn-pause-migration');
+        var resumeBtn = document.getElementById('btn-resume-migration');
+        startBtn.disabled = true;
+        startBtn.textContent = 'Миграция на паузе';
+        pauseBtn.style.display = 'none';
+        resumeBtn.style.display = 'inline-flex';
+        resumeBtn.disabled = false;
+        resumeBtn.textContent = 'Продолжить';
         stopBtn.style.display = 'inline-flex';
         stopBtn.disabled = false;
         stopBtn.textContent = 'Остановить миграцию';
@@ -952,10 +1018,14 @@
     function showMigrationIdleUI() {
         var startBtn = document.getElementById('btn-start-migration');
         var stopBtn = document.getElementById('btn-stop-migration');
+        var pauseBtn = document.getElementById('btn-pause-migration');
+        var resumeBtn = document.getElementById('btn-resume-migration');
         var pidInfo = document.getElementById('migration-pid-info');
         startBtn.disabled = false;
         startBtn.textContent = 'Запустить миграцию';
         stopBtn.style.display = 'none';
+        pauseBtn.style.display = 'none';
+        resumeBtn.style.display = 'none';
         if (pidInfo) pidInfo.style.display = 'none';
     }
 
@@ -985,6 +1055,10 @@
                             pidInfo.textContent = 'PID: ' + data.pid;
                         }
                     }
+                } else if (data.success && data.status === 'paused') {
+                    showMigrationProgress();
+                    showMigrationPausedUI();
+                    startMigrationPolling();
                 } else if (data.success && (data.status === 'completed' || data.status === 'error' || data.status === 'stopped')) {
                     if (data.log && data.log.length > 0) {
                         showMigrationProgress();
@@ -1009,6 +1083,12 @@
                         pidInfo.style.display = 'inline';
                         pidInfo.textContent = 'PID: ' + data.pid;
                     }
+                }
+
+                if (data.status === 'paused') {
+                    showMigrationPausedUI();
+                } else if (data.status === 'running') {
+                    showMigrationRunningUI();
                 }
 
                 if (data.status === 'completed' || data.status === 'error' || data.status === 'stopped') {

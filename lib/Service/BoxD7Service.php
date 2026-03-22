@@ -14,6 +14,13 @@ use Bitrix\Main\Loader;
  */
 class BoxD7Service
 {
+    private static function ensureCrmLoaded(): void
+    {
+        if (!Loader::includeModule('crm')) {
+            throw new \Exception('CRM module not loaded');
+        }
+    }
+
     // =========================================================================
     // Users
     // =========================================================================
@@ -62,8 +69,12 @@ class BoxD7Service
             }
         }
 
+        // UF_DEPARTMENT is required for employee status (vs visitor/extranet).
+        // If empty → user appears as extranet. Default to root department [1].
         if (!empty($fields['UF_DEPARTMENT'])) {
             $userFields['UF_DEPARTMENT'] = $fields['UF_DEPARTMENT'];
+        } else {
+            $userFields['UF_DEPARTMENT'] = [1];
         }
         if (!empty($fields['PERSONAL_GENDER'])) {
             $userFields['PERSONAL_GENDER'] = $fields['PERSONAL_GENDER'];
@@ -116,6 +127,7 @@ class BoxD7Service
 
     public static function createCompany(array $fields): int
     {
+        self::ensureCrmLoaded();
         $obj = new \CCrmCompany(false);
         $id = $obj->Add($fields, true, true, ['DISABLE_USER_FIELD_CHECK' => false]);
         if (!$id) {
@@ -126,6 +138,7 @@ class BoxD7Service
 
     public static function updateCompany(int $id, array $fields): bool
     {
+        self::ensureCrmLoaded();
         $obj = new \CCrmCompany(false);
         if (!$obj->Update($id, $fields, true, true)) {
             throw new \Exception('CCrmCompany::Update error: ' . ($obj->LAST_ERROR ?? 'unknown error'));
@@ -135,9 +148,7 @@ class BoxD7Service
 
     public static function deleteCompany(int $id): bool
     {
-        if (!Loader::includeModule('crm')) {
-            throw new \Exception('CRM module not loaded');
-        }
+        self::ensureCrmLoaded();
         $obj = new \CCrmCompany(false);
         $result = $obj->Delete($id, ['REGISTER_SONET_EVENT' => false]);
         if (!$result) {
@@ -152,6 +163,7 @@ class BoxD7Service
 
     public static function createContact(array $fields): int
     {
+        self::ensureCrmLoaded();
         $obj = new \CCrmContact(false);
         $id = $obj->Add($fields, true, true, ['DISABLE_USER_FIELD_CHECK' => false]);
         if (!$id) {
@@ -162,6 +174,7 @@ class BoxD7Service
 
     public static function updateContact(int $id, array $fields): bool
     {
+        self::ensureCrmLoaded();
         $obj = new \CCrmContact(false);
         if (!$obj->Update($id, $fields, true, true)) {
             throw new \Exception('CCrmContact::Update error: ' . ($obj->LAST_ERROR ?? 'unknown error'));
@@ -171,9 +184,7 @@ class BoxD7Service
 
     public static function deleteContact(int $id): bool
     {
-        if (!Loader::includeModule('crm')) {
-            throw new \Exception('CRM module not loaded');
-        }
+        self::ensureCrmLoaded();
         $obj = new \CCrmContact(false);
         $result = $obj->Delete($id, ['REGISTER_SONET_EVENT' => false]);
         if (!$result) {
@@ -187,7 +198,7 @@ class BoxD7Service
      */
     public static function setContactCompanies(int $contactId, array $companyIds): void
     {
-        if (!Loader::includeModule('crm')) return;
+        self::ensureCrmLoaded();
 
         $items = [];
         foreach ($companyIds as $i => $companyId) {
@@ -206,6 +217,7 @@ class BoxD7Service
 
     public static function createDeal(array $fields): int
     {
+        self::ensureCrmLoaded();
         $obj = new \CCrmDeal(false);
         $id = $obj->Add($fields, true, true, ['DISABLE_USER_FIELD_CHECK' => false]);
         if (!$id) {
@@ -216,6 +228,7 @@ class BoxD7Service
 
     public static function updateDeal(int $id, array $fields): bool
     {
+        self::ensureCrmLoaded();
         $obj = new \CCrmDeal(false);
         if (!$obj->Update($id, $fields, true, true)) {
             throw new \Exception('CCrmDeal::Update error: ' . ($obj->LAST_ERROR ?? 'unknown error'));
@@ -225,9 +238,7 @@ class BoxD7Service
 
     public static function deleteDeal(int $id): bool
     {
-        if (!Loader::includeModule('crm')) {
-            throw new \Exception('CRM module not loaded');
-        }
+        self::ensureCrmLoaded();
         $obj = new \CCrmDeal(false);
         $result = $obj->Delete($id, ['REGISTER_SONET_EVENT' => false]);
         if (!$result) {
@@ -241,7 +252,7 @@ class BoxD7Service
      */
     public static function setDealContacts(int $dealId, array $contactIds): void
     {
-        if (!Loader::includeModule('crm')) return;
+        self::ensureCrmLoaded();
 
         $items = [];
         foreach ($contactIds as $i => $contactId) {
@@ -260,6 +271,7 @@ class BoxD7Service
 
     public static function createLead(array $fields): int
     {
+        self::ensureCrmLoaded();
         $obj = new \CCrmLead(false);
         $id = $obj->Add($fields, true, true, ['DISABLE_USER_FIELD_CHECK' => false]);
         if (!$id) {
@@ -270,6 +282,7 @@ class BoxD7Service
 
     public static function updateLead(int $id, array $fields): bool
     {
+        self::ensureCrmLoaded();
         $obj = new \CCrmLead(false);
         if (!$obj->Update($id, $fields, true, true)) {
             throw new \Exception('CCrmLead::Update error: ' . ($obj->LAST_ERROR ?? 'unknown error'));
@@ -279,15 +292,87 @@ class BoxD7Service
 
     public static function deleteLead(int $id): bool
     {
-        if (!Loader::includeModule('crm')) {
-            throw new \Exception('CRM module not loaded');
-        }
+        self::ensureCrmLoaded();
         $obj = new \CCrmLead(false);
         $result = $obj->Delete($id, ['REGISTER_SONET_EVENT' => false]);
         if (!$result) {
             throw new \Exception('CCrmLead::Delete error for ID=' . $id);
         }
         return true;
+    }
+
+    // =========================================================================
+    // Disk
+    // =========================================================================
+
+    /**
+     * Upload a local temp file to a disk folder via D7.
+     * Returns box disk file ID, or null on failure.
+     */
+    public static function uploadFileToFolder(int $folderId, string $tmpPath, string $fileName): ?int
+    {
+        if (!Loader::includeModule('disk')) return null;
+
+        $folder = \Bitrix\Disk\Folder::loadById($folderId);
+        if (!$folder) return null;
+
+        $file = $folder->uploadFile(
+            [
+                'name'     => $fileName,
+                'tmp_name' => $tmpPath,
+                'type'     => mime_content_type($tmpPath) ?: 'application/octet-stream',
+                'size'     => filesize($tmpPath),
+            ],
+            ['NAME' => $fileName, 'CREATED_BY' => 1],
+            [],
+            true // generateUniqueName
+        );
+
+        return $file ? $file->getId() : null;
+    }
+
+    /**
+     * Find or create migration folder on shared disk (Общий диск) via D7.
+     * Returns folder ID.
+     */
+    public static function getOrCreateMigrationFolder(string $folderName): int
+    {
+        if (!Loader::includeModule('disk')) {
+            throw new \Exception('Disk module not loaded');
+        }
+
+        $driver = \Bitrix\Disk\Driver::getInstance();
+        $siteId = defined('SITE_ID') ? SITE_ID : 's1';
+
+        $storage = $driver->getStorageByCommonId('shared_files_' . $siteId);
+        if (!$storage && $siteId !== 's1') {
+            $storage = $driver->getStorageByCommonId('shared_files_s1');
+        }
+
+        if (!$storage) {
+            throw new \Exception('Общий диск не найден (shared_files_' . $siteId . ')');
+        }
+
+        $rootFolder = $storage->getRootObject();
+        if (!$rootFolder) {
+            throw new \Exception('Корневая папка общего диска не найдена');
+        }
+
+        $existing = $rootFolder->getChild([
+            'NAME' => $folderName,
+            'TYPE' => \Bitrix\Disk\Internals\ObjectTable::TYPE_FOLDER,
+        ]);
+
+        if ($existing) {
+            return $existing->getId();
+        }
+
+        $folder = $rootFolder->addSubFolder(['NAME' => $folderName], [], false);
+        if (!$folder) {
+            throw new \Exception('Не удалось создать папку "' . $folderName . '" на общем диске');
+        }
+
+        return $folder->getId();
     }
 
     // =========================================================================

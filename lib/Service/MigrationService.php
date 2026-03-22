@@ -29,6 +29,7 @@ class MigrationService
     private $log = [];
     private $opCount = 0;
     private $saveMapEnabled = false; // persist created IDs to MigratorMap HL block
+    private $migrationFolderId = 0;  // disk folder for file uploads
 
     // Migration phases in execution order
     const PHASES = [
@@ -94,6 +95,14 @@ class MigrationService
             // --- Step 0b: Run all cleanups first, before any migration ---
             $this->runAllCleanups();
 
+            // --- Step 0c: Create migration folder on shared disk for file uploads ---
+            try {
+                $this->migrationFolderId = BoxD7Service::getOrCreateMigrationFolder('Миграция с облака');
+                $this->addLog('Папка миграции на диске: ID ' . $this->migrationFolderId);
+            } catch (\Throwable $e) {
+                $this->addLog('ВНИМАНИЕ: не удалось создать папку миграции на диске: ' . $e->getMessage());
+            }
+
             foreach (self::PHASES as $phase) {
                 $this->checkStop();
 
@@ -112,6 +121,9 @@ class MigrationService
 
                 $this->savePhaseStatus($phase, 'done');
                 $this->addLog("[$phase] Завершено");
+
+                // Free memory between phases
+                gc_collect_cycles();
             }
 
             $this->setStatus('completed', 'Миграция завершена успешно');
@@ -156,9 +168,25 @@ class MigrationService
 
     private function checkStop()
     {
-        $stop = Option::get($this->moduleId, 'migration_stop', '0');
-        if ($stop === '1') {
+        $flag = Option::get($this->moduleId, 'migration_stop', '0');
+        if ($flag === '1') {
             throw new MigrationStoppedException('Остановлено пользователем');
+        }
+        // Pause loop — process stays alive, caches preserved
+        while ($flag === 'pause') {
+            $this->setStatus('paused', 'Миграция на паузе');
+            sleep(3);
+            $flag = Option::get($this->moduleId, 'migration_stop', '0');
+            if ($flag === '1') {
+                throw new MigrationStoppedException('Остановлено пользователем');
+            }
+        }
+        // Resumed — restore running status
+        if ($flag === '0') {
+            $currentStatus = Option::get($this->moduleId, 'migration_status', '');
+            if ($currentStatus === 'paused') {
+                $this->setStatus('running', 'Миграция продолжена');
+            }
         }
     }
 
@@ -600,7 +628,7 @@ class MigrationService
 
         // Delete in dependency order: deals first (reference contacts/companies),
         // then contacts, companies, leads, pipelines, workgroups, smart_processes
-        $order = ['deals', 'contacts', 'companies', 'leads', 'pipelines', 'workgroups', 'smart_processes'];
+        $order = ['tasks', 'deals', 'contacts', 'companies', 'leads', 'pipelines', 'workgroups', 'smart_processes'];
 
         foreach ($order as $phase) {
             if (empty($cleanup[$phase])) continue;
@@ -624,6 +652,10 @@ class MigrationService
 
                 case 'smart_processes':
                     $this->cleanupSmartProcesses();
+                    break;
+
+                case 'tasks':
+                    $this->cleanupTasks();
                     break;
             }
         }
@@ -655,6 +687,33 @@ class MigrationService
             }
         }
         $this->addLog("Очистка воронок выполнена");
+    }
+
+    private function cleanupTasks()
+    {
+        $this->addLog("Очистка задач на box...");
+        $allTasks = $this->boxAPI->fetchAll('tasks.task.list', ['select' => ['ID']], 'tasks');
+        $total = count($allTasks);
+        $deleted = 0;
+        $errors = 0;
+
+        foreach ($allTasks as $t) {
+            $taskId = (int)($t['id'] ?? $t['ID'] ?? 0);
+            if ($taskId <= 0) continue;
+            $this->rateLimit();
+            $this->checkStop();
+            try {
+                $this->boxAPI->deleteTask($taskId);
+                $deleted++;
+            } catch (\Throwable $e) {
+                $errors++;
+                if ($errors <= 3) {
+                    $this->addLog("  Ошибка удаления задачи #$taskId: " . $e->getMessage());
+                }
+            }
+        }
+
+        $this->addLog("Очистка задач: удалено=$deleted, ошибок=$errors из $total");
     }
 
     private function cleanupWorkgroups()
@@ -1134,11 +1193,16 @@ class MigrationService
     private function buildCompanyFields($company)
     {
         $fields = [];
-        $copy = ['TITLE', 'COMPANY_TYPE', 'INDUSTRY', 'REVENUE', 'CURRENCY_ID',
+        $copy = ['TITLE', 'COMPANY_TYPE', 'INDUSTRY', 'EMPLOYEES', 'REVENUE', 'CURRENCY_ID',
                  'COMMENTS', 'OPENED', 'ADDRESS', 'ADDRESS_2', 'ADDRESS_CITY',
                  'ADDRESS_POSTAL_CODE', 'ADDRESS_REGION', 'ADDRESS_PROVINCE', 'ADDRESS_COUNTRY'];
         foreach ($copy as $k) {
             if (isset($company[$k]) && $company[$k] !== '') $fields[$k] = $company[$k];
+        }
+
+        // EMPLOYEES is required on some box setups — default to EMPLOYEES_1 if missing
+        if (empty($fields['EMPLOYEES'])) {
+            $fields['EMPLOYEES'] = 'EMPLOYEES_1';
         }
 
         if (!empty($company['ASSIGNED_BY_ID'])) {
@@ -1678,6 +1742,15 @@ class MigrationService
                         $this->rateLimit();
                         $fields = $this->buildActivityFields($activity, $typeId, $boxId);
 
+                        // Migrate activity files (STORAGE_ELEMENT_IDS)
+                        $storageIds = $activity['STORAGE_ELEMENT_IDS'] ?? [];
+                        if (!empty($storageIds) && is_array($storageIds) && $this->migrationFolderId > 0) {
+                            $boxFileIds = $this->migrateActivityFiles($storageIds);
+                            if (!empty($boxFileIds)) {
+                                $fields['STORAGE_ELEMENT_IDS'] = $boxFileIds;
+                            }
+                        }
+
                         try {
                             $this->boxAPI->addActivity($fields);
                             $totalActivities++;
@@ -1704,6 +1777,28 @@ class MigrationService
                     foreach ($comments as $comment) {
                         $this->rateLimit();
                         $fields = $this->buildTimelineCommentFields($comment, $typeId, $boxId);
+
+                        // Migrate comment files (if any)
+                        $commentFiles = $comment['FILES'] ?? [];
+                        if (!empty($commentFiles) && is_array($commentFiles) && $this->migrationFolderId > 0) {
+                            $boxFileIds = [];
+                            foreach ($commentFiles as $cf) {
+                                try {
+                                    $cfId = (int)($cf['FILE_ID'] ?? $cf['fileId'] ?? $cf['id'] ?? 0);
+                                    if ($cfId <= 0) continue;
+                                    $fileInfo = $this->cloudAPI->getDiskFile($cfId);
+                                    $this->rateLimit();
+                                    $downloadUrl = $fileInfo['DOWNLOAD_URL'] ?? '';
+                                    $fileName = $fileInfo['NAME'] ?? ('comment_file_' . $cfId);
+                                    if (empty($downloadUrl)) continue;
+                                    $boxId2 = $this->downloadCloudFileToBox($downloadUrl, $fileName);
+                                    if ($boxId2 > 0) $boxFileIds[] = $boxId2;
+                                } catch (\Throwable $e) { /* skip */ }
+                            }
+                            if (!empty($boxFileIds)) {
+                                $fields['FILES'] = $boxFileIds;
+                            }
+                        }
 
                         try {
                             $this->boxAPI->addTimelineComment($fields);
@@ -2104,6 +2199,9 @@ class MigrationService
         if ($this->logFile) {
             $taskService->setLogFile($this->logFile);
         }
+        if ($this->migrationFolderId > 0) {
+            $taskService->setMigrationFolderId($this->migrationFolderId);
+        }
         $taskService->migrate();
     }
 
@@ -2256,6 +2354,69 @@ class MigrationService
                 return null;
         }
         return null;
+    }
+
+    // =========================================================================
+    // Disk file operations
+    // =========================================================================
+
+    /**
+     * Download file from cloud URL → save to temp → upload to box disk via D7.
+     * Returns box disk file ID or 0 on failure.
+     */
+    private function downloadCloudFileToBox(string $downloadUrl, string $fileName): int
+    {
+        if ($this->migrationFolderId <= 0) return 0;
+
+        $tmpPath = tempnam(sys_get_temp_dir(), 'bx_mig_');
+        try {
+            $ch = curl_init($downloadUrl);
+            $fp = fopen($tmpPath, 'wb');
+            curl_setopt_array($ch, [
+                CURLOPT_FILE           => $fp,
+                CURLOPT_TIMEOUT        => 120,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_SSL_VERIFYPEER => false,
+            ]);
+            curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            fclose($fp);
+
+            if ($httpCode !== 200 || filesize($tmpPath) === 0) {
+                return 0;
+            }
+
+            return BoxD7Service::uploadFileToFolder($this->migrationFolderId, $tmpPath, $fileName) ?? 0;
+        } finally {
+            @unlink($tmpPath);
+        }
+    }
+
+    /**
+     * Migrate STORAGE_ELEMENT_IDS from cloud activity to box disk files.
+     * Returns array of box disk file IDs.
+     */
+    private function migrateActivityFiles(array $cloudStorageIds): array
+    {
+        $boxFileIds = [];
+        foreach ($cloudStorageIds as $cloudFileId) {
+            try {
+                $fileInfo = $this->cloudAPI->getDiskFile((int)$cloudFileId);
+                $this->rateLimit();
+                $downloadUrl = $fileInfo['DOWNLOAD_URL'] ?? '';
+                $fileName = $fileInfo['NAME'] ?? ('activity_file_' . $cloudFileId);
+                if (empty($downloadUrl)) continue;
+
+                $boxId = $this->downloadCloudFileToBox($downloadUrl, $fileName);
+                if ($boxId > 0) {
+                    $boxFileIds[] = $boxId;
+                }
+            } catch (\Throwable $e) {
+                // skip file, non-critical
+            }
+        }
+        return $boxFileIds;
     }
 
     // =========================================================================

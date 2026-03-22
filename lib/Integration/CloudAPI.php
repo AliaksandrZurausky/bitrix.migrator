@@ -137,8 +137,8 @@ class CloudAPI
 
             if (isset($result['result']) && is_array($result['result'])) {
                 $data = $resultKey ? ($result['result'][$resultKey] ?? []) : $result['result'];
-                if (is_array($data)) {
-                    $items = array_merge($items, $data);
+                if (is_array($data) && !empty($data)) {
+                    array_push($items, ...$data);
                 }
             }
 
@@ -409,6 +409,11 @@ class CloudAPI
     public function deferTask($taskId)
     {
         return $this->request('tasks.task.defer', ['taskId' => (int)$taskId]);
+    }
+
+    public function deleteTask($taskId)
+    {
+        return $this->request('tasks.task.delete', ['taskId' => (int)$taskId]);
     }
 
     /**
@@ -944,10 +949,7 @@ class CloudAPI
      */
     public function getWorkgroupMembers($groupId)
     {
-        // Parameter name: verify against docs at
-        // https://apidocs.bitrix24.ru/api-reference/sonet-group/members/sonet-group-user-get.html
-        // Using 'id' — 'GROUP_ID' returns "Wrong socialnetwork group ID" on all calls
-        return $this->fetchAll('sonet_group.user.get', ['id' => (int)$groupId]);
+        return $this->fetchAll('sonet_group.user.get', ['ID' => (int)$groupId]);
     }
 
     /**

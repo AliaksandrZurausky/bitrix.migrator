@@ -12,7 +12,7 @@
  */
 
 set_time_limit(0);
-ini_set('memory_limit', '512M');
+ini_set('memory_limit', '2G');
 
 // Auto-detect document root from this file's path
 $autoRoot = dirname(__DIR__, 5); // install/cli -> install -> bitrix_migrator -> modules -> local -> ROOT
