@@ -220,12 +220,15 @@ class CloudAPI
     }
 
     /**
-     * Get all intranet users (employee type only, excludes extranet/email users).
-     * user.get returns all user fields; field selection is not supported.
+     * Get all intranet users including dismissed (inactive).
+     * user.get with USER_TYPE=employee returns only active by default,
+     * so we make a second call with ACTIVE=false for dismissed users.
      */
     public function getUsers()
     {
-        return $this->fetchAll('user.get', ['USER_TYPE' => 'employee']);
+        $active   = $this->fetchAll('user.get', ['USER_TYPE' => 'employee']);
+        $inactive = $this->fetchAll('user.get', ['USER_TYPE' => 'employee', 'ACTIVE' => false]);
+        return array_merge($active, $inactive);
     }
 
     /**
