@@ -377,23 +377,38 @@ class TaskMigrationService
                 $attachId = $this->extractAttachId($ref);
                 if ($attachId <= 0) continue;
 
-                // Get attached object info from cloud (REST call)
+                // Step 1: get attached object to find disk file ID (OBJECT_ID)
+                // disk.attachedObject.get does NOT return DOWNLOAD_URL — only OBJECT_ID
                 $attachInfo = $this->cloudAPI->getAttachedObject($attachId);
-                usleep(333000);
+                usleep(200000);
 
-                $downloadUrl = $attachInfo['DOWNLOAD_URL'] ?? '';
-                $fileName    = $attachInfo['NAME'] ?? ('file_' . $attachId);
+                $diskFileId = (int)($attachInfo['OBJECT_ID'] ?? 0);
+                $fileName   = $attachInfo['NAME'] ?? '';
 
-                if (empty($downloadUrl)) {
-                    $this->addLog('  Файл #' . $attachId . ': нет DOWNLOAD_URL');
+                if ($diskFileId <= 0) {
+                    $this->addLog('  Файл #' . $attachId . ': нет OBJECT_ID в attachedObject');
                     continue;
                 }
 
-                // Download to temp file, upload via D7
+                // Step 2: get file info with DOWNLOAD_URL via disk.file.get
+                $fileInfo    = $this->cloudAPI->getDiskFile($diskFileId);
+                usleep(200000);
+
+                $downloadUrl = $fileInfo['DOWNLOAD_URL'] ?? '';
+                if (empty($fileName)) {
+                    $fileName = $fileInfo['NAME'] ?? ('file_' . $diskFileId);
+                }
+
+                if (empty($downloadUrl)) {
+                    $this->addLog('  Файл #' . $attachId . ' (disk#' . $diskFileId . '): нет DOWNLOAD_URL');
+                    continue;
+                }
+
+                // Step 3: download and upload to box disk folder
                 $boxFileId = $this->downloadAndUploadFile($downloadUrl, $fileName);
 
                 if ($boxFileId > 0) {
-                    $boxFileIds[] = 'n' . $boxFileId;
+                    $boxFileIds[] = 'n' . $boxFileId; // 'n' prefix = new disk file ID for UF_TASK_WEBDAV_FILES
                     $this->addLog('  Файл "' . $fileName . '" → box disk ID ' . $boxFileId);
                 } else {
                     $this->addLog('  Файл "' . $fileName . '": не удалось загрузить на диск');
