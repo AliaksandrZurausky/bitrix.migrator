@@ -540,14 +540,9 @@ class TaskMigrationService
                         $fields['AUTHOR_ID'] = $authorId;
                     }
 
-                    // Handle attached files in comment
-                    $attachedObjects = $comment['ATTACHED_OBJECTS'] ?? $comment['attachedObjects'] ?? [];
-                    if (!empty($attachedObjects) && is_array($attachedObjects)) {
-                        $commentFileIds = $this->migrateCommentFiles($attachedObjects);
-                        if (!empty($commentFileIds)) {
-                            $fields['UF_FORUM_MESSAGE_DOC'] = $commentFileIds;
-                        }
-                    }
+                    // Replace inline [DISK FILE ID=nXXX] tags in text with box file IDs
+                    $text = $this->migrateInlineDiskFiles($text);
+                    $fields['POST_MESSAGE'] = $text;
 
                     $this->boxAPI->addTaskComment($boxTaskId, $fields);
                     usleep(333000);
@@ -558,6 +553,46 @@ class TaskMigrationService
         } catch (\Throwable $e) {
             $this->addLog('  Комментарии #' . $cloudTaskId . ': ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Find all [DISK FILE ID=nXXX] tags in comment text, download from cloud,
+     * upload to box disk, and replace cloud IDs with box IDs.
+     */
+    private function migrateInlineDiskFiles(string $text): string
+    {
+        // Match [DISK FILE ID=nXXX] or [DISK FILE ID=XXX]
+        if (!preg_match_all('/\[DISK FILE ID=n?(\d+)\]/i', $text, $matches, PREG_SET_ORDER)) {
+            return $text;
+        }
+
+        foreach ($matches as $match) {
+            $cloudFileId = (int)$match[1];
+            $original    = $match[0];
+
+            try {
+                $fileInfo    = $this->cloudAPI->getDiskFile($cloudFileId);
+                $downloadUrl = $fileInfo['DOWNLOAD_URL'] ?? '';
+                $fileName    = $fileInfo['NAME'] ?? ('file_' . $cloudFileId);
+
+                if (empty($downloadUrl)) {
+                    $this->addLog('  Инлайн файл #' . $cloudFileId . ': нет DOWNLOAD_URL');
+                    continue;
+                }
+
+                $boxFileId = $this->downloadAndUploadFile($downloadUrl, $fileName);
+                if ($boxFileId > 0) {
+                    $text = str_replace($original, '[DISK FILE ID=n' . $boxFileId . ']', $text);
+                    $this->addLog('  Инлайн файл "' . $fileName . '" → box disk ID ' . $boxFileId);
+                }
+
+                usleep(200000);
+            } catch (\Throwable $e) {
+                $this->addLog('  Инлайн файл #' . $cloudFileId . ': ' . $e->getMessage());
+            }
+        }
+
+        return $text;
     }
 
     private function migrateCommentFiles(array $attachedObjects): array
