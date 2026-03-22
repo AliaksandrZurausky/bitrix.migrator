@@ -387,6 +387,9 @@ class BoxD7Service
             throw new \Exception('CSocNetGroup::createGroup error: ' . $err);
         }
 
+        // Activate disk (files) feature — same as REST sonet_group.create does
+        \CSocNetFeatures::SetFeature(\SONET_ENTITY_GROUP, $groupId, 'files', true);
+
         return (int)$groupId;
     }
 
