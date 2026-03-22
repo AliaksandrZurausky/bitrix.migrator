@@ -88,11 +88,15 @@ class TaskMigrationService
             $this->migrationFolderId = $this->getOrCreateMigrationFolder();
             $this->addLog('Папка миграции: ID ' . $this->migrationFolderId);
 
-            // 2. Pre-build user map cache (cloud active users)
+            // 2. Pre-build user map cache (skipped if already set by MigrationService)
             $this->buildUserMapCache();
             $this->addLog('Кэш пользователей: ' . count($this->userMapCache) . ' маппингов');
 
-            // 3. Fetch all task IDs from cloud
+            // 3. Pre-build group map cache (skipped if already set by MigrationService)
+            $this->buildGroupMapCache();
+            $this->addLog('Кэш групп: ' . count($this->groupMapCache) . ' маппингов');
+
+            // 4. Fetch all task IDs from cloud
             $this->checkStop();
             $this->saveStatus('running', 'Получение списка задач из облака...');
             $taskIds = $this->fetchAllTaskIds();
@@ -104,7 +108,7 @@ class TaskMigrationService
                 return $this->getResult();
             }
 
-            // 4. Migrate each task (first pass)
+            // 5. Migrate each task (first pass)
             $this->saveStatus('running', 'Миграция задач: 0/' . $this->stats['total']);
             foreach ($taskIds as $i => $cloudTaskId) {
                 $this->checkStop();
@@ -128,7 +132,7 @@ class TaskMigrationService
                 }
             }
 
-            // 5. Second pass: link parent tasks
+            // 6. Second pass: link parent tasks
             $this->checkStop();
             $this->saveStatus('running', 'Создание связей между задачами...');
             $this->linkParentTasks();
@@ -294,24 +298,43 @@ class TaskMigrationService
 
     private function buildUserMapCache()
     {
+        if (!empty($this->userMapCache)) return; // already set by MigrationService
+
         $cloudUsers = $this->cloudAPI->getUsers();
         $boxUsers   = $this->boxAPI->getUsers();
 
-        // Build box email => ID map
         $boxEmailMap = [];
         foreach ($boxUsers as $u) {
             $email = strtolower(trim($u['EMAIL'] ?? ''));
-            if ($email) {
-                $boxEmailMap[$email] = (int)$u['ID'];
-            }
+            if ($email) $boxEmailMap[$email] = (int)$u['ID'];
         }
 
-        // Build cloud ID => box ID via email
         foreach ($cloudUsers as $u) {
-            $email = strtolower(trim($u['EMAIL'] ?? ''));
+            $email   = strtolower(trim($u['EMAIL'] ?? ''));
             $cloudId = (int)$u['ID'];
             if ($email && isset($boxEmailMap[$email])) {
                 $this->userMapCache[$cloudId] = $boxEmailMap[$email];
+            }
+        }
+    }
+
+    private function buildGroupMapCache()
+    {
+        if (!empty($this->groupMapCache)) return; // already set by MigrationService
+
+        $cloudGroups = $this->cloudAPI->getWorkgroups();
+        $boxGroups   = $this->boxAPI->getWorkgroups();
+
+        $boxByName = [];
+        foreach ($boxGroups as $g) {
+            $boxByName[mb_strtolower(trim($g['NAME'] ?? ''))] = (int)$g['ID'];
+        }
+
+        foreach ($cloudGroups as $g) {
+            $cloudId   = (int)$g['ID'];
+            $lowerName = mb_strtolower(trim($g['NAME'] ?? ''));
+            if ($lowerName && isset($boxByName[$lowerName])) {
+                $this->groupMapCache[$cloudId] = $boxByName[$lowerName];
             }
         }
     }
@@ -338,42 +361,7 @@ class TaskMigrationService
 
     private function mapGroup($cloudGroupId)
     {
-        if (isset($this->groupMapCache[$cloudGroupId])) {
-            return $this->groupMapCache[$cloudGroupId];
-        }
-
-        try {
-            // Get cloud group name
-            $cloudGroups = $this->cloudAPI->getWorkgroups();
-            $cloudGroupName = '';
-            foreach ($cloudGroups as $g) {
-                if ((int)($g['ID'] ?? 0) === $cloudGroupId) {
-                    $cloudGroupName = $g['NAME'] ?? '';
-                    break;
-                }
-            }
-
-            if (empty($cloudGroupName)) {
-                $this->groupMapCache[$cloudGroupId] = 0;
-                return 0;
-            }
-
-            // Find on box by name
-            $boxGroup = $this->boxAPI->getGroupByName($cloudGroupName);
-            $boxGroupId = $boxGroup ? (int)($boxGroup['ID'] ?? 0) : 0;
-
-            $this->groupMapCache[$cloudGroupId] = $boxGroupId;
-            if ($boxGroupId > 0) {
-                $this->addLog('  Группа "' . $cloudGroupName . '" → box ID ' . $boxGroupId);
-            } else {
-                $this->addLog('  Группа "' . $cloudGroupName . '" не найдена на коробке');
-            }
-
-            return $boxGroupId;
-        } catch (\Throwable $e) {
-            $this->groupMapCache[$cloudGroupId] = 0;
-            return 0;
-        }
+        return $this->groupMapCache[$cloudGroupId] ?? 0;
     }
 
     // =========================================================================
