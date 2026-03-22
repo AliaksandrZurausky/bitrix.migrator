@@ -95,7 +95,10 @@ class MigrationService
             // --- Step 0b: Run all cleanups first, before any migration ---
             $this->runAllCleanups();
 
-            // --- Step 0c: Create migration folder on shared disk for file uploads ---
+            // --- Step 0c: Build user map (cloud→box by email) — needed by all phases ---
+            $this->buildUserMapCache();
+
+            // --- Step 0d: Create migration folder on shared disk for file uploads ---
             try {
                 $this->migrationFolderId = BoxD7Service::getOrCreateMigrationFolder('Миграция с облака');
                 $this->addLog('Папка миграции на диске: ID ' . $this->migrationFolderId);
