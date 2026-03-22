@@ -370,8 +370,6 @@ class MigrationService
         $existingToUpdate = [];
 
         foreach ($cloudUsers as $u) {
-            $active = $u['ACTIVE'] ?? 'Y';
-            if ($active !== 'Y' && $active !== true) continue;
             $cloudId = (int)$u['ID'];
             if ($this->isItemExcluded('users', $cloudId)) continue;
 
@@ -437,7 +435,12 @@ class MigrationService
                 }
                 if (!empty($u['PERSONAL_PHOTO'])) $fields['PERSONAL_PHOTO'] = $u['PERSONAL_PHOTO'];
 
-                $sendInvite = ($this->plan['settings']['send_invite'] ?? 'N') === 'Y';
+                // Preserve fired/inactive status — don't invite inactive users
+                $active = $u['ACTIVE'] ?? 'Y';
+                $isActive = ($active === 'Y' || $active === true);
+                $fields['ACTIVE'] = $isActive ? 'Y' : 'N';
+
+                $sendInvite = $isActive && ($this->plan['settings']['send_invite'] ?? 'N') === 'Y';
                 if (!empty($u['DATE_REGISTER'])) $fields['DATE_REGISTER'] = $u['DATE_REGISTER'];
                 $newId = BoxD7Service::createUser($fields, $sendInvite);
                 if ($newId) {
@@ -512,8 +515,6 @@ class MigrationService
         }
 
         foreach ($cloudUsers as $u) {
-            $active = $u['ACTIVE'] ?? 'Y';
-            if ($active !== 'Y' && $active !== true) continue;
             $email = mb_strtolower(trim($u['EMAIL'] ?? ''));
             if ($email && isset($boxByEmail[$email])) {
                 $this->userMapCache[(int)$u['ID']] = $boxByEmail[$email];

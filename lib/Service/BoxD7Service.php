@@ -54,7 +54,7 @@ class BoxD7Service
             'PERSONAL_PHONE'   => $fields['PERSONAL_PHONE'] ?? '',
             'PERSONAL_MOBILE'  => $fields['PERSONAL_MOBILE'] ?? '',
             'WORK_PHONE'       => $fields['WORK_PHONE'] ?? '',
-            'ACTIVE'           => 'Y',
+            'ACTIVE'           => ($fields['ACTIVE'] ?? 'Y') === 'N' ? 'N' : 'Y',
             'LID'              => (defined('SITE_ID') ? SITE_ID : 's1'),
         ];
 
