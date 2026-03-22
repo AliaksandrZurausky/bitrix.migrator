@@ -377,6 +377,11 @@ class BoxD7Service
             'SITE_ID'         => [defined('SITE_ID') ? SITE_ID : 's1'],
         ];
 
+        // Group image/avatar (CFile-compatible array from downloadPhoto)
+        if (!empty($fields['IMAGE_ID']) && is_array($fields['IMAGE_ID'])) {
+            $arFields['IMAGE_ID'] = $fields['IMAGE_ID'];
+        }
+
         $groupId = \CSocNetGroup::createGroup($ownerId, $arFields, false);
 
         if (!$groupId || $groupId <= 0) {
@@ -524,9 +529,9 @@ class BoxD7Service
     }
 
     /**
-     * Download photo from URL and return CFile-compatible array for CUser::Add.
+     * Download image from URL and return CFile-compatible array for CUser::Add / CSocNetGroup::createGroup.
      */
-    private static function downloadPhoto(string $url): ?array
+    public static function downloadPhoto(string $url): ?array
     {
         try {
             $tmpFile = tempnam(sys_get_temp_dir(), 'bx_photo_');

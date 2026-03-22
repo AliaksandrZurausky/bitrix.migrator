@@ -12,6 +12,16 @@ class CloudAPI
     }
 
     /**
+     * Returns cloud portal base URL (e.g. https://domain.bitrix24.ru).
+     * Extracted from webhookUrl: https://domain.bitrix24.ru/rest/1/xxx → https://domain.bitrix24.ru
+     */
+    public function getPortalBaseUrl(): string
+    {
+        $parts = parse_url($this->webhookUrl);
+        return ($parts['scheme'] ?? 'https') . '://' . ($parts['host'] ?? '');
+    }
+
+    /**
      * Make API request with JSON body, retries on HTTP 429
      */
     private function request($method, $params = [], $attempt = 0)

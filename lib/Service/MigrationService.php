@@ -1966,6 +1966,18 @@ class MigrationService
                         if ($mapped > 0) $boxOwner = $mapped;
                     }
 
+                    // Download group image/avatar from cloud
+                    if (!empty($group['IMAGE'])) {
+                        $imageUrl = $group['IMAGE'];
+                        if (!preg_match('/^https?:\/\//', $imageUrl)) {
+                            $imageUrl = $this->cloudAPI->getPortalBaseUrl() . $imageUrl;
+                        }
+                        $photo = BoxD7Service::downloadPhoto($imageUrl);
+                        if ($photo) {
+                            $fields['IMAGE_ID'] = $photo;
+                        }
+                    }
+
                     // D7 creation bypasses REST restriction that ignores OWNER_ID for non-admins
                     $newId = BoxD7Service::createWorkgroup($fields, $boxOwner);
                     if ($newId) {
