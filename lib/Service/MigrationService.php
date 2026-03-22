@@ -2019,15 +2019,15 @@ class MigrationService
                 if ($boxUserId <= 0) continue;
 
                 // D7 roles: A=owner, E=moderator, K=member
-                $role = $member['ROLE'] ?? 'K';
-                if (!in_array($role, ['A', 'E', 'K'], true)) {
-                    $role = 'K';
+                $role = $member['ROLE'] ?? \SONET_ROLES_USER;
+                if (!in_array($role, [\SONET_ROLES_OWNER, \SONET_ROLES_MODERATOR, \SONET_ROLES_USER], true)) {
+                    $role = \SONET_ROLES_USER;
                 }
 
                 try {
                     // Owner transfer handled separately
-                    if ($role === 'A') {
-                        BoxD7Service::addWorkgroupMember($boxGroupId, $boxUserId, 'A');
+                    if ($role === \SONET_ROLES_OWNER) {
+                        BoxD7Service::addWorkgroupMember($boxGroupId, $boxUserId, \SONET_ROLES_OWNER);
                         BoxD7Service::setWorkgroupOwner($boxGroupId, $boxUserId);
                     } else {
                         BoxD7Service::addWorkgroupMember($boxGroupId, $boxUserId, $role);

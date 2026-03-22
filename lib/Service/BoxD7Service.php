@@ -371,8 +371,8 @@ class BoxD7Service
             'OPENED'          => $fields['OPENED'] ?? 'Y',
             'PROJECT'         => $fields['PROJECT'] ?? 'N',
             'SUBJECT_ID'      => $subjectId,
-            'INITIATE_PERMS'  => $fields['INITIATE_PERMS'] ?? 'E', // A=owner, E=moderators, K=all members
-            'SPAM_PERMS'      => $fields['SPAM_PERMS'] ?? 'E',
+            'INITIATE_PERMS'  => $fields['INITIATE_PERMS'] ?? \SONET_ROLES_MODERATOR,
+            'SPAM_PERMS'      => $fields['SPAM_PERMS'] ?? \SONET_ROLES_MODERATOR,
             'ACTIVE'          => 'Y',
             'SITE_ID'         => [defined('SITE_ID') ? SITE_ID : 's1'],
         ];
@@ -405,7 +405,7 @@ class BoxD7Service
      *
      * Roles: A=owner, E=moderator, K=member.
      */
-    public static function addWorkgroupMember(int $groupId, int $userId, string $role = 'K'): bool
+    public static function addWorkgroupMember(int $groupId, int $userId, string $role = \SONET_ROLES_USER): bool
     {
         self::ensureSocialnetworkLoaded();
 
