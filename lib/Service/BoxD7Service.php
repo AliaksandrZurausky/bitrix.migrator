@@ -365,14 +365,16 @@ class BoxD7Service
         }
 
         $arFields = [
-            'NAME'        => $fields['NAME'] ?? '',
-            'DESCRIPTION' => $fields['DESCRIPTION'] ?? '',
-            'VISIBLE'     => $fields['VISIBLE'] ?? 'Y',
-            'OPENED'      => $fields['OPENED'] ?? 'Y',
-            'PROJECT'     => $fields['PROJECT'] ?? 'N',
-            'SUBJECT_ID'  => $subjectId,
-            'ACTIVE'      => 'Y',
-            'SITE_ID'     => [defined('SITE_ID') ? SITE_ID : 's1'],
+            'NAME'            => $fields['NAME'] ?? '',
+            'DESCRIPTION'     => $fields['DESCRIPTION'] ?? '',
+            'VISIBLE'         => $fields['VISIBLE'] ?? 'Y',
+            'OPENED'          => $fields['OPENED'] ?? 'Y',
+            'PROJECT'         => $fields['PROJECT'] ?? 'N',
+            'SUBJECT_ID'      => $subjectId,
+            'INITIATE_PERMS'  => $fields['INITIATE_PERMS'] ?? 'E', // A=owner, E=moderators, K=all members
+            'SPAM_PERMS'      => $fields['SPAM_PERMS'] ?? 'E',
+            'ACTIVE'          => 'Y',
+            'SITE_ID'         => [defined('SITE_ID') ? SITE_ID : 's1'],
         ];
 
         $groupId = \CSocNetGroup::createGroup($ownerId, $arFields, false);
