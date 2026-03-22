@@ -119,7 +119,7 @@ class BoxD7Service
         $obj = new \CCrmCompany(false);
         $id = $obj->Add($fields, true, true, ['DISABLE_USER_FIELD_CHECK' => false]);
         if (!$id) {
-            throw new \Exception('CCrmCompany::Add error: ' . $obj->GetLastErrorMessage());
+            throw new \Exception('CCrmCompany::Add error: ' . ($obj->LAST_ERROR ?? 'unknown error'));
         }
         return (int)$id;
     }
@@ -128,7 +128,7 @@ class BoxD7Service
     {
         $obj = new \CCrmCompany(false);
         if (!$obj->Update($id, $fields, true, true)) {
-            throw new \Exception('CCrmCompany::Update error: ' . $obj->GetLastErrorMessage());
+            throw new \Exception('CCrmCompany::Update error: ' . ($obj->LAST_ERROR ?? 'unknown error'));
         }
         return true;
     }
@@ -155,7 +155,7 @@ class BoxD7Service
         $obj = new \CCrmContact(false);
         $id = $obj->Add($fields, true, true, ['DISABLE_USER_FIELD_CHECK' => false]);
         if (!$id) {
-            throw new \Exception('CCrmContact::Add error: ' . $obj->GetLastErrorMessage());
+            throw new \Exception('CCrmContact::Add error: ' . ($obj->LAST_ERROR ?? 'unknown error'));
         }
         return (int)$id;
     }
@@ -164,7 +164,7 @@ class BoxD7Service
     {
         $obj = new \CCrmContact(false);
         if (!$obj->Update($id, $fields, true, true)) {
-            throw new \Exception('CCrmContact::Update error: ' . $obj->GetLastErrorMessage());
+            throw new \Exception('CCrmContact::Update error: ' . ($obj->LAST_ERROR ?? 'unknown error'));
         }
         return true;
     }
@@ -209,7 +209,7 @@ class BoxD7Service
         $obj = new \CCrmDeal(false);
         $id = $obj->Add($fields, true, true, ['DISABLE_USER_FIELD_CHECK' => false]);
         if (!$id) {
-            throw new \Exception('CCrmDeal::Add error: ' . $obj->GetLastErrorMessage());
+            throw new \Exception('CCrmDeal::Add error: ' . ($obj->LAST_ERROR ?? 'unknown error'));
         }
         return (int)$id;
     }
@@ -218,7 +218,7 @@ class BoxD7Service
     {
         $obj = new \CCrmDeal(false);
         if (!$obj->Update($id, $fields, true, true)) {
-            throw new \Exception('CCrmDeal::Update error: ' . $obj->GetLastErrorMessage());
+            throw new \Exception('CCrmDeal::Update error: ' . ($obj->LAST_ERROR ?? 'unknown error'));
         }
         return true;
     }
@@ -263,7 +263,7 @@ class BoxD7Service
         $obj = new \CCrmLead(false);
         $id = $obj->Add($fields, true, true, ['DISABLE_USER_FIELD_CHECK' => false]);
         if (!$id) {
-            throw new \Exception('CCrmLead::Add error: ' . $obj->GetLastErrorMessage());
+            throw new \Exception('CCrmLead::Add error: ' . ($obj->LAST_ERROR ?? 'unknown error'));
         }
         return (int)$id;
     }
@@ -272,7 +272,7 @@ class BoxD7Service
     {
         $obj = new \CCrmLead(false);
         if (!$obj->Update($id, $fields, true, true)) {
-            throw new \Exception('CCrmLead::Update error: ' . $obj->GetLastErrorMessage());
+            throw new \Exception('CCrmLead::Update error: ' . ($obj->LAST_ERROR ?? 'unknown error'));
         }
         return true;
     }
