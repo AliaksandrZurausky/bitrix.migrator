@@ -718,14 +718,19 @@ class MigrationService
 
     private function cleanupWorkgroups()
     {
-        $this->addLog("Очистка рабочих групп на box...");
-        $groups = $this->boxAPI->getWorkgroups();
+        $this->addLog("Очистка рабочих групп на box (D7, включая секретные)...");
+        $groups = BoxD7Service::getAllWorkgroups();
         $deleted = 0;
         foreach ($groups as $g) {
-            $this->rateLimit();
-            try { $this->boxAPI->deleteWorkgroup((int)$g['ID']); $deleted++; } catch (\Throwable $e) {}
+            $this->checkStop();
+            try {
+                BoxD7Service::deleteWorkgroup((int)$g['ID']);
+                $deleted++;
+            } catch (\Throwable $e) {
+                $this->addLog("  Ошибка удаления группы #{$g['ID']}: " . $e->getMessage());
+            }
         }
-        $this->addLog("Очистка рабочих групп: удалено $deleted");
+        $this->addLog("Очистка рабочих групп: удалено $deleted из " . count($groups));
     }
 
     private function cleanupSmartProcesses()
@@ -1950,14 +1955,17 @@ class MigrationService
                         'PROJECT'     => $group['PROJECT'] ?? 'N',
                     ];
 
+                    // Map owner — default to admin (1) if not found
+                    $boxOwner = 1;
                     if (!empty($group['OWNER_ID'])) {
-                        $boxOwner = $this->mapUser($group['OWNER_ID']);
-                        if ($boxOwner) $fields['OWNER_ID'] = $boxOwner;
+                        $mapped = $this->mapUser((int)$group['OWNER_ID']);
+                        if ($mapped > 0) $boxOwner = $mapped;
                     }
 
-                    $newId = $this->boxAPI->createWorkgroup($fields);
+                    // D7 creation bypasses REST restriction that ignores OWNER_ID for non-admins
+                    $newId = BoxD7Service::createWorkgroup($fields, $boxOwner);
                     if ($newId) {
-                        $boxGroupId = (int)$newId;
+                        $boxGroupId = $newId;
                         $this->groupMapCache[$cloudId] = $boxGroupId;
                         $created++;
                     }
@@ -1976,8 +1984,9 @@ class MigrationService
     }
 
     /**
-     * Fetch cloud group members and add them to the box group.
-     * Owner is already set via OWNER_ID during group creation; skipped here.
+     * Fetch cloud group members and add them to the box group via D7.
+     * D7 roles: A=owner, E=moderator, K=member.
+     * REST sonet_group.user.add ignores ROLE — so we use D7 directly.
      */
     private function addWorkgroupMembers(int $cloudGroupId, int $boxGroupId)
     {
@@ -1993,18 +2002,23 @@ class MigrationService
                 $boxUserId = $this->mapUser($cloudUserId);
                 if ($boxUserId <= 0) continue;
 
-                // Map role: A=admin, K=moderator, E/M=member
-                $role = $member['ROLE'] ?? 'E';
-                if (!in_array($role, ['A', 'K', 'E'], true)) {
-                    $role = 'E';
+                // D7 roles: A=owner, E=moderator, K=member
+                $role = $member['ROLE'] ?? 'K';
+                if (!in_array($role, ['A', 'E', 'K'], true)) {
+                    $role = 'K';
                 }
 
                 try {
-                    $this->rateLimit();
-                    $this->boxAPI->addWorkgroupMember($boxGroupId, $boxUserId, $role);
+                    // Owner transfer handled separately
+                    if ($role === 'A') {
+                        BoxD7Service::addWorkgroupMember($boxGroupId, $boxUserId, 'A');
+                        BoxD7Service::setWorkgroupOwner($boxGroupId, $boxUserId);
+                    } else {
+                        BoxD7Service::addWorkgroupMember($boxGroupId, $boxUserId, $role);
+                    }
                     $added++;
                 } catch (\Throwable $e) {
-                    // non-critical — user may already be a member
+                    $this->addLog("  Ошибка добавления участника box#$boxUserId в группу box#$boxGroupId: " . $e->getMessage());
                 }
             }
 

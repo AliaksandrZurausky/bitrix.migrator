@@ -302,6 +302,115 @@ class BoxD7Service
     }
 
     // =========================================================================
+    // Workgroups (sonet groups) via D7
+    // =========================================================================
+
+    private static function ensureSocialnetworkLoaded(): void
+    {
+        if (!Loader::includeModule('socialnetwork')) {
+            throw new \Exception('Socialnetwork module not loaded');
+        }
+    }
+
+    /**
+     * Get ALL workgroups including secret (VISIBLE=N) via D7.
+     * REST sonet_group.get does NOT return secret groups unless user is a member.
+     */
+    public static function getAllWorkgroups(): array
+    {
+        self::ensureSocialnetworkLoaded();
+        return \Bitrix\Socialnetwork\WorkgroupTable::getList([
+            'select' => ['ID', 'NAME', 'VISIBLE', 'OPENED', 'OWNER_ID'],
+        ])->fetchAll();
+    }
+
+    /**
+     * Delete workgroup via CSocNetGroup::Delete (no permission checks).
+     */
+    public static function deleteWorkgroup(int $id): bool
+    {
+        self::ensureSocialnetworkLoaded();
+        $result = \CSocNetGroup::Delete($id);
+        if (!$result) {
+            throw new \Exception('CSocNetGroup::Delete error for ID=' . $id);
+        }
+        return true;
+    }
+
+    /**
+     * Create workgroup via D7 (CSocNetGroup::createGroup).
+     * REST sonet_group.create ignores OWNER_ID unless caller is admin.
+     * D7 bypasses that restriction.
+     *
+     * Roles: A=owner, E=moderator, K=member.
+     *
+     * @param array $fields  NAME, DESCRIPTION, VISIBLE, OPENED, PROJECT, SITE_ID
+     * @param int   $ownerId Box user ID who will own the group
+     * @return int New group ID
+     */
+    public static function createWorkgroup(array $fields, int $ownerId): int
+    {
+        self::ensureSocialnetworkLoaded();
+
+        $arFields = [
+            'NAME'        => $fields['NAME'] ?? '',
+            'DESCRIPTION' => $fields['DESCRIPTION'] ?? '',
+            'VISIBLE'     => $fields['VISIBLE'] ?? 'Y',
+            'OPENED'      => $fields['OPENED'] ?? 'Y',
+            'PROJECT'     => $fields['PROJECT'] ?? 'N',
+            'ACTIVE'      => 'Y',
+            'SITE_ID'     => [defined('SITE_ID') ? SITE_ID : 's1'],
+        ];
+
+        $groupId = \CSocNetGroup::createGroup($ownerId, $arFields, false);
+
+        if (!$groupId || $groupId <= 0) {
+            global $APPLICATION;
+            $err = ($APPLICATION && method_exists($APPLICATION, 'GetException') && $APPLICATION->GetException())
+                ? $APPLICATION->GetException()->GetString()
+                : 'unknown error';
+            throw new \Exception('CSocNetGroup::createGroup error: ' . $err);
+        }
+
+        return (int)$groupId;
+    }
+
+    /**
+     * Add user to workgroup with proper role via CSocNetUserToGroup::Add (UPSERT).
+     * REST sonet_group.user.add ignores ROLE and always sets K (member).
+     * CSocNetUserToGroup::Add uses MERGE — if user already exists, updates their role.
+     *
+     * Roles: A=owner, E=moderator, K=member.
+     */
+    public static function addWorkgroupMember(int $groupId, int $userId, string $role = 'K'): bool
+    {
+        self::ensureSocialnetworkLoaded();
+
+        // CSocNetUserToGroup::Add uses MERGE (upsert on USER_ID+GROUP_ID).
+        // If user already exists — their ROLE gets updated. No need to check first.
+        $id = \CSocNetUserToGroup::Add([
+            'USER_ID'              => $userId,
+            'GROUP_ID'             => $groupId,
+            'ROLE'                 => $role,
+            'INITIATED_BY_TYPE'    => 'G',
+            'INITIATED_BY_USER_ID' => $userId,
+            'SEND_MAIL'            => 'N',
+        ], true); // skipCheckFields=true to avoid INITIATED_BY validation
+
+        return (bool)$id;
+    }
+
+    /**
+     * Transfer group ownership to another user via CSocNetUserToGroup::SetOwner.
+     * User must already be a member before calling this.
+     */
+    public static function setWorkgroupOwner(int $groupId, int $userId): bool
+    {
+        self::ensureSocialnetworkLoaded();
+        return (bool)\CSocNetUserToGroup::SetOwner($userId, $groupId);
+    }
+
+    // =========================================================================
     // Disk
     // =========================================================================
 
