@@ -113,6 +113,12 @@ register_shutdown_function(function () use ($moduleId, $logFile) {
     }
 });
 
+// Incremental migration: inject flag into plan settings
+if ($migrateType === 'incremental') {
+    if (!isset($plan['settings'])) $plan['settings'] = [];
+    $plan['settings']['incremental'] = true;
+}
+
 try {
     if ($migrateType === 'tasks') {
         $service = new TaskMigrationService($cloudAPI, $boxAPI, $plan);

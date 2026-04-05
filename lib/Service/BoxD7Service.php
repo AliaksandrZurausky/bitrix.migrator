@@ -121,6 +121,117 @@ class BoxD7Service
         return true;
     }
 
+    /**
+     * Disable email notifications for all users on the box.
+     * Handles both "simple" and "expert" notification schemes.
+     * Returns count of processed users.
+     */
+    public static function disableEmailNotificationsForAll(): int
+    {
+        if (!Loader::includeModule('im')) {
+            throw new \Exception('IM module not loaded');
+        }
+
+        $simpleParams = [
+            'notifySchemeSendEmail' => false,
+        ];
+
+        $expertParams = [
+            'email|bizproc|activity'                => false,
+            'email|blog|post'                       => false,
+            'email|blog|post_mail'                  => false,
+            'email|blog|comment'                    => false,
+            'email|blog|mention'                    => false,
+            'email|blog|mention_comment'            => false,
+            'email|blog|share'                      => false,
+            'email|blog|share2users'                => false,
+            'email|blog|broadcast_post'             => false,
+            'email|blog|grat'                       => false,
+            'email|blog|moderate_post'              => false,
+            'email|blog|moderate_comment'           => false,
+            'email|blog|published_post'             => false,
+            'email|blog|published_comment'          => false,
+            'email|calendar|invite'                 => false,
+            'email|calendar|reminder'               => false,
+            'email|calendar|change'                 => false,
+            'email|calendar|info'                   => false,
+            'email|calendar|event_comment'          => false,
+            'email|calendar|delete_location'        => false,
+            'email|crm|incoming_email'              => false,
+            'email|crm|post'                        => false,
+            'email|crm|mention'                     => false,
+            'email|crm|webform'                     => false,
+            'email|crm|callback'                    => false,
+            'email|crm|changeAssignedBy'            => false,
+            'email|crm|changeObserver'              => false,
+            'email|crm|changeStage'                 => false,
+            'email|crm|merge'                       => false,
+            'email|crm|other'                       => false,
+            'email|crm|pingTodoActivity'            => false,
+            'email|disk|files'                      => false,
+            'email|disk|deletion'                   => false,
+            'email|forum|comment'                   => false,
+            'email|im|message'                      => false,
+            'email|im|chat'                         => false,
+            'email|im|openChat'                     => false,
+            'email|im|like'                         => false,
+            'email|im|mention'                      => false,
+            'email|im|default'                      => false,
+            'email|main|rating_vote'                => false,
+            'email|main|rating_vote_mentioned'      => false,
+            'email|imopenlines|rating_client'       => false,
+            'email|imopenlines|rating_head'         => false,
+            'email|intranet|security_otp'           => false,
+            'email|mail|new_message'                => false,
+            'email|photogallery|comment'            => false,
+            'email|sender|group_prepared'           => false,
+            'email|socialnetwork|invite_group'      => false,
+            'email|socialnetwork|invite_group_btn'  => false,
+            'email|socialnetwork|inout_group'       => false,
+            'email|socialnetwork|moderators_group'  => false,
+            'email|socialnetwork|owner_group'       => false,
+            'email|socialnetwork|sonet_group_event' => false,
+            'email|socialnetwork|inout_user'        => false,
+            'email|tasks|comment'                   => false,
+            'email|tasks|reminder'                  => false,
+            'email|tasks|manage'                    => false,
+            'email|tasks|task_assigned'             => false,
+            'email|tasks|task_expired_soon'         => false,
+            'email|timeman|entry'                   => false,
+            'email|timeman|entry_comment'           => false,
+            'email|timeman|entry_approve'           => false,
+            'email|timeman|report'                  => false,
+            'email|timeman|report_comment'          => false,
+            'email|timeman|report_approve'          => false,
+            'email|vote|voting'                     => false,
+            'email|wiki|comment'                    => false,
+        ];
+
+        $count = 0;
+        $users = \CUser::GetList();
+        while ($row = $users->Fetch()) {
+            $userId       = (int)$row['ID'];
+            $userSettings = \CIMSettings::Get($userId);
+            $scheme       = $userSettings['settings']['notifyScheme'] ?? 'simple';
+
+            if ($scheme === 'expert') {
+                foreach ($expertParams as $key => $value) {
+                    $userSettings['notify'][$key] = $value;
+                }
+                \CIMSettings::Set('notify', $userSettings['notify'], $userId);
+            } else {
+                foreach ($simpleParams as $key => $value) {
+                    $userSettings['settings'][$key] = $value;
+                }
+                \CIMSettings::Set('settings', $userSettings['settings'], $userId);
+            }
+
+            $count++;
+        }
+
+        return $count;
+    }
+
     // =========================================================================
     // Companies
     // =========================================================================
@@ -129,7 +240,7 @@ class BoxD7Service
     {
         self::ensureCrmLoaded();
         $obj = new \CCrmCompany(false);
-        $id = $obj->Add($fields, true, true, ['DISABLE_USER_FIELD_CHECK' => false]);
+        $id = $obj->Add($fields, true, ['DISABLE_USER_FIELD_CHECK' => true]);
         if (!$id) {
             throw new \Exception('CCrmCompany::Add error: ' . ($obj->LAST_ERROR ?? 'unknown error'));
         }
@@ -165,7 +276,7 @@ class BoxD7Service
     {
         self::ensureCrmLoaded();
         $obj = new \CCrmContact(false);
-        $id = $obj->Add($fields, true, true, ['DISABLE_USER_FIELD_CHECK' => false]);
+        $id = $obj->Add($fields, true, ['DISABLE_USER_FIELD_CHECK' => true]);
         if (!$id) {
             throw new \Exception('CCrmContact::Add error: ' . ($obj->LAST_ERROR ?? 'unknown error'));
         }
@@ -199,16 +310,8 @@ class BoxD7Service
     public static function setContactCompanies(int $contactId, array $companyIds): void
     {
         self::ensureCrmLoaded();
-
-        $items = [];
-        foreach ($companyIds as $i => $companyId) {
-            $items[] = [
-                'COMPANY_ID' => $companyId,
-                'SORT'       => ($i + 1) * 10,
-                'IS_PRIMARY' => $i === 0 ? 'Y' : 'N',
-            ];
-        }
-        \CCrmContactCompany::RegisterRelationByContact($contactId, $items, false, ['REGISTER_SONET_EVENT' => false]);
+        if (empty($companyIds)) return;
+        \Bitrix\Crm\Binding\ContactCompanyTable::bindCompanyIDs($contactId, $companyIds);
     }
 
     // =========================================================================
@@ -219,7 +322,7 @@ class BoxD7Service
     {
         self::ensureCrmLoaded();
         $obj = new \CCrmDeal(false);
-        $id = $obj->Add($fields, true, true, ['DISABLE_USER_FIELD_CHECK' => false]);
+        $id = $obj->Add($fields, true, ['DISABLE_USER_FIELD_CHECK' => true]);
         if (!$id) {
             throw new \Exception('CCrmDeal::Add error: ' . ($obj->LAST_ERROR ?? 'unknown error'));
         }
@@ -253,16 +356,8 @@ class BoxD7Service
     public static function setDealContacts(int $dealId, array $contactIds): void
     {
         self::ensureCrmLoaded();
-
-        $items = [];
-        foreach ($contactIds as $i => $contactId) {
-            $items[] = [
-                'CONTACT_ID' => $contactId,
-                'SORT'       => ($i + 1) * 10,
-                'IS_PRIMARY' => $i === 0 ? 'Y' : 'N',
-            ];
-        }
-        \CCrmDealContact::RegisterRelation($dealId, $items, false, ['REGISTER_SONET_EVENT' => false]);
+        if (empty($contactIds)) return;
+        \Bitrix\Crm\Binding\DealContactTable::bindContactIDs($dealId, $contactIds);
     }
 
     // =========================================================================
@@ -273,7 +368,7 @@ class BoxD7Service
     {
         self::ensureCrmLoaded();
         $obj = new \CCrmLead(false);
-        $id = $obj->Add($fields, true, true, ['DISABLE_USER_FIELD_CHECK' => false]);
+        $id = $obj->Add($fields, true, ['DISABLE_USER_FIELD_CHECK' => true]);
         if (!$id) {
             throw new \Exception('CCrmLead::Add error: ' . ($obj->LAST_ERROR ?? 'unknown error'));
         }
@@ -563,6 +658,313 @@ class BoxD7Service
             ];
         } catch (\Throwable $e) {
             return null;
+        }
+    }
+
+    // =========================================================================
+    // Tasks Comments (D7)
+    // =========================================================================
+
+    /**
+     * Add task comment with files via D7 (CTaskComments).
+     * Works directly with Bitrix classes, bypassing REST API limitations.
+     *
+     * @param int $taskId Box task ID
+     * @param int $userId User ID (author)
+     * @param string $text Comment text
+     * @param array $fileIds Disk file IDs to attach (array of integers)
+     * @return int Comment ID or 0 on failure
+     */
+    /**
+     * Add task comment with files via D7 (CTaskCommentItem::add).
+     * Uses the newer D7 path which correctly handles AUTHOR_ID
+     * by passing it to Forum\Comments\Feed constructor.
+     *
+     * @param int $taskId Box task ID
+     * @param int $authorId User ID (comment author)
+     * @param string $text Comment text
+     * @param array $fileIds Disk file IDs to attach (array of integers)
+     * @return int Comment ID or 0 on failure
+     */
+    public static function addTaskCommentWithFiles(int $taskId, int $userId, string $text, array $fileIds = []): int
+    {
+        try {
+            if (!Loader::includeModule('tasks')) {
+                throw new \Exception('tasks module failed to load');
+            }
+            if (!Loader::includeModule('forum')) {
+                throw new \Exception('forum module failed to load');
+            }
+            if (!Loader::includeModule('disk')) {
+                throw new \Exception('disk module failed to load');
+            }
+
+            // Ensure global $USER is initialized (required by ForumAddMessage)
+            global $USER;
+            if (!is_object($USER) || !$USER->IsAuthorized()) {
+                if (!is_object($USER)) {
+                    $USER = new \CUser();
+                }
+                $USER->Authorize($userId);
+            }
+
+            // Allow attaching files owned by other users
+            \Bitrix\Disk\Uf\FileUserType::setValueForAllowEdit("FORUM_MESSAGE", true);
+
+            $fields = [
+                'POST_MESSAGE' => $text,
+                'AUTHOR_ID'    => $userId,
+            ];
+
+            if (!empty($fileIds)) {
+                // Plain integer Disk object IDs (b_disk_object.ID), no 'n' prefix
+                $fields['UF_FORUM_MESSAGE_DOC'] = array_map('intval', $fileIds);
+            }
+
+            // Get tasks forum ID
+            $forumId = \CTasksTools::getForumIdForIntranet();
+            if (!$forumId) {
+                throw new \Exception('Tasks forum not configured (getForumIdForIntranet=0)');
+            }
+
+            // Use Forum\Comments\Feed::addComment() which skips canAdd() permission check
+            $feed = new \Bitrix\Forum\Comments\Feed(
+                $forumId,
+                [
+                    'type' => 'TK',
+                    'id' => $taskId,
+                    'xml_id' => "TASK_{$taskId}",
+                ],
+                $userId
+            );
+
+            // Copy UF fields to $GLOBALS (required by EditFormAddFields)
+            foreach ($fields as $key => $value) {
+                if (strpos($key, 'UF_') === 0) {
+                    $GLOBALS[$key] = $value;
+                }
+            }
+
+            $addResult = $feed->addComment($fields);
+
+            if (!$addResult || empty($addResult['ID'])) {
+                $errors = $feed->getErrors();
+                $errMsgs = [];
+                if ($errors) {
+                    foreach ($errors as $err) {
+                        $errMsgs[] = $err->getMessage();
+                    }
+                }
+                throw new \Exception('Feed::addComment failed: ' . ($errMsgs ? implode('; ', $errMsgs) : 'no ID returned'));
+            }
+
+            $commentId = (int)$addResult['ID'];
+
+            return (int)$commentId;
+        } catch (\Throwable $e) {
+            throw new \Exception('D7 addTaskCommentWithFiles failed: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine(), 0, $e);
+        }
+    }
+
+    /**
+     * Create IM chat for a task via ChatFactory (D7).
+     * Returns real IM chat ID or 0 on failure.
+     */
+    public static function createTaskChat(int $taskId, string $title, array $userIds = [1]): int
+    {
+        if (!Loader::includeModule('im')) return 0;
+
+        $factory = \Bitrix\Im\V2\Chat\ChatFactory::getInstance();
+        $result = $factory->addUniqueChat([
+            'TITLE' => $title,
+            'SKIP_ADD_MESSAGE' => 'Y',
+            'TYPE' => 'X',
+            'ENTITY_TYPE' => 'TASKS_TASK',
+            'ENTITY_ID' => $taskId,
+            'USERS' => $userIds,
+            'AUTHOR_ID' => $userIds[0] ?? 1,
+        ]);
+
+        if ($result->isSuccess()) {
+            return $result->getChatId();
+        }
+
+        // Try to find existing
+        $row = \Bitrix\Im\Model\ChatTable::getList([
+            'filter' => ['=ENTITY_TYPE' => 'TASKS_TASK', '=ENTITY_ID' => (string)$taskId],
+            'select' => ['ID'],
+        ])->fetch();
+        return $row ? (int)$row['ID'] : 0;
+    }
+
+    /**
+     * Upload file to user's personal storage and send to IM chat via D7.
+     * Bypasses nginx upload limits entirely.
+     *
+     * @param int $chatId Real IM chat ID
+     * @param string $tmpPath Path to temp file on server
+     * @param string $fileName Original file name
+     * @param string $text Optional message text
+     * @param int $userId User who sends the file
+     * @return int Message ID or 0 on failure
+     */
+    public static function sendFileToChatD7(int $chatId, string $tmpPath, string $fileName, string $text = '', int $userId = 1): int
+    {
+        if (!Loader::includeModule('disk') || !Loader::includeModule('im')) return 0;
+
+        // Upload to user's personal storage
+        $storage = \Bitrix\Disk\Driver::getInstance()->getStorageByUserId($userId);
+        if (!$storage) return 0;
+
+        $uploadFolder = $storage->getFolderForUploadedFiles();
+        if (!$uploadFolder) return 0;
+
+        $fileArray = \CFile::MakeFileArray($tmpPath);
+        if (!$fileArray) return 0;
+
+        $savedFileId = \CFile::SaveFile($fileArray, 'disk');
+        if (!$savedFileId) return 0;
+
+        $diskFile = $uploadFolder->addFile(
+            [
+                'NAME' => $fileName,
+                'FILE_ID' => $savedFileId,
+                'SIZE' => filesize($tmpPath),
+                'CREATED_BY' => $userId,
+            ],
+            [],
+            true
+        );
+
+        if (!$diskFile) return 0;
+
+        // Send to chat
+        $result = \CIMDisk::UploadFileFromDisk(
+            $chatId,
+            ['disk' . $diskFile->getId()],
+            $text,
+            [
+                'USER_ID' => $userId,
+                'SKIP_USER_CHECK' => true,
+                'SYMLINK' => true,
+            ]
+        );
+
+        if ($result && !empty($result['MESSAGE_ID'])) {
+            return (int)$result['MESSAGE_ID'];
+        }
+        return 0;
+    }
+
+    // =========================================================================
+    // CRM M:N Bindings (D7)
+    // =========================================================================
+
+    public static function bindContactCompany(int $contactId, int $companyId): void
+    {
+        if (!Loader::includeModule('crm')) return;
+        \Bitrix\Crm\Binding\ContactCompanyTable::bindCompanyIDs($contactId, [$companyId]);
+    }
+
+    public static function bindDealContacts(int $dealId, array $contactIds): void
+    {
+        if (!Loader::includeModule('crm')) return;
+        \Bitrix\Crm\Binding\DealContactTable::bindContactIDs($dealId, $contactIds);
+    }
+
+    // =========================================================================
+    // CRM Requisites (D7)
+    // =========================================================================
+
+    public static function addRequisite(array $fields): int
+    {
+        if (!Loader::includeModule('crm')) return 0;
+        $requisite = new \Bitrix\Crm\EntityRequisite();
+        $result = $requisite->add($fields);
+        return $result->isSuccess() ? $result->getId() : 0;
+    }
+
+    public static function addBankDetail(array $fields): int
+    {
+        if (!Loader::includeModule('crm')) return 0;
+        $bankDetail = new \Bitrix\Crm\EntityBankDetail();
+        $result = $bankDetail->add($fields);
+        return $result->isSuccess() ? $result->getId() : 0;
+    }
+
+    // =========================================================================
+    // Smart Process Items (D7 Factory)
+    // =========================================================================
+
+    public static function addSmartItem(int $entityTypeId, array $fields): int
+    {
+        if (!Loader::includeModule('crm')) return 0;
+        $factory = \Bitrix\Crm\Service\Container::getInstance()->getFactory($entityTypeId);
+        if (!$factory) return 0;
+
+        $item = $factory->createItem($fields);
+        $op = $factory->getAddOperation($item);
+        $op->disableCheckAccess();
+        $op->disableAutomation();
+        $result = $op->launch();
+        return $result->isSuccess() ? $item->getId() : 0;
+    }
+
+    /**
+     * Set original dates on a CRM entity after creation.
+     * CCrm*::Add() ignores DATE_CREATE — direct SQL UPDATE is the only way.
+     */
+    private static $allowedBackdateTables = [
+        'b_crm_company', 'b_crm_contact', 'b_crm_deal', 'b_crm_lead',
+        'b_crm_act', 'b_crm_timeline',
+    ];
+
+    public static function backdateEntity(string $table, int $id, string $dateCreate, string $dateModify = ''): void
+    {
+        // Whitelist table names to prevent SQL injection
+        if (!in_array($table, self::$allowedBackdateTables, true)) {
+            if (strpos($table, 'b_crm_dynamic_items_') === 0) {
+                $suffix = substr($table, strlen('b_crm_dynamic_items_'));
+                if (!ctype_digit($suffix)) return;
+            } else {
+                return;
+            }
+        }
+
+        $ts = strtotime($dateCreate);
+        if ($ts === false) return; // unparseable date — skip
+
+        $conn = \Bitrix\Main\Application::getConnection();
+        $helper = $conn->getSqlHelper();
+
+        $dateCreate = date('Y-m-d H:i:s', $ts);
+        if (empty($dateModify)) {
+            $dateModify = $dateCreate;
+        } else {
+            $tsm = strtotime($dateModify);
+            $dateModify = ($tsm !== false) ? date('Y-m-d H:i:s', $tsm) : $dateCreate;
+        }
+
+        $safeCreate = $helper->forSql($dateCreate);
+        $safeModify = $helper->forSql($dateModify);
+        $safeId = (int)$id;
+
+        if ($table === 'b_crm_act') {
+            $conn->queryExecute(
+                "UPDATE {$table} SET CREATED = '{$safeCreate}', LAST_UPDATED = '{$safeModify}' WHERE ID = {$safeId}"
+            );
+        } elseif ($table === 'b_crm_timeline') {
+            $conn->queryExecute(
+                "UPDATE {$table} SET CREATED = '{$safeCreate}' WHERE ID = {$safeId}"
+            );
+        } elseif (strpos($table, 'b_crm_dynamic_items_') === 0) {
+            $conn->queryExecute(
+                "UPDATE {$table} SET CREATED_TIME = '{$safeCreate}', UPDATED_TIME = '{$safeModify}' WHERE ID = {$safeId}"
+            );
+        } else {
+            $conn->queryExecute(
+                "UPDATE {$table} SET DATE_CREATE = '{$safeCreate}', DATE_MODIFY = '{$safeModify}' WHERE ID = {$safeId}"
+            );
         }
     }
 }

@@ -5,6 +5,12 @@ define('DisableEventsCheck', true);
 
 require_once($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php');
 
+global $USER;
+if (!$USER->IsAdmin()) {
+    echo json_encode(['success' => false, 'error' => 'Access denied']);
+    die();
+}
+
 use Bitrix\Main\Config\Option;
 use Bitrix\Main\Loader;
 
@@ -43,6 +49,9 @@ if ($currentStatus === 'running') {
 }
 
 $migrateType = $_POST['type'] ?? 'full';
+if (!in_array($migrateType, ['full', 'tasks', 'incremental'], true)) {
+    $migrateType = 'full';
+}
 
 // Reset state
 Option::set($moduleId, 'migration_status', 'running');

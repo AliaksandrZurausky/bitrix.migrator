@@ -883,6 +883,7 @@
     // =========================================================================
     function initMigrationHandlers() {
         document.getElementById('btn-start-migration')?.addEventListener('click', startMigration);
+        document.getElementById('btn-start-incremental')?.addEventListener('click', startIncrementalMigration);
         document.getElementById('btn-stop-migration')?.addEventListener('click', stopMigration);
         document.getElementById('btn-pause-migration')?.addEventListener('click', pauseMigration);
         document.getElementById('btn-resume-migration')?.addEventListener('click', resumeMigration);
@@ -914,6 +915,41 @@
             .catch(function() {
                 alert('Ошибка запуска миграции');
                 btn.disabled = false; btn.textContent = 'Запустить миграцию';
+            });
+    }
+
+    function startIncrementalMigration() {
+        var lastTs = window.BITRIX_MIGRATOR.lastMigrationTimestamp || '';
+        var msg = 'Запустить инкрементальную миграцию?';
+        if (lastTs) msg += '\nБудут перенесены только записи, созданные после ' + lastTs;
+        if (!confirm(msg)) return;
+
+        var btn = document.getElementById('btn-start-incremental');
+        var fullBtn = document.getElementById('btn-start-migration');
+        btn.disabled = true; btn.textContent = 'Запуск...';
+        fullBtn.disabled = true;
+
+        var fd = new FormData();
+        fd.append('sessid', window.BITRIX_MIGRATOR.sessid);
+        fd.append('type', 'incremental');
+
+        fetch('/local/ajax/bitrix_migrator/start_migration.php', { method: 'POST', body: fd })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.success) {
+                    showMigrationProgress();
+                    showMigrationRunningUI();
+                    startMigrationPolling();
+                } else {
+                    alert('Ошибка: ' + (data.error || ''));
+                    btn.disabled = false; btn.textContent = 'Инкрементальная миграция';
+                    fullBtn.disabled = false;
+                }
+            })
+            .catch(function() {
+                alert('Ошибка запуска миграции');
+                btn.disabled = false; btn.textContent = 'Инкрементальная миграция';
+                fullBtn.disabled = false;
             });
     }
 
@@ -985,11 +1021,13 @@
 
     function showMigrationRunningUI() {
         var startBtn = document.getElementById('btn-start-migration');
+        var incrementalBtn = document.getElementById('btn-start-incremental');
         var stopBtn = document.getElementById('btn-stop-migration');
         var pauseBtn = document.getElementById('btn-pause-migration');
         var resumeBtn = document.getElementById('btn-resume-migration');
         startBtn.disabled = true;
         startBtn.textContent = 'Миграция выполняется...';
+        if (incrementalBtn) { incrementalBtn.disabled = true; }
         stopBtn.style.display = 'inline-flex';
         stopBtn.disabled = false;
         stopBtn.textContent = 'Остановить миграцию';
@@ -1017,12 +1055,17 @@
 
     function showMigrationIdleUI() {
         var startBtn = document.getElementById('btn-start-migration');
+        var incrementalBtn = document.getElementById('btn-start-incremental');
         var stopBtn = document.getElementById('btn-stop-migration');
         var pauseBtn = document.getElementById('btn-pause-migration');
         var resumeBtn = document.getElementById('btn-resume-migration');
         var pidInfo = document.getElementById('migration-pid-info');
         startBtn.disabled = false;
         startBtn.textContent = 'Запустить миграцию';
+        if (incrementalBtn) {
+            incrementalBtn.disabled = !window.BITRIX_MIGRATOR.lastMigrationTimestamp;
+            incrementalBtn.textContent = 'Инкрементальная миграция';
+        }
         stopBtn.style.display = 'none';
         pauseBtn.style.display = 'none';
         resumeBtn.style.display = 'none';

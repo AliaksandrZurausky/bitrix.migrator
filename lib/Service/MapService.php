@@ -181,7 +181,7 @@ class MapService
      */
     public static function exists($entityType, $cloudId)
     {
-        return self::getMap($entityType, $cloudId) !== null;
+        return !empty(self::getMap($entityType, $cloudId));
     }
 
     /**
@@ -206,6 +206,31 @@ class MapService
         }
 
         return $ids;
+    }
+
+    /**
+     * Get all mappings for a given entity type.
+     * Returns array of [cloudId => localId].
+     */
+    public static function getAllMappings(string $entityType): array
+    {
+        $entity = self::getEntity();
+        $entityDataClass = $entity->getDataClass();
+
+        $map = [];
+        $rs = $entityDataClass::getList([
+            'filter' => ['=UF_ENTITY_TYPE' => $entityType],
+            'select' => ['UF_CLOUD_ID', 'UF_LOCAL_ID'],
+        ]);
+        while ($row = $rs->fetch()) {
+            $cloudId = (int)$row['UF_CLOUD_ID'];
+            $localId = (int)$row['UF_LOCAL_ID'];
+            if ($cloudId > 0 && $localId > 0) {
+                $map[$cloudId] = $localId;
+            }
+        }
+
+        return $map;
     }
 
     /**

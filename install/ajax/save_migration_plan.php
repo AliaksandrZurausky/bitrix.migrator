@@ -1,9 +1,13 @@
 <?php
 define('NO_KEEP_STATISTIC', true);
 define('NO_AGENT_STATISTIC', true);
-define('NOT_CHECK_PERMISSIONS', true);
-
 require($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php');
+
+global $USER;
+if (!$USER->IsAdmin()) {
+    echo json_encode(['success' => false, 'error' => 'Access denied']);
+    die();
+}
 
 use Bitrix\Main\Loader;
 use Bitrix\Main\Application;

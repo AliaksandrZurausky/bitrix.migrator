@@ -140,8 +140,15 @@ class CloudAPI
     {
         $items = [];
         $next = 0;
+        $page = 0;
+        $maxPages = 10000; // safety limit to prevent infinite loops
 
         do {
+            $page++;
+            if ($page > $maxPages) {
+                throw new \Exception("fetchAll exceeded {$maxPages} pages for {$method} — possible infinite loop");
+            }
+
             $params['start'] = $next;
             $result = $this->request($method, $params);
 
@@ -152,10 +159,15 @@ class CloudAPI
                 }
             }
 
-            $next = $result['next'] ?? null;
+            $newNext = $result['next'] ?? null;
+            // Detect stuck pagination (same offset returned)
+            if ($newNext !== null && $newNext === $next) {
+                break;
+            }
+            $next = $newNext;
 
             if ($next !== null) {
-                usleep(333000); // 333ms delay between paginated requests (~3 req/s)
+                usleep(500000); // 500ms delay between paginated requests (~2 req/s, within Bitrix limit)
             }
         } while ($next !== null);
 
@@ -234,42 +246,52 @@ class CloudAPI
     /**
      * Get all companies
      */
-    public function getCompanies($select = ['ID', 'TITLE'])
+    public function getCompanies($select = ['ID', 'TITLE'], array $filter = [])
     {
-        return $this->fetchAll('crm.company.list', ['select' => $select]);
+        $params = ['select' => $select];
+        if (!empty($filter)) $params['filter'] = $filter;
+        return $this->fetchAll('crm.company.list', $params);
     }
 
     /**
      * Get all contacts
      */
-    public function getContacts($select = ['ID', 'NAME', 'LAST_NAME'])
+    public function getContacts($select = ['ID', 'NAME', 'LAST_NAME'], array $filter = [])
     {
-        return $this->fetchAll('crm.contact.list', ['select' => $select]);
+        $params = ['select' => $select];
+        if (!empty($filter)) $params['filter'] = $filter;
+        return $this->fetchAll('crm.contact.list', $params);
     }
 
     /**
      * Get all deals
      */
-    public function getDeals($select = ['ID', 'TITLE'])
+    public function getDeals($select = ['ID', 'TITLE'], array $filter = [])
     {
-        return $this->fetchAll('crm.deal.list', ['select' => $select]);
+        $params = ['select' => $select];
+        if (!empty($filter)) $params['filter'] = $filter;
+        return $this->fetchAll('crm.deal.list', $params);
     }
 
     /**
      * Get all leads
      */
-    public function getLeads($select = ['ID', 'TITLE'])
+    public function getLeads($select = ['ID', 'TITLE'], array $filter = [])
     {
-        return $this->fetchAll('crm.lead.list', ['select' => $select]);
+        $params = ['select' => $select];
+        if (!empty($filter)) $params['filter'] = $filter;
+        return $this->fetchAll('crm.lead.list', $params);
     }
 
     /**
      * Get all tasks
      */
-    public function getTasks($select = ['ID', 'TITLE'])
+    public function getTasks($select = ['ID', 'TITLE'], array $filter = [])
     {
+        $params = ['select' => $select];
+        if (!empty($filter)) $params['filter'] = $filter;
         // tasks.task.list returns result.tasks (nested), not result directly
-        return $this->fetchAll('tasks.task.list', ['select' => $select], 'tasks');
+        return $this->fetchAll('tasks.task.list', $params, 'tasks');
     }
 
     /**
@@ -465,11 +487,58 @@ class CloudAPI
     }
 
     /**
-     * Add task comment
+     * Add task comment (legacy, pre-25.700.0)
      */
     public function addTaskComment($taskId, $fields)
     {
         return $this->request('task.commentitem.add', ['TASKID' => (int)$taskId, 'FIELDS' => $fields]);
+    }
+
+    /**
+     * Get task chat ID (tasks 25.700.0+)
+     */
+    public function getTaskChatId(int $taskId): int
+    {
+        $result = $this->request('tasks.task.get', ['taskId' => $taskId, 'select' => ['CHAT_ID']]);
+        $task   = $result['result']['task'] ?? $result['result'] ?? $result;
+        return (int)($task['chatId'] ?? $task['CHAT_ID'] ?? 0);
+    }
+
+    /**
+     * Send text message to task chat via im.message.add (works on all box versions)
+     */
+    public function sendTaskChatMessage(int $chatId, string $text): bool
+    {
+        $result = $this->request('im.message.add', [
+            'DIALOG_ID' => 'chat' . $chatId,
+            'MESSAGE'   => $text,
+        ]);
+        return !empty($result['result'] ?? $result);
+    }
+
+    /**
+     * Commit disk files to chat (tasks 25.700.0+)
+     * $fileIds — plain integer disk object IDs (no "n" prefix)
+     */
+    public function commitFilesToChat(int $chatId, array $fileIds, string $message = ''): array
+    {
+        $params = ['CHAT_ID' => $chatId, 'FILE_ID' => array_values($fileIds)];
+        if ($message !== '') $params['MESSAGE'] = $message;
+        $result = $this->request('im.disk.file.commit', $params);
+        return $result ?? [];
+    }
+
+    /**
+     * Get chat messages for a task chat (im.dialog.messages.get).
+     * Returns messages that may contain FILE_ID params (files sent directly to chat).
+     */
+    public function getChatMessages(int $chatId, int $limit = 50): array
+    {
+        $result = $this->request('im.dialog.messages.get', [
+            'DIALOG_ID' => 'chat' . $chatId,
+            'LIMIT' => $limit,
+        ]);
+        return $result['result']['messages'] ?? [];
     }
 
     /**
@@ -1011,12 +1080,14 @@ class CloudAPI
         return $result['result'] ?? false;
     }
 
-    public function getSmartProcessItems($entityTypeId, $select = ['*', 'uf_*'])
+    public function getSmartProcessItems($entityTypeId, $select = ['*', 'uf_*'], array $filter = [])
     {
-        return $this->fetchAll('crm.item.list', [
+        $params = [
             'entityTypeId' => (int)$entityTypeId,
             'select' => $select,
-        ]);
+        ];
+        if (!empty($filter)) $params['filter'] = $filter;
+        return $this->fetchAll('crm.item.list', $params);
     }
 
     public function deleteSmartProcessItem($entityTypeId, $id)
@@ -1066,9 +1137,14 @@ class CloudAPI
 
     public function getTimelineComments($entityTypeId, $entityId)
     {
+        // crm.timeline.comment.list requires ENTITY_TYPE as string, not numeric
+        $typeMap = [1 => 'lead', 2 => 'deal', 3 => 'contact', 4 => 'company', 31 => 'quote'];
+        $entityType = $typeMap[$entityTypeId] ?? '';
+        if (empty($entityType)) return [];
+
         return $this->fetchAll('crm.timeline.comment.list', [
             'filter' => [
-                'ENTITY_TYPE_ID' => (int)$entityTypeId,
+                'ENTITY_TYPE' => $entityType,
                 'ENTITY_ID' => (int)$entityId,
             ],
         ]);

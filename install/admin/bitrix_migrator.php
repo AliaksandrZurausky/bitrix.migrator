@@ -5,6 +5,11 @@ use Bitrix\Main\Loader;
 use Bitrix\Main\Localization\Loc;
 use Bitrix\Main\Config\Option;
 
+global $USER, $APPLICATION;
+if (!$USER->IsAdmin()) {
+    $APPLICATION->AuthForm('Access denied');
+}
+
 Loc::loadMessages(__FILE__);
 
 $MODULE_ID = 'bitrix_migrator';
@@ -28,6 +33,7 @@ $boxWebhookUrl = Option::get($MODULE_ID, 'box_webhook_url', '');
 $connectionStatusCloud = Option::get($MODULE_ID, 'connection_status_cloud', 'not_checked');
 $connectionStatusBox = Option::get($MODULE_ID, 'connection_status_box', 'not_checked');
 $dryrunStatus = Option::get($MODULE_ID, 'dryrun_status', 'idle');
+$lastMigrationTimestamp = Option::get($MODULE_ID, 'last_migration_timestamp', '');
 
 function migratorStatusText($status) {
     switch ($status) {
@@ -288,9 +294,12 @@ function migratorStatusText($status) {
         <h2>Миграция данных</h2>
         <p style="color:#666;font-size:14px;margin:0 0 20px;">Запуск и контроль миграции данных из облака в коробку на основе сохранённого плана.</p>
 
-        <div id="migration-controls" style="margin-top:20px; display:flex; gap:10px; align-items:center;">
+        <div id="migration-controls" style="margin-top:20px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
             <button type="button" id="btn-start-migration" class="adm-btn-save">
                 Запустить миграцию
+            </button>
+            <button type="button" id="btn-start-incremental" class="adm-btn" <?= empty($lastMigrationTimestamp) ? 'disabled title="Сначала выполните полную миграцию"' : '' ?>>
+                Инкрементальная миграция
             </button>
             <button type="button" id="btn-pause-migration" class="adm-btn" style="display:none;">
                 Пауза
@@ -303,6 +312,13 @@ function migratorStatusText($status) {
             </button>
             <span id="migration-pid-info" style="display:none; font-size:12px; color:#888;"></span>
         </div>
+
+        <?php if (!empty($lastMigrationTimestamp)): ?>
+        <div id="last-migration-info" style="margin-top:10px; font-size:13px; color:#888;">
+            Последняя миграция: <strong><?= htmlspecialcharsbx($lastMigrationTimestamp) ?></strong>
+            <span style="font-size:12px; color:#aaa;">(инкрементальная миграция перенесёт только записи, созданные после этой даты)</span>
+        </div>
+        <?php endif; ?>
 
         <div id="migration-phases" style="display:none; margin-top:20px;"></div>
 
@@ -355,7 +371,8 @@ function migratorStatusText($status) {
 window.BITRIX_MIGRATOR = {
     moduleId: '<?= $MODULE_ID ?>',
     sessid: '<?= bitrix_sessid() ?>',
-    dryrunStatus: '<?= $dryrunStatus ?>'
+    dryrunStatus: '<?= htmlspecialcharsbx($dryrunStatus) ?>',
+    lastMigrationTimestamp: '<?= htmlspecialcharsbx($lastMigrationTimestamp) ?>'
 };
 </script>
 

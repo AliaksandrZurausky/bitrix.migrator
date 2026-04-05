@@ -5,6 +5,12 @@ define('DisableEventsCheck', true);
 
 require_once($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php');
 
+global $USER;
+if (!$USER->IsAdmin()) {
+    echo json_encode(['success' => false, 'error' => 'Access denied']);
+    die();
+}
+
 use Bitrix\Main\Application;
 use Bitrix\Main\Config\Option;
 use Bitrix\Main\Loader;
@@ -44,10 +50,6 @@ if (!empty($cloudWebhookUrl)) {
 }
 
 if (!empty($boxWebhookUrl)) {
-    if (!filter_var($boxWebhookUrl, FILTER_VALIDATE_URL)) {
-        echo json_encode(['success' => false, 'error' => 'Invalid box webhook URL format']);
-        die();
-    }
     if (!preg_match('#^https?://[^/]+/rest/\d+/[a-zA-Z0-9]+/?$#', $boxWebhookUrl)) {
         echo json_encode(['success' => false, 'error' => 'Invalid box webhook format. Expected: https://portal.bitrix24.ru/rest/1/abc123/']);
         die();

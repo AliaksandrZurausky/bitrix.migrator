@@ -83,8 +83,13 @@ class MigrationService
 
     public function migrate()
     {
-        $this->setStatus('running', 'Миграция запущена');
-        $this->addLog('=== Начало полной миграции ===');
+        $isIncremental = !empty($this->plan['settings']['incremental']);
+        $this->setStatus('running', $isIncremental ? 'Инкрементальная миграция запущена' : 'Миграция запущена');
+        $this->addLog($isIncremental ? '=== Начало инкрементальной миграции ===' : '=== Начало полной миграции ===');
+        if ($isIncremental) {
+            $lastTs = Option::get($this->moduleId, 'last_migration_timestamp', '');
+            $this->addLog('Фильтр: DATE_CREATE > ' . ($lastTs ?: '(не задан, будет полная выборка)'));
+        }
 
         try {
             // --- Step 0a: Delete previously migrated data via HL block (if enabled) ---
@@ -129,6 +134,7 @@ class MigrationService
                 gc_collect_cycles();
             }
 
+            Option::set($this->moduleId, 'last_migration_timestamp', date('c'));
             $this->setStatus('completed', 'Миграция завершена успешно');
             $this->addLog('=== Миграция завершена ===');
 
@@ -256,11 +262,13 @@ class MigrationService
         foreach ($boxDepts as $d) {
             $deptById[(int)$d['ID']] = $d;
         }
-        $depthOf = function ($id) use ($deptById, &$depthOf) {
+        $depthOf = function ($id, $visited = []) use ($deptById, &$depthOf) {
+            if (in_array($id, $visited)) return 0; // cycle detected
             if (!isset($deptById[$id]) || empty($deptById[$id]['PARENT']) || (int)$deptById[$id]['PARENT'] === 0) {
                 return 0;
             }
-            return 1 + $depthOf((int)$deptById[$id]['PARENT']);
+            $visited[] = $id;
+            return 1 + $depthOf((int)$deptById[$id]['PARENT'], $visited);
         };
 
         // Sort deepest first
@@ -486,6 +494,14 @@ class MigrationService
 
         $matched = count($this->userMapCache) - $invited;
         $this->addLog("Пользователи: совпали=$matched, создано=$invited, обновлено=$updated, ошибок=$errors");
+
+        // Отключаем email-уведомления всем пользователям на коробке
+        try {
+            $disabled = BoxD7Service::disableEmailNotificationsForAll();
+            $this->addLog("Email-уведомления отключены для $disabled пользователей");
+        } catch (\Throwable $e) {
+            $this->addLog("Ошибка отключения email-уведомлений: " . $e->getMessage());
+        }
     }
 
     private function mapDepartmentIds($cloudDeptIds)
@@ -612,6 +628,71 @@ class MigrationService
             MapService::addMap($entityType, $cloudId, $boxId);
         } catch (\Throwable $e) {
             // Non-critical — don't interrupt migration
+        }
+    }
+
+    /**
+     * Build date filter for incremental migration.
+     * Returns empty array for full migration.
+     */
+    private function getIncrementalFilter(): array
+    {
+        if (empty($this->plan['settings']['incremental'])) return [];
+        $lastTs = Option::get($this->moduleId, 'last_migration_timestamp', '');
+        if (empty($lastTs)) return [];
+        return ['>DATE_CREATE' => $lastTs];
+    }
+
+    /**
+     * Build date filter for incremental task migration.
+     * Tasks use >CREATED_DATE instead of >DATE_CREATE.
+     */
+    private function getIncrementalTaskFilter(): array
+    {
+        if (empty($this->plan['settings']['incremental'])) return [];
+        $lastTs = Option::get($this->moduleId, 'last_migration_timestamp', '');
+        if (empty($lastTs)) return [];
+        return ['>CREATED_DATE' => $lastTs];
+    }
+
+    /**
+     * Check if entity was already migrated (exists in HL-block map).
+     * Uses in-memory cache preloaded by loadExistingMappings or populated during migration.
+     * Falls back to direct HL-block lookup if cache miss and saveMapEnabled.
+     */
+    private function isAlreadyMigrated(string $entityType, int $cloudId, string $cacheProperty): bool
+    {
+        if (isset($this->{$cacheProperty}[$cloudId])) return true;
+        if (!$this->saveMapEnabled) return false;
+        try {
+            $localId = MapService::getLocalId($entityType, $cloudId);
+            if ($localId) {
+                $this->{$cacheProperty}[$cloudId] = (int)$localId;
+                return true;
+            }
+        } catch (\Throwable $e) {}
+        return false;
+    }
+
+    /**
+     * In incremental mode, pre-load existing cloud→box mappings from MigratorMap HL block
+     * so that timeline/activities/contacts linking still works for previously migrated entities.
+     */
+    private function loadExistingMappings(string $entityType): void
+    {
+        try {
+            $existingMap = MapService::getAllMappings($entityType);
+            $cacheProperty = $entityType . 'MapCache';
+
+            foreach ($existingMap as $cloudId => $localId) {
+                if (!isset($this->{$cacheProperty}[$cloudId])) {
+                    $this->{$cacheProperty}[$cloudId] = $localId;
+                }
+            }
+
+            $this->addLog("[incremental] Загружено существующих маппингов $entityType: " . count($existingMap));
+        } catch (\Throwable $e) {
+            $this->addLog("[incremental] Ошибка загрузки маппингов $entityType: " . $e->getMessage());
         }
     }
 
@@ -1121,7 +1202,12 @@ class MigrationService
 
     private function migrateCompanies()
     {
-        $cloudCompanies = $this->cloudAPI->getCompanies(['*', 'UF_*', 'PHONE', 'EMAIL']);
+        // In incremental mode, pre-load existing mappings for timeline/activities
+        if (!empty($this->plan['settings']['incremental'])) {
+            $this->loadExistingMappings('company');
+        }
+
+        $cloudCompanies = $this->cloudAPI->getCompanies(['*', 'UF_*', 'PHONE', 'EMAIL'], $this->getIncrementalFilter());
         $total = count($cloudCompanies);
         $created = 0;
         $skipped = 0;
@@ -1147,6 +1233,12 @@ class MigrationService
             $this->checkStop();
             $this->savePhaseProgress('companies', $i + 1, $total);
             $cloudId = (int)$company['ID'];
+
+            // Skip if already migrated (HL-block check)
+            if ($this->isAlreadyMigrated('company', $cloudId, 'companyMapCache')) {
+                $skipped++;
+                continue;
+            }
 
             // Fast title lookup from pre-built cache
             $existing = null;
@@ -1188,6 +1280,11 @@ class MigrationService
                     $this->companyMapCache[$cloudId] = $newId;
                     $this->saveToMap('company', $cloudId, $newId);
                     $created++;
+                    if (!empty($company['DATE_CREATE'])) {
+                        try {
+                            BoxD7Service::backdateEntity('b_crm_company', $newId, $company['DATE_CREATE'], $company['DATE_MODIFY'] ?? '');
+                        } catch (\Throwable $e) { /* date preservation is non-critical */ }
+                    }
                 }
             } catch (\Throwable $e) {
                 $errors++;
@@ -1239,7 +1336,12 @@ class MigrationService
 
     private function migrateContacts()
     {
-        $cloudContacts = $this->cloudAPI->getContacts(['*', 'UF_*', 'PHONE', 'EMAIL']);
+        // In incremental mode, pre-load existing mappings for timeline/activities
+        if (!empty($this->plan['settings']['incremental'])) {
+            $this->loadExistingMappings('contact');
+        }
+
+        $cloudContacts = $this->cloudAPI->getContacts(['*', 'UF_*', 'PHONE', 'EMAIL'], $this->getIncrementalFilter());
         $total = count($cloudContacts);
         $created = 0;
         $skipped = 0;
@@ -1254,6 +1356,11 @@ class MigrationService
             $this->checkStop();
             $this->savePhaseProgress('contacts', $i + 1, $total);
             $cloudId = (int)$contact['ID'];
+
+            if ($this->isAlreadyMigrated('contact', $cloudId, 'contactMapCache')) {
+                $skipped++;
+                continue;
+            }
 
             $existing = $this->findDuplicate('contact', $contact, $matchBy);
             if ($existing) {
@@ -1284,6 +1391,11 @@ class MigrationService
                     $this->contactMapCache[$cloudId] = $newId;
                     $this->saveToMap('contact', $cloudId, $newId);
                     $created++;
+                    if (!empty($contact['DATE_CREATE'])) {
+                        try {
+                            BoxD7Service::backdateEntity('b_crm_contact', $newId, $contact['DATE_CREATE'], $contact['DATE_MODIFY'] ?? '');
+                        } catch (\Throwable $e) { /* date preservation is non-critical */ }
+                    }
 
                     $this->linkContactCompanies($cloudId, $newId, $contact);
                 }
@@ -1360,7 +1472,12 @@ class MigrationService
 
     private function migrateDeals()
     {
-        $cloudDeals = $this->cloudAPI->getDeals(['*', 'UF_*']);
+        // In incremental mode, pre-load existing mappings for timeline/activities
+        if (!empty($this->plan['settings']['incremental'])) {
+            $this->loadExistingMappings('deal');
+        }
+
+        $cloudDeals = $this->cloudAPI->getDeals(['*', 'UF_*'], $this->getIncrementalFilter());
         $total = count($cloudDeals);
         $created = 0;
         $skipped = 0;
@@ -1395,6 +1512,11 @@ class MigrationService
             $this->checkStop();
             $this->savePhaseProgress('deals', $i + 1, $total);
             $cloudId = (int)$deal['ID'];
+
+            if ($this->isAlreadyMigrated('deal', $cloudId, 'dealMapCache')) {
+                $skipped++;
+                continue;
+            }
 
             // Fast title lookup from pre-built cache
             $existing = null;
@@ -1445,6 +1567,11 @@ class MigrationService
                     $this->dealMapCache[$cloudId] = $newId;
                     $this->saveToMap('deal', $cloudId, $newId);
                     $created++;
+                    if (!empty($deal['DATE_CREATE'])) {
+                        try {
+                            BoxD7Service::backdateEntity('b_crm_deal', $newId, $deal['DATE_CREATE'], $deal['DATE_MODIFY'] ?? '');
+                        } catch (\Throwable $e) { /* date preservation is non-critical */ }
+                    }
 
                     $this->linkDealContacts($cloudId, $newId);
                 }
@@ -1527,7 +1654,12 @@ class MigrationService
 
     private function migrateLeads()
     {
-        $cloudLeads = $this->cloudAPI->getLeads(['*', 'UF_*', 'PHONE', 'EMAIL']);
+        // In incremental mode, pre-load existing mappings for timeline/activities
+        if (!empty($this->plan['settings']['incremental'])) {
+            $this->loadExistingMappings('lead');
+        }
+
+        $cloudLeads = $this->cloudAPI->getLeads(['*', 'UF_*', 'PHONE', 'EMAIL'], $this->getIncrementalFilter());
         $total = count($cloudLeads);
         $created = 0;
         $skipped = 0;
@@ -1548,6 +1680,11 @@ class MigrationService
             $this->checkStop();
             $this->savePhaseProgress('leads', $i + 1, $total);
             $cloudId = (int)$lead['ID'];
+
+            if ($this->isAlreadyMigrated('lead', $cloudId, 'leadMapCache')) {
+                $skipped++;
+                continue;
+            }
 
             $existing = $this->findDuplicate('lead', $lead, $matchBy);
             if ($existing) {
@@ -1582,6 +1719,11 @@ class MigrationService
                     $this->leadMapCache[$cloudId] = $newId;
                     $this->saveToMap('lead', $cloudId, $newId);
                     $created++;
+                    if (!empty($lead['DATE_CREATE'])) {
+                        try {
+                            BoxD7Service::backdateEntity('b_crm_lead', $newId, $lead['DATE_CREATE'], $lead['DATE_MODIFY'] ?? '');
+                        } catch (\Throwable $e) { /* date preservation is non-critical */ }
+                    }
                 }
             } catch (\Throwable $e) {
                 $errors++;
@@ -1662,7 +1804,7 @@ class MigrationService
                         $req['ENTITY_ID'] = $boxEntityId;
 
                         try {
-                            $boxReqId = $this->boxAPI->addRequisite($req);
+                            $boxReqId = BoxD7Service::addRequisite($req);
                             if ($boxReqId) {
                                 $totalReq++;
                                 // Migrate bank details for this requisite
@@ -1674,7 +1816,7 @@ class MigrationService
                                               $bank['CREATED_BY_ID'], $bank['MODIFY_BY_ID']);
                                         $bank['ENTITY_ID'] = $boxReqId;
                                         try {
-                                            $this->boxAPI->addBankDetail($bank);
+                                            BoxD7Service::addBankDetail($bank);
                                             $totalBank++;
                                         } catch (\Throwable $e) {
                                             $errors++;
@@ -1704,6 +1846,11 @@ class MigrationService
 
     private function migrateTimeline()
     {
+        // Allow attaching files to timeline comments from any user context
+        if (\Bitrix\Main\Loader::includeModule('disk')) {
+            \Bitrix\Disk\Uf\FileUserType::setValueForAllowEdit('CRM_TIMELINE', true);
+        }
+
         // CRM entity type IDs: Lead=1, Deal=2, Contact=3, Company=4
         $entityTypes = [
             'company' => ['typeId' => 4, 'cache' => &$this->companyMapCache],
@@ -1744,31 +1891,61 @@ class MigrationService
                 $processedEntities++;
                 $this->savePhaseProgress('timeline', $processedEntities, $totalEntities);
 
-                // Migrate activities
+                // Migrate activities via D7
                 try {
                     $activities = $this->cloudAPI->getActivities($typeId, $cloudId);
                     foreach ($activities as $activity) {
                         $this->rateLimit();
                         $fields = $this->buildActivityFields($activity, $typeId, $boxId);
 
-                        // Migrate activity files (STORAGE_ELEMENT_IDS)
-                        $storageIds = $activity['STORAGE_ELEMENT_IDS'] ?? [];
-                        if (!empty($storageIds) && is_array($storageIds) && $this->migrationFolderId > 0) {
-                            $boxFileIds = $this->migrateActivityFiles($storageIds);
-                            if (!empty($boxFileIds)) {
-                                $fields['STORAGE_ELEMENT_IDS'] = $boxFileIds;
+                        // Convert dates to Bitrix format DD.MM.YYYY HH:MI:SS
+                        foreach (['START_TIME', 'END_TIME', 'DEADLINE'] as $dk) {
+                            if (!empty($fields[$dk]) && !preg_match('/^\d{2}\.\d{2}\.\d{4}/', $fields[$dk])) {
+                                $ts = strtotime($fields[$dk]);
+                                $fields[$dk] = $ts ? date('d.m.Y H:i:s', $ts) : date('d.m.Y H:i:s');
                             }
                         }
+                        if (empty($fields['END_TIME'])) $fields['END_TIME'] = $fields['START_TIME'] ?? date('d.m.Y H:i:s');
+                        if (empty($fields['START_TIME'])) $fields['START_TIME'] = $fields['END_TIME'];
 
                         try {
-                            $this->boxAPI->addActivity($fields);
+                            // Step 1: Create activity without files
+                            $actId = \CCrmActivity::Add($fields, false, false, ['REGISTER_SONET_EVENT' => false]);
+                            if (!$actId) {
+                                throw new \Exception(\CCrmActivity::GetLastErrorMessage() ?: 'CCrmActivity::Add returned 0');
+                            }
                             $totalActivities++;
+                            if (!empty($activity['CREATED'])) {
+                                try {
+                                    BoxD7Service::backdateEntity('b_crm_act', $actId, $activity['CREATED'], $activity['LAST_UPDATED'] ?? '');
+                                } catch (\Throwable $e) { /* date preservation is non-critical */ }
+                            }
+
+                            // Step 2: Attach recording files separately
+                            $actFiles = $activity['FILES'] ?? [];
+                            if (!empty($actFiles)) {
+                                foreach ($actFiles as $af) {
+                                    $fileId = (int)($af['id'] ?? 0);
+                                    if ($fileId <= 0) continue;
+                                    try {
+                                        $diskInfo = $this->cloudAPI->getDiskFile($fileId);
+                                        $downloadUrl = $diskInfo['DOWNLOAD_URL'] ?? '';
+                                        if (empty($downloadUrl)) continue;
+                                        $boxDiskId = $this->downloadCloudFileToBox($downloadUrl, $diskInfo['NAME'] ?? "rec_{$fileId}.mp3");
+                                        if ($boxDiskId > 0) {
+                                            \CCrmActivity::Update($actId, [
+                                                'STORAGE_TYPE_ID' => 3,
+                                                'STORAGE_ELEMENT_IDS' => [$boxDiskId],
+                                            ], false);
+                                        }
+                                    } catch (\Throwable $fe) { /* skip file error */ }
+                                }
+                            }
                         } catch (\Throwable $e) {
                             $errors++;
                             $errKey = substr($e->getMessage(), 0, 80);
                             $actInfo = $entityName . '#' . $cloudId . ' activity#' . ($activity['ID'] ?? '?') . ' type=' . ($activity['TYPE_ID'] ?? '?');
                             $this->addErrorDetail('timeline', $actInfo, $e->getMessage());
-                            // Show first 3 unique error types in main log
                             if (!isset($seenActivityErrors[$errKey])) {
                                 $seenActivityErrors[$errKey] = 0;
                                 $this->addLog("  Активность [$actInfo]: " . $e->getMessage());
@@ -1780,38 +1957,51 @@ class MigrationService
                     $this->addLog('  Ошибка получения активностей (' . $entityName . ' #' . $cloudId . '): ' . $e->getMessage());
                 }
 
-                // Migrate timeline comments
+                // Migrate timeline comments via D7 CommentEntry::create
                 try {
                     $comments = $this->cloudAPI->getTimelineComments($typeId, $cloudId);
                     foreach ($comments as $comment) {
                         $this->rateLimit();
-                        $fields = $this->buildTimelineCommentFields($comment, $typeId, $boxId);
 
-                        // Migrate comment files (if any)
+                        // Download files via disk.file.get (auth URL, not urlDownload)
+                        $diskFileIds = [];
                         $commentFiles = $comment['FILES'] ?? [];
-                        if (!empty($commentFiles) && is_array($commentFiles) && $this->migrationFolderId > 0) {
-                            $boxFileIds = [];
+                        if (!empty($commentFiles) && is_array($commentFiles)) {
                             foreach ($commentFiles as $cf) {
+                                $cfId = (int)($cf['id'] ?? 0);
+                                if ($cfId <= 0) continue;
                                 try {
-                                    $cfId = (int)($cf['FILE_ID'] ?? $cf['fileId'] ?? $cf['id'] ?? 0);
-                                    if ($cfId <= 0) continue;
-                                    $fileInfo = $this->cloudAPI->getDiskFile($cfId);
-                                    $this->rateLimit();
-                                    $downloadUrl = $fileInfo['DOWNLOAD_URL'] ?? '';
-                                    $fileName = $fileInfo['NAME'] ?? ('comment_file_' . $cfId);
-                                    if (empty($downloadUrl)) continue;
-                                    $boxId2 = $this->downloadCloudFileToBox($downloadUrl, $fileName);
-                                    if ($boxId2 > 0) $boxFileIds[] = $boxId2;
+                                    $diskInfo = $this->cloudAPI->getDiskFile($cfId);
+                                    $dlUrl = $diskInfo['DOWNLOAD_URL'] ?? '';
+                                    if (empty($dlUrl)) continue;
+                                    $boxDiskId = $this->downloadCloudFileToBox($dlUrl, $cf['name'] ?? $diskInfo['NAME'] ?? 'file');
+                                    if ($boxDiskId > 0) $diskFileIds[] = $boxDiskId;
                                 } catch (\Throwable $e) { /* skip */ }
-                            }
-                            if (!empty($boxFileIds)) {
-                                $fields['FILES'] = $boxFileIds;
                             }
                         }
 
                         try {
-                            $this->boxAPI->addTimelineComment($fields);
+                            $authorId = 1;
+                            if (!empty($comment['AUTHOR_ID'])) {
+                                $mapped = $this->mapUser($comment['AUTHOR_ID']);
+                                if ($mapped) $authorId = $mapped;
+                            }
+                            $createParams = [
+                                'TEXT' => $comment['COMMENT'] ?? '',
+                                'AUTHOR_ID' => $authorId,
+                                'BINDINGS' => [['ENTITY_TYPE_ID' => $typeId, 'ENTITY_ID' => $boxId]],
+                            ];
+                            if (!empty($diskFileIds)) {
+                                $createParams['FILES'] = array_map(fn($id) => 'n' . $id, $diskFileIds);
+                                $createParams['SETTINGS'] = ['HAS_FILES' => 'Y'];
+                            }
+                            $commentId = \Bitrix\Crm\Timeline\CommentEntry::create($createParams);
                             $totalComments++;
+                            if ($commentId > 0 && !empty($comment['CREATED'])) {
+                                try {
+                                    BoxD7Service::backdateEntity('b_crm_timeline', $commentId, $comment['CREATED']);
+                                } catch (\Throwable $e) { /* date preservation is non-critical */ }
+                            }
                         } catch (\Throwable $e) {
                             $errors++;
                             $errKey = substr($e->getMessage(), 0, 80);
@@ -1859,7 +2049,8 @@ class MigrationService
         if (!empty($activity['END_TIME']))   $fields['END_TIME']   = $activity['END_TIME'];
         if (!empty($activity['DEADLINE']))   $fields['DEADLINE']   = $activity['DEADLINE'];
 
-        // Map responsible
+        // Map responsible (required field — fallback to admin)
+        $fields['RESPONSIBLE_ID'] = 1;
         if (!empty($activity['RESPONSIBLE_ID'])) {
             $boxUser = $this->mapUser($activity['RESPONSIBLE_ID']);
             if ($boxUser) $fields['RESPONSIBLE_ID'] = $boxUser;
@@ -1869,16 +2060,15 @@ class MigrationService
         if (!empty($activity['PROVIDER_ID']))      $fields['PROVIDER_ID']      = $activity['PROVIDER_ID'];
         if (!empty($activity['PROVIDER_TYPE_ID'])) $fields['PROVIDER_TYPE_ID'] = $activity['PROVIDER_TYPE_ID'];
 
+        // ORIGIN_ID with VI_ prefix — required for call recording player in timeline
+        if (($activity['PROVIDER_ID'] ?? '') === 'VOXIMPLANT_CALL' && !empty($activity['FILES'])) {
+            $fields['ORIGIN_ID'] = 'VI_imported_' . ($activity['ID'] ?? 0) . '.' . time();
+        }
+
         // Call-specific fields
         if (!empty($activity['PHONE_NUMBER']))  $fields['PHONE_NUMBER']  = $activity['PHONE_NUMBER'];
         if (isset($activity['CALL_DURATION']) && $activity['CALL_DURATION'] !== '')
             $fields['CALL_DURATION'] = $activity['CALL_DURATION'];
-
-        // Call recording: append URL to description since file can't be transferred
-        if (!empty($activity['CALL_RECORD_URL'])) {
-            $fields['DESCRIPTION'] = ($fields['DESCRIPTION'] ? $fields['DESCRIPTION'] . "\n\n" : '')
-                . '[Запись звонка: ' . $activity['CALL_RECORD_URL'] . ']';
-        }
 
         // Communications (phone numbers, emails linked to activity)
         if (!empty($activity['COMMUNICATIONS']) && is_array($activity['COMMUNICATIONS'])) {
@@ -1890,8 +2080,10 @@ class MigrationService
 
     private function buildTimelineCommentFields($comment, $entityTypeId, $boxEntityId)
     {
+        // crm.timeline.comment.add requires ENTITY_TYPE as string
+        $typeMap = [1 => 'lead', 2 => 'deal', 3 => 'contact', 4 => 'company'];
         $fields = [
-            'ENTITY_TYPE_ID' => $entityTypeId,
+            'ENTITY_TYPE' => $typeMap[$entityTypeId] ?? 'deal',
             'ENTITY_ID' => $boxEntityId,
             'COMMENT' => $comment['COMMENT'] ?? '',
         ];
@@ -2124,14 +2316,28 @@ class MigrationService
             }
 
             try {
-                $cloudItems = $this->cloudAPI->getSmartProcessItems($cloudEntityTypeId);
+                $spFilter = $this->getIncrementalFilter();
+                // Smart process items use lowercase 'createdTime' instead of DATE_CREATE
+                if (!empty($spFilter['>DATE_CREATE'])) {
+                    $spFilter['>createdTime'] = $spFilter['>DATE_CREATE'];
+                    unset($spFilter['>DATE_CREATE']);
+                }
+                $cloudItems = $this->cloudAPI->getSmartProcessItems($cloudEntityTypeId, ['*', 'uf_*'], $spFilter);
                 foreach ($cloudItems as $item) {
                     $this->rateLimit();
                     $fields = $this->buildSmartProcessItemFields($item, $spId);
 
                     try {
-                        $this->boxAPI->addSmartProcessItem($boxEntityTypeId, $fields);
-                        $totalItems++;
+                        $newItemId = BoxD7Service::addSmartItem($boxEntityTypeId, $fields);
+                        if ($newItemId > 0) {
+                            $totalItems++;
+                            if (!empty($item['createdTime'])) {
+                                try {
+                                    $table = 'b_crm_dynamic_items_' . $boxEntityTypeId;
+                                    BoxD7Service::backdateEntity($table, $newItemId, $item['createdTime'], $item['updatedTime'] ?? '');
+                                } catch (\Throwable $e) { /* date preservation is non-critical */ }
+                            }
+                        }
                     } catch (\Throwable $e) {
                         $this->addLog("  Ошибка создания записи SP #{$item['id']}: " . $e->getMessage());
                     }

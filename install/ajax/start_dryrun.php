@@ -5,6 +5,12 @@ define('DisableEventsCheck', true);
 
 require_once($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php');
 
+global $USER;
+if (!$USER->IsAdmin()) {
+    echo json_encode(['success' => false, 'error' => 'Access denied']);
+    die();
+}
+
 use Bitrix\Main\Application;
 use Bitrix\Main\Config\Option;
 use Bitrix\Main\Loader;
