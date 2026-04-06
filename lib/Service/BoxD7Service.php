@@ -14,6 +14,30 @@ use Bitrix\Main\Loader;
  */
 class BoxD7Service
 {
+    private static $employeeGroupId = null;
+
+    private static function getEmployeeGroupId(): int
+    {
+        if (self::$employeeGroupId !== null) return self::$employeeGroupId;
+
+        // Try to find group by string_id 'EMPLOYEES' (standard Bitrix24 group)
+        $res = \CGroup::GetList('', '', ['STRING_ID' => 'EMPLOYEES']);
+        if ($row = $res->Fetch()) {
+            self::$employeeGroupId = (int)$row['ID'];
+            return self::$employeeGroupId;
+        }
+
+        // Fallback: search by name
+        $res = \CGroup::GetList('', '', ['NAME' => 'Сотрудники']);
+        if ($row = $res->Fetch()) {
+            self::$employeeGroupId = (int)$row['ID'];
+            return self::$employeeGroupId;
+        }
+
+        self::$employeeGroupId = 0;
+        return 0;
+    }
+
     private static function ensureCrmLoaded(): void
     {
         if (!Loader::includeModule('crm')) {
@@ -99,6 +123,15 @@ class BoxD7Service
 
         if (!$id) {
             throw new \Exception('CUser::Add error: ' . $user->LAST_ERROR);
+        }
+
+        // Add user to "Employees" group — required for portal access
+        $employeeGroupId = self::getEmployeeGroupId();
+        if ($employeeGroupId > 0) {
+            \CUser::SetUserGroup((int)$id, array_merge(
+                \CUser::GetUserGroup((int)$id),
+                [$employeeGroupId]
+            ));
         }
 
         if ($sendInvite) {
@@ -908,6 +941,42 @@ class BoxD7Service
         $op->disableAutomation();
         $result = $op->launch();
         return $result->isSuccess() ? $item->getId() : 0;
+    }
+
+    // =========================================================================
+    // CRM User Fields (D7)
+    // =========================================================================
+
+    /**
+     * Delete a CRM user field by ID via D7.
+     * REST crm.*.userfield.delete often fails through external proxy.
+     */
+    public static function deleteUserfield(int $fieldId): bool
+    {
+        $userField = new \CUserTypeEntity();
+        return (bool)$userField->Delete($fieldId);
+    }
+
+    /**
+     * Get all CRM user fields for an entity type via D7.
+     */
+    public static function getUserfields(string $entityType): array
+    {
+        $entityIdMap = [
+            'deal' => 'CRM_DEAL',
+            'contact' => 'CRM_CONTACT',
+            'company' => 'CRM_COMPANY',
+            'lead' => 'CRM_LEAD',
+        ];
+        $entityId = $entityIdMap[$entityType] ?? '';
+        if (empty($entityId)) return [];
+
+        $result = [];
+        $res = \CUserTypeEntity::GetList([], ['ENTITY_ID' => $entityId]);
+        while ($row = $res->Fetch()) {
+            $result[] = $row;
+        }
+        return $result;
     }
 
     /**

@@ -20,7 +20,7 @@
         tasks: 'Задачи'
     };
 
-    var PHASE_ORDER = ['departments', 'users', 'crm_fields', 'pipelines', 'companies', 'contacts', 'deals', 'leads', 'timeline', 'workgroups', 'smart_processes', 'tasks'];
+    var PHASE_ORDER = ['departments', 'users', 'crm_fields', 'pipelines', 'companies', 'contacts', 'leads', 'deals', 'timeline', 'workgroups', 'smart_processes', 'tasks'];
 
     var logsAutoRefreshTimer = null;
 
@@ -463,14 +463,14 @@
             });
         }));
 
-        // 6. Deals
-        sections.push(buildPlanSection('deals', 'Сделки', crm.deals || 0, plan.deals, function(body) {
-            buildDuplicateSettings(body, 'deals', plan, DUPLICATE_CRITERIA, DUPLICATE_ACTIONS);
-        }));
-
-        // 7. Leads
+        // 6. Leads
         sections.push(buildPlanSection('leads', 'Лиды', crm.leads || 0, plan.leads, function(body) {
             buildDuplicateSettings(body, 'leads', plan, DUPLICATE_CRITERIA, DUPLICATE_ACTIONS);
+        }));
+
+        // 7. Deals
+        sections.push(buildPlanSection('deals', 'Сделки', crm.deals || 0, plan.deals, function(body) {
+            buildDuplicateSettings(body, 'deals', plan, DUPLICATE_CRITERIA, DUPLICATE_ACTIONS);
         }));
 
         // 8. Timeline
@@ -781,7 +781,7 @@
 
         // Duplicate settings
         plan.duplicate_settings = {};
-        ['companies', 'contacts', 'deals', 'leads'].forEach(function(entityKey) {
+        ['companies', 'contacts', 'leads', 'deals'].forEach(function(entityKey) {
             var critCbs = builder.querySelectorAll('[data-dup-criteria="' + entityKey + '"]');
             var actionSel = builder.querySelector('[data-dup-action="' + entityKey + '"]');
             if (critCbs.length === 0) return;
@@ -841,7 +841,7 @@
             smart_processes: 'Смарт-процессы', crm_custom_fields: 'Польз. поля CRM'
         };
 
-        var order = ['departments', 'users', 'companies', 'contacts', 'pipelines', 'deals', 'leads', 'timeline', 'tasks', 'workgroups', 'smart_processes', 'crm_custom_fields'];
+        var order = ['departments', 'users', 'companies', 'contacts', 'pipelines', 'leads', 'deals', 'timeline', 'tasks', 'workgroups', 'smart_processes', 'crm_custom_fields'];
         order.forEach(function(key) {
             if (!plan[key]) return;
             var enabled = plan[key].enabled !== false;

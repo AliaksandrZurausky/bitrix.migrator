@@ -16,11 +16,6 @@ use Bitrix\Main\Loader;
 
 header('Content-Type: application/json');
 
-if (!check_bitrix_sessid()) {
-    echo json_encode(['success' => false, 'error' => 'Invalid sessid']);
-    die();
-}
-
 if (!Loader::includeModule('bitrix_migrator')) {
     echo json_encode(['success' => false, 'error' => 'Module not loaded']);
     die();

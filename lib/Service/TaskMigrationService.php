@@ -20,6 +20,10 @@ class TaskMigrationService
     private $groupMapCache   = []; // cloud group name => box group ID
     private $taskIdMap       = []; // cloud task ID => box task ID
     private $crmEntityCache  = []; // "TYPE_TITLE" => box entity ID
+    private $companyMapCache = [];
+    private $contactMapCache = [];
+    private $dealMapCache    = [];
+    private $leadMapCache    = [];
 
     private $migrationFolderId = 0;
     private $log               = [];
@@ -47,6 +51,14 @@ class TaskMigrationService
     public function setGroupMapCache(array $cache)
     {
         $this->groupMapCache = $cache;
+    }
+
+    public function setCrmMapCaches(array $companyMap, array $contactMap, array $dealMap, array $leadMap)
+    {
+        $this->companyMapCache = $companyMap;
+        $this->contactMapCache = $contactMap;
+        $this->dealMapCache = $dealMap;
+        $this->leadMapCache = $leadMap;
     }
 
     public function setLogFile($path)
@@ -451,47 +463,27 @@ class TaskMigrationService
     // CRM bindings
     // =========================================================================
 
-    private function mapCrmBindings(array $cloudBindings)
+    private function mapCrmBindings(array $cloudBindings): array
     {
         $boxBindings = [];
 
         foreach ($cloudBindings as $binding) {
-            try {
-                // Format: "C_123", "D_456", "L_789", "CO_12"
-                if (!preg_match('/^(C|D|L|CO)_(\d+)$/', $binding, $m)) continue;
+            // Format: "CO_20", "C_456", "D_789", "L_012"
+            if (!preg_match('/^(CO|C|D|L)_(\d+)$/', $binding, $m)) continue;
 
-                $entityType = $m[1];
-                $cloudId    = (int)$m[2];
+            $prefix  = $m[1];
+            $cloudId = (int)$m[2];
 
-                // Get entity title from cloud
-                $cloudEntity = $this->cloudAPI->getCrmEntity($entityType, $cloudId);
-                if (empty($cloudEntity)) continue;
+            $boxId = 0;
+            switch ($prefix) {
+                case 'CO': $boxId = $this->companyMapCache[$cloudId] ?? 0; break;
+                case 'C':  $boxId = $this->contactMapCache[$cloudId] ?? 0; break;
+                case 'D':  $boxId = $this->dealMapCache[$cloudId] ?? 0; break;
+                case 'L':  $boxId = $this->leadMapCache[$cloudId] ?? 0; break;
+            }
 
-                $title = $cloudEntity['TITLE'] ?? '';
-                if ($entityType === 'CO') {
-                    $title = trim(($cloudEntity['NAME'] ?? '') . ' ' . ($cloudEntity['LAST_NAME'] ?? ''));
-                }
-
-                if (empty($title)) continue;
-
-                // Check cache
-                $cacheKey = $entityType . '_' . $title;
-                if (isset($this->crmEntityCache[$cacheKey])) {
-                    $boxId = $this->crmEntityCache[$cacheKey];
-                } else {
-                    // Find on box by title
-                    $boxEntity = $this->boxAPI->findCrmEntityByTitle($entityType, $title);
-                    $boxId = $boxEntity ? (int)($boxEntity['ID'] ?? 0) : 0;
-                    $this->crmEntityCache[$cacheKey] = $boxId;
-                }
-
-                if ($boxId > 0) {
-                    $boxBindings[] = $entityType . '_' . $boxId;
-                }
-
-                usleep(333000);
-            } catch (\Throwable $e) {
-                $this->addLog('  CRM привязка ' . $binding . ': ' . $e->getMessage());
+            if ($boxId > 0) {
+                $boxBindings[] = $prefix . '_' . $boxId;
             }
         }
 

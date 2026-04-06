@@ -25,6 +25,9 @@ class MigrationService
     private $leadMapCache = [];      // cloud lead ID => box lead ID
     private $pipelineMapCache = [];  // cloud category ID => box category ID
     private $stageMapCache = [];     // cloud status ID => box status ID
+    private $smartProcessMapCache = [];  // cloud entityTypeId => box entityTypeId
+    private $smartItemMapCache = [];     // cloud item ID => box item ID
+    private $smartItemsByType = [];      // boxEntityTypeId => [cloudItemId => boxItemId, ...]
 
     private $log = [];
     private $opCount = 0;
@@ -40,12 +43,12 @@ class MigrationService
         'currencies',
         'companies',
         'contacts',
-        'deals',
         'leads',
+        'deals',
         'requisites',
-        'timeline',
-        'workgroups',
         'smart_processes',
+        'workgroups',
+        'timeline',
         'tasks',
     ];
 
@@ -57,12 +60,12 @@ class MigrationService
         'currencies'      => 'Валюты',
         'companies'       => 'Компании',
         'contacts'        => 'Контакты',
-        'deals'           => 'Сделки',
         'leads'           => 'Лиды',
+        'deals'           => 'Сделки',
         'requisites'      => 'Реквизиты',
-        'timeline'        => 'Таймлайн и активности',
-        'workgroups'      => 'Рабочие группы',
         'smart_processes' => 'Смарт-процессы',
+        'workgroups'      => 'Рабочие группы',
+        'timeline'        => 'Таймлайн и активности',
         'tasks'           => 'Задачи',
     ];
 
@@ -130,8 +133,14 @@ class MigrationService
                 $this->savePhaseStatus($phase, 'done');
                 $this->addLog("[$phase] Завершено");
 
-                // Free memory between phases
+                // Free memory between phases — Bitrix cache engine leaks memory
                 gc_collect_cycles();
+                try {
+                    $app = \Bitrix\Main\Application::getInstance();
+                    $app->getManagedCache()->cleanAll();
+                    $app->getTaggedCache()->clearByTag('*');
+                } catch (\Throwable $e) {}
+                $this->addLog('  Память: ' . round(memory_get_usage(true) / 1024 / 1024) . 'MB');
             }
 
             Option::set($this->moduleId, 'last_migration_timestamp', date('c'));
@@ -175,8 +184,21 @@ class MigrationService
     // Stop check
     // =========================================================================
 
+    private $checkStopCounter = 0;
+
     private function checkStop()
     {
+        $this->checkStopCounter++;
+        // Periodic memory cleanup every 100 iterations — Bitrix cache engine leaks heavily
+        if ($this->checkStopCounter % 100 === 0) {
+            gc_collect_cycles();
+            try {
+                $app = \Bitrix\Main\Application::getInstance();
+                $app->getManagedCache()->cleanAll();
+                $app->getTaggedCache()->clearByTag('*');
+            } catch (\Throwable $e) {}
+        }
+
         $flag = Option::get($this->moduleId, 'migration_stop', '0');
         if ($flag === '1') {
             throw new MigrationStoppedException('Остановлено пользователем');
@@ -905,11 +927,11 @@ class MigrationService
 
         // Setting: which entity types should have fields deleted before migration
         $deleteFieldsSettings = $this->plan['delete_userfields'] ?? [];
-        $deleteFieldsEnabled = ($deleteFieldsSettings['enabled'] ?? true) === true;
+        $deleteFieldsEnabled = ($deleteFieldsSettings['enabled'] ?? false) === true;
 
         foreach ($entityTypes as $entityType) {
             $cloudFields = $allCloudFields[$entityType];
-            $boxFields = $this->boxAPI->getUserfields($entityType);
+            $boxFields = BoxD7Service::getUserfields($entityType);
 
             // Get formLabel from crm.*.fields — more reliable than EDIT_FORM_LABEL in userfield.list
             $fieldSchema = [];
@@ -931,12 +953,11 @@ class MigrationService
             if ($shouldDelete && !empty($boxFields)) {
                 $this->addLog("Удаление пользовательских полей ($entityType): " . count($boxFields) . " шт.");
                 foreach ($boxFields as $f) {
-                    $this->rateLimit();
                     $fId = (int)($f['ID'] ?? 0);
                     $fName = $f['FIELD_NAME'] ?? '';
                     if (!$fId) continue;
                     try {
-                        $this->boxAPI->deleteUserfield($entityType, $fId);
+                        BoxD7Service::deleteUserfield($fId);
                         $totalDeleted++;
                     } catch (\Throwable $e) {
                         $this->addLog("  Ошибка удаления поля $fName ($entityType): " . $e->getMessage());
@@ -1119,33 +1140,49 @@ class MigrationService
         // Get current box stages for this entity
         $boxStatuses = $this->boxAPI->getStatuses();
         $boxStagesByStatusId = [];
+        $boxStagesByName = [];
         foreach ($boxStatuses as $s) {
             if (($s['ENTITY_ID'] ?? '') === $boxEntityId) {
                 $boxStagesByStatusId[$s['STATUS_ID']] = $s;
+                $name = mb_strtolower(trim($s['NAME'] ?? ''));
+                if ($name) $boxStagesByName[$name] = $s;
             }
         }
 
         foreach ($cloudStages as $stage) {
             $this->rateLimit();
-            $statusId = $stage['STATUS_ID'] ?? '';
+            $cloudStatusId = $stage['STATUS_ID'] ?? '';
 
-            if (isset($boxStagesByStatusId[$statusId])) {
-                // Stage exists — map it
-                $this->stageMapCache[$statusId] = $statusId;
+            // Remap STATUS_ID prefix for custom pipelines: C5:NEW → C12:NEW
+            $boxStatusId = $cloudStatusId;
+            if ($cloudEntityId !== $boxEntityId && preg_match('/^C(\d+):(.+)$/', $cloudStatusId, $m)) {
+                $boxCatId = str_replace('DEAL_STAGE_', '', $boxEntityId);
+                $boxStatusId = 'C' . $boxCatId . ':' . $m[2];
+            }
+
+            if (isset($boxStagesByStatusId[$boxStatusId])) {
+                $this->stageMapCache[$cloudStatusId] = $boxStatusId;
             } else {
-                // Create stage on box
-                try {
-                    $this->boxAPI->addStatus([
-                        'ENTITY_ID' => $boxEntityId,
-                        'STATUS_ID' => $statusId,
-                        'NAME' => $stage['NAME'] ?? $statusId,
-                        'SORT' => $stage['SORT'] ?? 10,
-                        'COLOR' => $stage['COLOR'] ?? '',
-                        'SEMANTICS' => $stage['SEMANTICS'] ?? '',
-                    ]);
-                    $this->stageMapCache[$statusId] = $statusId;
-                } catch (\Throwable $e) {
-                    $this->stageMapCache[$statusId] = $statusId;
+                // Try match by name (stage may exist with different prefix)
+                $stageName = mb_strtolower(trim($stage['NAME'] ?? ''));
+                if ($stageName && isset($boxStagesByName[$stageName])) {
+                    $this->stageMapCache[$cloudStatusId] = $boxStagesByName[$stageName]['STATUS_ID'];
+                } else {
+                    // Create stage on box with remapped STATUS_ID
+                    try {
+                        $this->boxAPI->addStatus([
+                            'ENTITY_ID' => $boxEntityId,
+                            'STATUS_ID' => $boxStatusId,
+                            'NAME' => $stage['NAME'] ?? $cloudStatusId,
+                            'SORT' => $stage['SORT'] ?? 10,
+                            'COLOR' => $stage['COLOR'] ?? '',
+                            'SEMANTICS' => $stage['SEMANTICS'] ?? '',
+                        ]);
+                        $this->stageMapCache[$cloudStatusId] = $boxStatusId;
+                    } catch (\Throwable $e) {
+                        $this->stageMapCache[$cloudStatusId] = $boxStatusId;
+                        $this->addLog("  Ошибка создания стадии '{$stage['NAME']}' ($boxStatusId): " . $e->getMessage());
+                    }
                 }
             }
         }
@@ -1207,12 +1244,12 @@ class MigrationService
             $this->loadExistingMappings('company');
         }
 
-        $cloudCompanies = $this->cloudAPI->getCompanies(['*', 'UF_*', 'PHONE', 'EMAIL'], $this->getIncrementalFilter());
-        $total = count($cloudCompanies);
+        $total = $this->cloudAPI->getCompaniesCount();
         $created = 0;
         $skipped = 0;
         $updated = 0;
         $errors = 0;
+        $processed = 0;
 
         $dupSettings = $this->plan['duplicate_settings']['companies'] ?? [];
         $matchBy = $dupSettings['match_by'] ?? ['TITLE'];
@@ -1221,17 +1258,25 @@ class MigrationService
         // Pre-build box companies title cache to avoid per-item API calls
         $boxCompaniesByTitle = [];
         if (in_array('TITLE', $matchBy)) {
-            $allBoxCompanies = $this->boxAPI->fetchAll('crm.company.list', ['select' => ['ID', 'TITLE']]);
-            foreach ($allBoxCompanies as $c) {
-                $t = mb_strtolower(trim($c['TITLE'] ?? ''));
-                if ($t && !isset($boxCompaniesByTitle[$t])) $boxCompaniesByTitle[$t] = (int)$c['ID'];
-            }
+            $this->boxAPI->fetchBatched('crm.company.list', ['select' => ['ID', 'TITLE']], function ($batch) use (&$boxCompaniesByTitle) {
+                foreach ($batch as $c) {
+                    $t = mb_strtolower(trim($c['TITLE'] ?? ''));
+                    if ($t && !isset($boxCompaniesByTitle[$t])) $boxCompaniesByTitle[$t] = (int)$c['ID'];
+                }
+            });
             $this->addLog('Кэш компаний box: ' . count($boxCompaniesByTitle) . ' записей');
         }
 
-        foreach ($cloudCompanies as $i => $company) {
-            $this->checkStop();
-            $this->savePhaseProgress('companies', $i + 1, $total);
+        $params = ['select' => ['*', 'UF_*', 'PHONE', 'EMAIL']];
+        $filter = $this->getIncrementalFilter();
+        if (!empty($filter)) $params['filter'] = $filter;
+
+        $self = $this;
+        $this->cloudAPI->fetchBatched('crm.company.list', $params, function ($batch) use ($self, &$created, &$skipped, &$updated, &$errors, &$processed, $total, $dupSettings, $matchBy, $dupAction, &$boxCompaniesByTitle) {
+        foreach ($batch as $company) {
+            $self->checkStop();
+            $processed++;
+            $self->savePhaseProgress('companies', $processed, $total);
             $cloudId = (int)$company['ID'];
 
             // Skip if already migrated (HL-block check)
@@ -1288,9 +1333,10 @@ class MigrationService
                 }
             } catch (\Throwable $e) {
                 $errors++;
-                $this->addLog("  Ошибка создания компании #{$cloudId}: " . $e->getMessage());
+                $self->addLog("  Ошибка создания компании #{$cloudId}: " . $e->getMessage());
             }
         }
+        }); // end fetchBatched callback
 
         $this->addLog("Компании: создано=$created, обновлено=$updated, пропущено=$skipped, ошибок=$errors из $total");
         $this->saveStats(['companies' => ['total' => $total, 'created' => $created, 'updated' => $updated, 'skipped' => $skipped, 'errors' => $errors]]);
@@ -1301,7 +1347,9 @@ class MigrationService
         $fields = [];
         $copy = ['TITLE', 'COMPANY_TYPE', 'INDUSTRY', 'EMPLOYEES', 'REVENUE', 'CURRENCY_ID',
                  'COMMENTS', 'OPENED', 'ADDRESS', 'ADDRESS_2', 'ADDRESS_CITY',
-                 'ADDRESS_POSTAL_CODE', 'ADDRESS_REGION', 'ADDRESS_PROVINCE', 'ADDRESS_COUNTRY'];
+                 'ADDRESS_POSTAL_CODE', 'ADDRESS_REGION', 'ADDRESS_PROVINCE', 'ADDRESS_COUNTRY',
+                 'SOURCE_ID', 'SOURCE_DESCRIPTION', 'BANKING_DETAILS',
+                 'UTM_SOURCE', 'UTM_MEDIUM', 'UTM_CAMPAIGN', 'UTM_CONTENT', 'UTM_TERM'];
         foreach ($copy as $k) {
             if (isset($company[$k]) && $company[$k] !== '') $fields[$k] = $company[$k];
         }
@@ -1341,37 +1389,44 @@ class MigrationService
             $this->loadExistingMappings('contact');
         }
 
-        $cloudContacts = $this->cloudAPI->getContacts(['*', 'UF_*', 'PHONE', 'EMAIL'], $this->getIncrementalFilter());
-        $total = count($cloudContacts);
+        $total = $this->cloudAPI->getContactsCount();
         $created = 0;
         $skipped = 0;
         $updated = 0;
         $errors = 0;
+        $processed = 0;
 
         $dupSettings = $this->plan['duplicate_settings']['contacts'] ?? [];
         $matchBy = $dupSettings['match_by'] ?? ['EMAIL'];
         $dupAction = $dupSettings['action'] ?? 'skip';
 
-        foreach ($cloudContacts as $i => $contact) {
-            $this->checkStop();
-            $this->savePhaseProgress('contacts', $i + 1, $total);
+        $params = ['select' => ['*', 'UF_*', 'PHONE', 'EMAIL']];
+        $filter = $this->getIncrementalFilter();
+        if (!empty($filter)) $params['filter'] = $filter;
+
+        $self = $this;
+        $this->cloudAPI->fetchBatched('crm.contact.list', $params, function ($batch) use ($self, &$created, &$skipped, &$updated, &$errors, &$processed, $total, $dupSettings, $matchBy, $dupAction) {
+        foreach ($batch as $contact) {
+            $self->checkStop();
+            $processed++;
+            $self->savePhaseProgress('contacts', $processed, $total);
             $cloudId = (int)$contact['ID'];
 
-            if ($this->isAlreadyMigrated('contact', $cloudId, 'contactMapCache')) {
+            if ($self->isAlreadyMigrated('contact', $cloudId, 'contactMapCache')) {
                 $skipped++;
                 continue;
             }
 
-            $existing = $this->findDuplicate('contact', $contact, $matchBy);
+            $existing = $self->findDuplicate('contact', $contact, $matchBy);
             if ($existing) {
-                $this->contactMapCache[$cloudId] = (int)$existing['ID'];
+                $self->contactMapCache[$cloudId] = (int)$existing['ID'];
                 if ($dupAction === 'update') {
                     try {
-                        $fields = $this->buildContactFields($contact);
+                        $fields = $self->buildContactFields($contact);
                         BoxD7Service::updateContact((int)$existing['ID'], $fields);
                         $updated++;
                     } catch (\Throwable $e) {
-                        $this->addLog("  Ошибка обновления контакта #{$cloudId}: " . $e->getMessage());
+                        $self->addLog("  Ошибка обновления контакта #{$cloudId}: " . $e->getMessage());
                     }
                 } else if ($dupAction === 'skip') {
                     $skipped++;
@@ -1380,16 +1435,16 @@ class MigrationService
             }
 
             try {
-                $fields = $this->buildContactFields($contact);
+                $fields = $self->buildContactFields($contact);
                 if (!empty($contact['DATE_CREATE'])) $fields['DATE_CREATE'] = $contact['DATE_CREATE'];
                 if (!empty($contact['CREATED_BY_ID'])) {
-                    $cb = $this->mapUser($contact['CREATED_BY_ID']);
+                    $cb = $self->mapUser($contact['CREATED_BY_ID']);
                     if ($cb) $fields['CREATED_BY_ID'] = $cb;
                 }
                 $newId = BoxD7Service::createContact($fields);
                 if ($newId) {
-                    $this->contactMapCache[$cloudId] = $newId;
-                    $this->saveToMap('contact', $cloudId, $newId);
+                    $self->contactMapCache[$cloudId] = $newId;
+                    $self->saveToMap('contact', $cloudId, $newId);
                     $created++;
                     if (!empty($contact['DATE_CREATE'])) {
                         try {
@@ -1397,13 +1452,14 @@ class MigrationService
                         } catch (\Throwable $e) { /* date preservation is non-critical */ }
                     }
 
-                    $this->linkContactCompanies($cloudId, $newId, $contact);
+                    $self->linkContactCompanies($cloudId, $newId, $contact);
                 }
             } catch (\Throwable $e) {
                 $errors++;
-                $this->addLog("  Ошибка создания контакта #{$cloudId}: " . $e->getMessage());
+                $self->addLog("  Ошибка создания контакта #{$cloudId}: " . $e->getMessage());
             }
         }
+        }); // end fetchBatched callback
 
         $this->addLog("Контакты: создано=$created, обновлено=$updated, пропущено=$skipped, ошибок=$errors из $total");
         $this->saveStats(['contacts' => ['total' => $total, 'created' => $created, 'updated' => $updated, 'skipped' => $skipped, 'errors' => $errors]]);
@@ -1413,9 +1469,11 @@ class MigrationService
     {
         $fields = [];
         $copy = ['NAME', 'LAST_NAME', 'SECOND_NAME', 'POST', 'TYPE_ID', 'SOURCE_ID',
-                 'COMMENTS', 'OPENED', 'ADDRESS', 'ADDRESS_2', 'ADDRESS_CITY',
+                 'SOURCE_DESCRIPTION', 'COMMENTS', 'OPENED', 'EXPORT',
+                 'ADDRESS', 'ADDRESS_2', 'ADDRESS_CITY',
                  'ADDRESS_POSTAL_CODE', 'ADDRESS_REGION', 'ADDRESS_PROVINCE', 'ADDRESS_COUNTRY',
-                 'BIRTHDATE', 'HONORIFIC'];
+                 'BIRTHDATE', 'HONORIFIC',
+                 'UTM_SOURCE', 'UTM_MEDIUM', 'UTM_CAMPAIGN', 'UTM_CONTENT', 'UTM_TERM'];
         foreach ($copy as $k) {
             if (isset($contact[$k]) && $contact[$k] !== '') $fields[$k] = $contact[$k];
         }
@@ -1477,12 +1535,12 @@ class MigrationService
             $this->loadExistingMappings('deal');
         }
 
-        $cloudDeals = $this->cloudAPI->getDeals(['*', 'UF_*'], $this->getIncrementalFilter());
-        $total = count($cloudDeals);
+        $total = $this->cloudAPI->getDealsCount();
         $created = 0;
         $skipped = 0;
         $updated = 0;
         $errors = 0;
+        $processed = 0;
 
         $dupSettings = $this->plan['duplicate_settings']['deals'] ?? [];
         $matchBy = $dupSettings['match_by'] ?? ['TITLE'];
@@ -1500,20 +1558,28 @@ class MigrationService
         // Pre-build box deals title cache to avoid per-item API calls
         $boxDealsByTitle = [];
         if (in_array('TITLE', $matchBy)) {
-            $allBoxDeals = $this->boxAPI->fetchAll('crm.deal.list', ['select' => ['ID', 'TITLE']]);
-            foreach ($allBoxDeals as $d) {
-                $t = mb_strtolower(trim($d['TITLE'] ?? ''));
-                if ($t && !isset($boxDealsByTitle[$t])) $boxDealsByTitle[$t] = (int)$d['ID'];
-            }
+            $this->boxAPI->fetchBatched('crm.deal.list', ['select' => ['ID', 'TITLE']], function ($batch) use (&$boxDealsByTitle) {
+                foreach ($batch as $d) {
+                    $t = mb_strtolower(trim($d['TITLE'] ?? ''));
+                    if ($t && !isset($boxDealsByTitle[$t])) $boxDealsByTitle[$t] = (int)$d['ID'];
+                }
+            });
             $this->addLog('Кэш сделок box: ' . count($boxDealsByTitle) . ' записей');
         }
 
-        foreach ($cloudDeals as $i => $deal) {
-            $this->checkStop();
-            $this->savePhaseProgress('deals', $i + 1, $total);
+        $params = ['select' => ['*', 'UF_*']];
+        $filter = $this->getIncrementalFilter();
+        if (!empty($filter)) $params['filter'] = $filter;
+
+        $self = $this;
+        $this->cloudAPI->fetchBatched('crm.deal.list', $params, function ($batch) use ($self, &$created, &$skipped, &$updated, &$errors, &$processed, $total, $dupSettings, $matchBy, $dupAction, &$boxDealsByTitle, $boxCurrencies) {
+        foreach ($batch as $deal) {
+            $self->checkStop();
+            $processed++;
+            $self->savePhaseProgress('deals', $processed, $total);
             $cloudId = (int)$deal['ID'];
 
-            if ($this->isAlreadyMigrated('deal', $cloudId, 'dealMapCache')) {
+            if ($self->isAlreadyMigrated('deal', $cloudId, 'dealMapCache')) {
                 $skipped++;
                 continue;
             }
@@ -1526,15 +1592,15 @@ class MigrationService
             } else {
                 $nonTitleCriteria = array_values(array_filter($matchBy, fn($c) => $c !== 'TITLE'));
                 if ($nonTitleCriteria) {
-                    $existing = $this->findDuplicate('deal', $deal, $nonTitleCriteria);
+                    $existing = $self->findDuplicate('deal', $deal, $nonTitleCriteria);
                 }
             }
 
             if ($existing) {
-                $this->dealMapCache[$cloudId] = (int)$existing['ID'];
+                $self->dealMapCache[$cloudId] = (int)$existing['ID'];
                 if ($dupAction === 'update') {
                     try {
-                        $fields = $this->buildDealFields($deal);
+                        $fields = $self->buildDealFields($deal);
                         if (!empty($fields['CURRENCY_ID']) && !empty($boxCurrencies)
                             && !isset($boxCurrencies[$fields['CURRENCY_ID']])) {
                             unset($fields['CURRENCY_ID'], $fields['OPPORTUNITY'], $fields['TAX_VALUE']);
@@ -1542,7 +1608,7 @@ class MigrationService
                         BoxD7Service::updateDeal((int)$existing['ID'], $fields);
                         $updated++;
                     } catch (\Throwable $e) {
-                        $this->addLog("  Ошибка обновления сделки #{$cloudId}: " . $e->getMessage());
+                        $self->addLog("  Ошибка обновления сделки #{$cloudId}: " . $e->getMessage());
                     }
                 } else if ($dupAction === 'skip') {
                     $skipped++;
@@ -1551,7 +1617,7 @@ class MigrationService
             }
 
             try {
-                $fields = $this->buildDealFields($deal);
+                $fields = $self->buildDealFields($deal);
                 // Drop CURRENCY_ID if it doesn't exist on box (avoids HTTP 400)
                 if (!empty($fields['CURRENCY_ID']) && !empty($boxCurrencies)
                     && !isset($boxCurrencies[$fields['CURRENCY_ID']])) {
@@ -1559,13 +1625,13 @@ class MigrationService
                 }
                 if (!empty($deal['DATE_CREATE'])) $fields['DATE_CREATE'] = $deal['DATE_CREATE'];
                 if (!empty($deal['CREATED_BY_ID'])) {
-                    $cb = $this->mapUser($deal['CREATED_BY_ID']);
+                    $cb = $self->mapUser($deal['CREATED_BY_ID']);
                     if ($cb) $fields['CREATED_BY_ID'] = $cb;
                 }
                 $newId = BoxD7Service::createDeal($fields);
                 if ($newId) {
-                    $this->dealMapCache[$cloudId] = $newId;
-                    $this->saveToMap('deal', $cloudId, $newId);
+                    $self->dealMapCache[$cloudId] = $newId;
+                    $self->saveToMap('deal', $cloudId, $newId);
                     $created++;
                     if (!empty($deal['DATE_CREATE'])) {
                         try {
@@ -1573,13 +1639,14 @@ class MigrationService
                         } catch (\Throwable $e) { /* date preservation is non-critical */ }
                     }
 
-                    $this->linkDealContacts($cloudId, $newId);
+                    $self->linkDealContacts($cloudId, $newId);
                 }
             } catch (\Throwable $e) {
                 $errors++;
-                $this->addLog("  Ошибка создания сделки #{$cloudId}: " . $e->getMessage());
+                $self->addLog("  Ошибка создания сделки #{$cloudId}: " . $e->getMessage());
             }
         }
+        }); // end fetchBatched callback
 
         $this->addLog("Сделки: создано=$created, обновлено=$updated, пропущено=$skipped, ошибок=$errors из $total");
         $this->saveStats(['deals' => ['total' => $total, 'created' => $created, 'updated' => $updated, 'skipped' => $skipped, 'errors' => $errors]]);
@@ -1590,7 +1657,8 @@ class MigrationService
         $fields = [];
         $copy = ['TITLE', 'TYPE_ID', 'PROBABILITY', 'CURRENCY_ID', 'OPPORTUNITY',
                  'TAX_VALUE', 'COMMENTS', 'OPENED', 'CLOSED', 'BEGINDATE', 'CLOSEDATE',
-                 'SOURCE_ID', 'SOURCE_DESCRIPTION', 'ADDITIONAL_INFO'];
+                 'SOURCE_ID', 'SOURCE_DESCRIPTION', 'ADDITIONAL_INFO',
+                 'UTM_SOURCE', 'UTM_MEDIUM', 'UTM_CAMPAIGN', 'UTM_CONTENT', 'UTM_TERM'];
         foreach ($copy as $k) {
             if (isset($deal[$k]) && $deal[$k] !== '') $fields[$k] = $deal[$k];
         }
@@ -1614,6 +1682,10 @@ class MigrationService
 
         if (!empty($deal['CONTACT_ID']) && isset($this->contactMapCache[(int)$deal['CONTACT_ID']])) {
             $fields['CONTACT_ID'] = $this->contactMapCache[(int)$deal['CONTACT_ID']];
+        }
+
+        if (!empty($deal['LEAD_ID']) && isset($this->leadMapCache[(int)$deal['LEAD_ID']])) {
+            $fields['LEAD_ID'] = $this->leadMapCache[(int)$deal['LEAD_ID']];
         }
 
         foreach ($deal as $k => $v) {
@@ -1659,12 +1731,12 @@ class MigrationService
             $this->loadExistingMappings('lead');
         }
 
-        $cloudLeads = $this->cloudAPI->getLeads(['*', 'UF_*', 'PHONE', 'EMAIL'], $this->getIncrementalFilter());
-        $total = count($cloudLeads);
+        $total = $this->cloudAPI->getLeadsCount();
         $created = 0;
         $skipped = 0;
         $updated = 0;
         $errors = 0;
+        $processed = 0;
 
         $dupSettings = $this->plan['duplicate_settings']['leads'] ?? [];
         $matchBy = $dupSettings['match_by'] ?? ['TITLE'];
@@ -1676,26 +1748,33 @@ class MigrationService
             $boxCurrencies = $this->boxAPI->getCurrencyCodes();
         } catch (\Throwable $e) {}
 
-        foreach ($cloudLeads as $i => $lead) {
-            $this->checkStop();
-            $this->savePhaseProgress('leads', $i + 1, $total);
+        $params = ['select' => ['*', 'UF_*', 'PHONE', 'EMAIL']];
+        $filter = $this->getIncrementalFilter();
+        if (!empty($filter)) $params['filter'] = $filter;
+
+        $self = $this;
+        $this->cloudAPI->fetchBatched('crm.lead.list', $params, function ($batch) use ($self, &$created, &$skipped, &$updated, &$errors, &$processed, $total, $dupSettings, $matchBy, $dupAction, $boxCurrencies) {
+        foreach ($batch as $lead) {
+            $self->checkStop();
+            $processed++;
+            $self->savePhaseProgress('leads', $processed, $total);
             $cloudId = (int)$lead['ID'];
 
-            if ($this->isAlreadyMigrated('lead', $cloudId, 'leadMapCache')) {
+            if ($self->isAlreadyMigrated('lead', $cloudId, 'leadMapCache')) {
                 $skipped++;
                 continue;
             }
 
-            $existing = $this->findDuplicate('lead', $lead, $matchBy);
+            $existing = $self->findDuplicate('lead', $lead, $matchBy);
             if ($existing) {
-                $this->leadMapCache[$cloudId] = (int)$existing['ID'];
+                $self->leadMapCache[$cloudId] = (int)$existing['ID'];
                 if ($dupAction === 'update') {
                     try {
-                        $fields = $this->buildLeadFields($lead);
+                        $fields = $self->buildLeadFields($lead);
                         BoxD7Service::updateLead((int)$existing['ID'], $fields);
                         $updated++;
                     } catch (\Throwable $e) {
-                        $this->addLog("  Ошибка обновления лида #{$cloudId}: " . $e->getMessage());
+                        $self->addLog("  Ошибка обновления лида #{$cloudId}: " . $e->getMessage());
                     }
                 } else if ($dupAction === 'skip') {
                     $skipped++;
@@ -1704,20 +1783,20 @@ class MigrationService
             }
 
             try {
-                $fields = $this->buildLeadFields($lead);
+                $fields = $self->buildLeadFields($lead);
                 if (!empty($fields['CURRENCY_ID']) && !empty($boxCurrencies)
                     && !isset($boxCurrencies[$fields['CURRENCY_ID']])) {
                     unset($fields['CURRENCY_ID'], $fields['OPPORTUNITY']);
                 }
                 if (!empty($lead['DATE_CREATE'])) $fields['DATE_CREATE'] = $lead['DATE_CREATE'];
                 if (!empty($lead['CREATED_BY_ID'])) {
-                    $cb = $this->mapUser($lead['CREATED_BY_ID']);
+                    $cb = $self->mapUser($lead['CREATED_BY_ID']);
                     if ($cb) $fields['CREATED_BY_ID'] = $cb;
                 }
                 $newId = BoxD7Service::createLead($fields);
                 if ($newId) {
-                    $this->leadMapCache[$cloudId] = $newId;
-                    $this->saveToMap('lead', $cloudId, $newId);
+                    $self->leadMapCache[$cloudId] = $newId;
+                    $self->saveToMap('lead', $cloudId, $newId);
                     $created++;
                     if (!empty($lead['DATE_CREATE'])) {
                         try {
@@ -1727,9 +1806,10 @@ class MigrationService
                 }
             } catch (\Throwable $e) {
                 $errors++;
-                $this->addLog("  Ошибка создания лида #{$cloudId}: " . $e->getMessage());
+                $self->addLog("  Ошибка создания лида #{$cloudId}: " . $e->getMessage());
             }
         }
+        }); // end fetchBatched callback
 
         $this->addLog("Лиды: создано=$created, обновлено=$updated, пропущено=$skipped, ошибок=$errors из $total");
         $this->saveStats(['leads' => ['total' => $total, 'created' => $created, 'updated' => $updated, 'skipped' => $skipped, 'errors' => $errors]]);
@@ -1738,11 +1818,12 @@ class MigrationService
     private function buildLeadFields($lead)
     {
         $fields = [];
-        $copy = ['TITLE', 'NAME', 'LAST_NAME', 'SECOND_NAME', 'STATUS_ID', 'SOURCE_ID',
-                 'SOURCE_DESCRIPTION', 'CURRENCY_ID', 'OPPORTUNITY', 'COMMENTS', 'OPENED',
+        $copy = ['TITLE', 'NAME', 'LAST_NAME', 'SECOND_NAME', 'STATUS_ID', 'STATUS_SEMANTIC_ID',
+                 'SOURCE_ID', 'SOURCE_DESCRIPTION', 'CURRENCY_ID', 'OPPORTUNITY', 'COMMENTS', 'OPENED',
                  'COMPANY_TITLE', 'POST', 'ADDRESS', 'ADDRESS_2', 'ADDRESS_CITY',
                  'ADDRESS_POSTAL_CODE', 'ADDRESS_REGION', 'ADDRESS_PROVINCE', 'ADDRESS_COUNTRY',
-                 'BIRTHDATE', 'HONORIFIC'];
+                 'BIRTHDATE', 'HONORIFIC',
+                 'UTM_SOURCE', 'UTM_MEDIUM', 'UTM_CAMPAIGN', 'UTM_CONTENT', 'UTM_TERM'];
         foreach ($copy as $k) {
             if (isset($lead[$k]) && $lead[$k] !== '') $fields[$k] = $lead[$k];
         }
@@ -1761,6 +1842,8 @@ class MigrationService
 
         if (!empty($lead['PHONE'])) $fields['PHONE'] = $lead['PHONE'];
         if (!empty($lead['EMAIL'])) $fields['EMAIL'] = $lead['EMAIL'];
+        if (!empty($lead['WEB'])) $fields['WEB'] = $lead['WEB'];
+        if (!empty($lead['IM'])) $fields['IM'] = $lead['IM'];
 
         foreach ($lead as $k => $v) {
             if (strncmp($k, 'UF_CRM_', 7) === 0 && $v !== '' && $v !== null) {
@@ -1876,6 +1959,9 @@ class MigrationService
         $totalEntities = 0;
         foreach ($entityTypes as $config) {
             $totalEntities += count($config['cache']);
+        }
+        foreach ($this->smartItemsByType as $itemMap) {
+            $totalEntities += count($itemMap);
         }
 
         $processedEntities = 0;
@@ -2015,6 +2101,83 @@ class MigrationService
                     }
                 } catch (\Throwable $e) {
                     // Non-critical
+                }
+            }
+        }
+
+        // Timeline for smart process items
+        foreach ($this->smartItemsByType as $boxEntityTypeId => $itemMap) {
+            $cloudEntityTypeId = array_search($boxEntityTypeId, $this->smartProcessMapCache);
+            if ($cloudEntityTypeId === false) continue;
+
+            $this->addLog("Таймлайн: обработка smart_{$boxEntityTypeId} (" . count($itemMap) . " шт)...");
+
+            foreach ($itemMap as $cloudItemId => $boxItemId) {
+                $this->rateLimit();
+                $processedEntities++;
+                $this->savePhaseProgress('timeline', $processedEntities, $totalEntities);
+
+                // Migrate activities
+                try {
+                    $activities = $this->cloudAPI->getActivities($cloudEntityTypeId, $cloudItemId);
+                    foreach ($activities as $activity) {
+                        $this->rateLimit();
+                        $fields = $this->buildActivityFields($activity, $boxEntityTypeId, $boxItemId);
+
+                        foreach (['START_TIME', 'END_TIME', 'DEADLINE'] as $dk) {
+                            if (!empty($fields[$dk]) && !preg_match('/^\d{2}\.\d{2}\.\d{4}/', $fields[$dk])) {
+                                $ts = strtotime($fields[$dk]);
+                                $fields[$dk] = $ts ? date('d.m.Y H:i:s', $ts) : date('d.m.Y H:i:s');
+                            }
+                        }
+                        if (empty($fields['END_TIME'])) $fields['END_TIME'] = $fields['START_TIME'] ?? date('d.m.Y H:i:s');
+                        if (empty($fields['START_TIME'])) $fields['START_TIME'] = $fields['END_TIME'];
+
+                        try {
+                            $actId = \CCrmActivity::Add($fields, false, false, ['REGISTER_SONET_EVENT' => false]);
+                            if (!$actId) {
+                                throw new \Exception(\CCrmActivity::GetLastErrorMessage() ?: 'CCrmActivity::Add returned 0');
+                            }
+                            $totalActivities++;
+                            if (!empty($activity['CREATED'])) {
+                                try {
+                                    BoxD7Service::backdateEntity('b_crm_act', $actId, $activity['CREATED'], $activity['LAST_UPDATED'] ?? '');
+                                } catch (\Throwable $e) { /* date preservation is non-critical */ }
+                            }
+
+                            $actFiles = $activity['FILES'] ?? [];
+                            if (!empty($actFiles)) {
+                                foreach ($actFiles as $af) {
+                                    $fileId = (int)($af['id'] ?? 0);
+                                    if ($fileId <= 0) continue;
+                                    try {
+                                        $diskInfo = $this->cloudAPI->getDiskFile($fileId);
+                                        $downloadUrl = $diskInfo['DOWNLOAD_URL'] ?? '';
+                                        if (empty($downloadUrl)) continue;
+                                        $boxDiskId = $this->downloadCloudFileToBox($downloadUrl, $diskInfo['NAME'] ?? "rec_{$fileId}.mp3");
+                                        if ($boxDiskId > 0) {
+                                            \CCrmActivity::Update($actId, [
+                                                'STORAGE_TYPE_ID' => 3,
+                                                'STORAGE_ELEMENT_IDS' => [$boxDiskId],
+                                            ], false);
+                                        }
+                                    } catch (\Throwable $fe) { /* skip file error */ }
+                                }
+                            }
+                        } catch (\Throwable $e) {
+                            $errors++;
+                            $errKey = substr($e->getMessage(), 0, 80);
+                            $actInfo = "smart_{$boxEntityTypeId}#{$cloudItemId} activity#" . ($activity['ID'] ?? '?') . ' type=' . ($activity['TYPE_ID'] ?? '?');
+                            $this->addErrorDetail('timeline', $actInfo, $e->getMessage());
+                            if (!isset($seenActivityErrors[$errKey])) {
+                                $seenActivityErrors[$errKey] = 0;
+                                $this->addLog("  Активность [$actInfo]: " . $e->getMessage());
+                            }
+                            $seenActivityErrors[$errKey]++;
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    $this->addLog('  Ошибка получения активностей (smart_' . $boxEntityTypeId . ' #' . $cloudItemId . '): ' . $e->getMessage());
                 }
             }
         }
@@ -2287,6 +2450,8 @@ class MigrationService
 
             if (!$boxEntityTypeId) continue;
 
+            $this->smartProcessMapCache[$cloudEntityTypeId] = $boxEntityTypeId;
+
             // Delete existing userfields on box SP if enabled
             $deleteUfSettings = $this->plan['delete_userfields'] ?? [];
             $deleteUfEnabled = ($deleteUfSettings['enabled'] ?? true) === true;
@@ -2331,6 +2496,11 @@ class MigrationService
                         $newItemId = BoxD7Service::addSmartItem($boxEntityTypeId, $fields);
                         if ($newItemId > 0) {
                             $totalItems++;
+                            $cloudItemId = (int)($item['id'] ?? 0);
+                            if ($cloudItemId > 0) {
+                                $this->smartItemMapCache[$cloudItemId] = $newItemId;
+                                $this->smartItemsByType[$boxEntityTypeId][$cloudItemId] = $newItemId;
+                            }
                             if (!empty($item['createdTime'])) {
                                 try {
                                     $table = 'b_crm_dynamic_items_' . $boxEntityTypeId;
@@ -2401,10 +2571,14 @@ class MigrationService
      */
     private function remapStageId($stageId, $cloudCatId, $boxCatId)
     {
+        // Use stageMapCache first (populated by syncPipelineStages with correct prefix remapping)
+        if (isset($this->stageMapCache[$stageId])) {
+            return $this->stageMapCache[$stageId];
+        }
         if ($cloudCatId === 0 || $cloudCatId === $boxCatId) {
             return $stageId;
         }
-        // Custom pipeline stage format: "C{catId}:STATUS_CODE"
+        // Fallback: remap prefix C{cloudCatId}:CODE → C{boxCatId}:CODE
         $prefix = 'C' . $cloudCatId . ':';
         if (strncmp($stageId, $prefix, strlen($prefix)) === 0) {
             return 'C' . $boxCatId . ':' . substr($stageId, strlen($prefix));
@@ -2433,6 +2607,12 @@ class MigrationService
         $taskService = new TaskMigrationService($this->cloudAPI, $this->boxAPI, $this->plan);
         $taskService->setUserMapCache($this->userMapCache);
         $taskService->setGroupMapCache($this->groupMapCache);
+        $taskService->setCrmMapCaches(
+            $this->companyMapCache,
+            $this->contactMapCache,
+            $this->dealMapCache,
+            $this->leadMapCache
+        );
         if ($this->logFile) {
             $taskService->setLogFile($this->logFile);
         }
@@ -2668,6 +2848,15 @@ class MigrationService
     {
         $this->opCount++;
         usleep(333000); // 333ms (~3 req/s)
+        // Periodic memory cleanup every 50 operations — Bitrix cache engine leaks
+        if ($this->opCount % 50 === 0) {
+            gc_collect_cycles();
+            try {
+                $app = \Bitrix\Main\Application::getInstance();
+                $app->getManagedCache()->cleanAll();
+                $app->getTaggedCache()->clearByTag('*');
+            } catch (\Throwable $e) {}
+        }
         $this->checkStop();
     }
 

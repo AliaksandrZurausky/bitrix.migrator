@@ -139,14 +139,27 @@ class CloudAPI
     public function fetchAll($method, $params = [], $resultKey = null)
     {
         $items = [];
+        $this->fetchBatched($method, $params, function ($batch) use (&$items) {
+            array_push($items, ...$batch);
+        }, $resultKey);
+        return $items;
+    }
+
+    /**
+     * Paginated fetch with callback per batch — avoids loading everything into memory.
+     * Callback receives array of items for each page (typically 50 items).
+     */
+    public function fetchBatched($method, $params, callable $callback, $resultKey = null): int
+    {
         $next = 0;
         $page = 0;
-        $maxPages = 10000; // safety limit to prevent infinite loops
+        $total = 0;
+        $maxPages = 10000;
 
         do {
             $page++;
             if ($page > $maxPages) {
-                throw new \Exception("fetchAll exceeded {$maxPages} pages for {$method} — possible infinite loop");
+                throw new \Exception("fetchBatched exceeded {$maxPages} pages for {$method}");
             }
 
             $params['start'] = $next;
@@ -155,23 +168,21 @@ class CloudAPI
             if (isset($result['result']) && is_array($result['result'])) {
                 $data = $resultKey ? ($result['result'][$resultKey] ?? []) : $result['result'];
                 if (is_array($data) && !empty($data)) {
-                    array_push($items, ...$data);
+                    $callback($data);
+                    $total += count($data);
                 }
             }
 
             $newNext = $result['next'] ?? null;
-            // Detect stuck pagination (same offset returned)
-            if ($newNext !== null && $newNext === $next) {
-                break;
-            }
+            if ($newNext !== null && $newNext === $next) break;
             $next = $newNext;
 
             if ($next !== null) {
-                usleep(500000); // 500ms delay between paginated requests (~2 req/s, within Bitrix limit)
+                usleep(500000);
             }
         } while ($next !== null);
 
-        return $items;
+        return $total;
     }
 
     /**
@@ -695,10 +706,10 @@ class CloudAPI
     public function findCrmEntityByTitle($entityType, $title)
     {
         $methodMap = [
-            'C'  => ['crm.company.list', 'TITLE'],
+            'C'  => ['crm.contact.list',  null],
             'D'  => ['crm.deal.list',    'TITLE'],
             'L'  => ['crm.lead.list',    'TITLE'],
-            'CO' => ['crm.contact.list',  null],
+            'CO' => ['crm.company.list', 'TITLE'],
         ];
 
         $config = $methodMap[$entityType] ?? null;
@@ -707,7 +718,7 @@ class CloudAPI
         $method    = $config[0];
         $titleField = $config[1];
 
-        if ($entityType === 'CO') {
+        if ($entityType === 'C') {
             // Contacts don't have TITLE, search by NAME + LAST_NAME is complex
             // Try searching with a generic approach
             $result = $this->request($method, ['filter' => ['%NAME' => $title], 'select' => ['ID', 'NAME', 'LAST_NAME']]);
@@ -725,10 +736,10 @@ class CloudAPI
     public function getCrmEntity($entityType, $id)
     {
         $methodMap = [
-            'C'  => 'crm.company.get',
+            'C'  => 'crm.contact.get',
             'D'  => 'crm.deal.get',
             'L'  => 'crm.lead.get',
-            'CO' => 'crm.contact.get',
+            'CO' => 'crm.company.get',
         ];
 
         $method = $methodMap[$entityType] ?? null;

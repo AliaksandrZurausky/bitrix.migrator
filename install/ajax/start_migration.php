@@ -117,6 +117,7 @@ if (!is_dir($logDir)) {
 $stdoutLog = $logDir . '/migrator_stdout_' . date('Y-m-d_H-i-s') . '.log';
 
 $command = 'nohup ' . escapeshellarg($phpBinary)
+    . ' -d memory_limit=4G'
     . ' ' . escapeshellarg($workerPath)
     . ' ' . escapeshellarg($documentRoot)
     . ' ' . escapeshellarg($migrateType)
@@ -134,6 +135,7 @@ if ($pid && is_numeric($pid)) {
 } else {
     // Fallback: try exec()
     $command2 = escapeshellarg($phpBinary)
+        . ' -d memory_limit=4G'
         . ' ' . escapeshellarg($workerPath)
         . ' ' . escapeshellarg($documentRoot)
         . ' ' . escapeshellarg($migrateType)
