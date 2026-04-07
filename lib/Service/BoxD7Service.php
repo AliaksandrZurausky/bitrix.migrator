@@ -38,6 +38,24 @@ class BoxD7Service
         return 0;
     }
 
+    /**
+     * Flush Bitrix internal caches that accumulate during bulk CRM operations.
+     * Without this, CUserTypeManager holds all 700+ UF field defs in memory
+     * and SearchContentBuilder reloads them for every entity — causes OOM.
+     */
+    public static function flushCrmCaches(): void
+    {
+        // CUserTypeManager caches all UF field definitions per entity
+        if (isset($GLOBALS['USER_FIELD_MANAGER'])) {
+            $GLOBALS['USER_FIELD_MANAGER']->CleanCache();
+        }
+        // Bitrix managed cache accumulates tag data
+        try {
+            $app = \Bitrix\Main\Application::getInstance();
+            $app->getManagedCache()->cleanAll();
+        } catch (\Throwable $e) {}
+    }
+
     private static function ensureCrmLoaded(): void
     {
         if (!Loader::includeModule('crm')) {
@@ -273,10 +291,11 @@ class BoxD7Service
     {
         self::ensureCrmLoaded();
         $obj = new \CCrmCompany(false);
-        $id = $obj->Add($fields, true, ['DISABLE_USER_FIELD_CHECK' => true]);
+        $id = $obj->Add($fields, false, ['DISABLE_USER_FIELD_CHECK' => true]);
         if (!$id) {
             throw new \Exception('CCrmCompany::Add error: ' . ($obj->LAST_ERROR ?? 'unknown error'));
         }
+        self::flushCrmCaches();
         return (int)$id;
     }
 
@@ -309,10 +328,11 @@ class BoxD7Service
     {
         self::ensureCrmLoaded();
         $obj = new \CCrmContact(false);
-        $id = $obj->Add($fields, true, ['DISABLE_USER_FIELD_CHECK' => true]);
+        $id = $obj->Add($fields, false, ['DISABLE_USER_FIELD_CHECK' => true]);
         if (!$id) {
             throw new \Exception('CCrmContact::Add error: ' . ($obj->LAST_ERROR ?? 'unknown error'));
         }
+        self::flushCrmCaches();
         return (int)$id;
     }
 
@@ -355,10 +375,11 @@ class BoxD7Service
     {
         self::ensureCrmLoaded();
         $obj = new \CCrmDeal(false);
-        $id = $obj->Add($fields, true, ['DISABLE_USER_FIELD_CHECK' => true]);
+        $id = $obj->Add($fields, false, ['DISABLE_USER_FIELD_CHECK' => true]);
         if (!$id) {
             throw new \Exception('CCrmDeal::Add error: ' . ($obj->LAST_ERROR ?? 'unknown error'));
         }
+        self::flushCrmCaches();
         return (int)$id;
     }
 
@@ -401,10 +422,11 @@ class BoxD7Service
     {
         self::ensureCrmLoaded();
         $obj = new \CCrmLead(false);
-        $id = $obj->Add($fields, true, ['DISABLE_USER_FIELD_CHECK' => true]);
+        $id = $obj->Add($fields, false, ['DISABLE_USER_FIELD_CHECK' => true]);
         if (!$id) {
             throw new \Exception('CCrmLead::Add error: ' . ($obj->LAST_ERROR ?? 'unknown error'));
         }
+        self::flushCrmCaches();
         return (int)$id;
     }
 

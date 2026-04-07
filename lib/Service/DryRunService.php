@@ -61,9 +61,29 @@ class DryRunService
                 return ($u['ACTIVE'] ?? '') === 'Y' || $u['ACTIVE'] === true;
             }));
 
+            // Compact list for department modal (minimal fields only).
+            $compactActive = array_map(static function ($u) {
+                $deptIds = $u['UF_DEPARTMENT'] ?? [];
+                if (!is_array($deptIds)) {
+                    $deptIds = [$deptIds];
+                }
+                return [
+                    'ID'             => (int)($u['ID'] ?? 0),
+                    'NAME'           => $u['NAME'] ?? '',
+                    'LAST_NAME'      => $u['LAST_NAME'] ?? '',
+                    'SECOND_NAME'    => $u['SECOND_NAME'] ?? '',
+                    'EMAIL'          => $u['EMAIL'] ?? '',
+                    'WORK_POSITION'  => $u['WORK_POSITION'] ?? '',
+                    'WORK_PHONE'     => $u['WORK_PHONE'] ?? '',
+                    'PERSONAL_PHOTO' => $u['PERSONAL_PHOTO'] ?? '',
+                    'UF_DEPARTMENT'  => array_values(array_map('intval', $deptIds)),
+                ];
+            }, $activeUsers);
+
             $data['users'] = [
                 'cloud_count'        => count($allCloudUsers),
                 'cloud_active_count' => count($activeUsers),
+                'all_active_list'    => $compactActive,
             ];
 
             if ($boxAPI) {

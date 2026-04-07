@@ -140,7 +140,7 @@ class StateService
     }
 
     /**
-     * Set pause flag
+     * Set pause flag via D7 ORM
      */
     public static function setPauseFlag($flag = true)
     {
@@ -163,11 +163,21 @@ class StateService
     }
 
     /**
-     * Get pause flag
+     * Get pause flag — fresh read bypassing static cache
      */
     public static function isPaused()
     {
-        $state = self::getState();
-        return (bool) $state['UF_PAUSE_FLAG'];
+        $entity = self::getEntity();
+        $entityDataClass = $entity->getDataClass();
+
+        // Always fetch fresh from DB — don't use getState() which may return cached data
+        $row = $entityDataClass::getList([
+            'select' => ['UF_PAUSE_FLAG'],
+            'order' => ['ID' => 'DESC'],
+            'limit' => 1,
+            'cache' => ['ttl' => 0], // disable ORM cache
+        ])->fetch();
+
+        return $row ? (bool) $row['UF_PAUSE_FLAG'] : false;
     }
 }

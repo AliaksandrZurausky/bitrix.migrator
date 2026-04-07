@@ -155,7 +155,18 @@
 
         // 1. Departments
         summary.appendChild(makeAccordion('Подразделения', val(depts.count), function(body) {
-            depts.list && depts.list.length > 0 ? buildDepartmentTree(depts.list, body) : body.appendChild(el('p', { style: 'color:#999' }, 'Нет данных'));
+            if (depts.list && depts.list.length > 0) {
+                var actions = el('div', { style: 'margin-bottom:12px;' });
+                var openBtn = el('button', { type: 'button', className: 'adm-btn' }, 'Открыть структуру в окне');
+                openBtn.addEventListener('click', function() {
+                    openDepartmentModal(depts.list, users.all_active_list || []);
+                });
+                actions.appendChild(openBtn);
+                body.appendChild(actions);
+                buildDepartmentTree(depts.list, body);
+            } else {
+                body.appendChild(el('p', { style: 'color:#999' }, 'Нет данных'));
+            }
         }));
 
         // 2. Users
@@ -1365,6 +1376,332 @@
             li.appendChild(childUl);
         }
         return li;
+    }
+
+    // =========================================================================
+    // Department Modal — OrgChart-based (Bitrix-style hierarchy)
+    // =========================================================================
+    function _userFullName(u) {
+        return [u.LAST_NAME, u.NAME, u.SECOND_NAME].filter(Boolean).join(' ') || ('ID:' + u.ID);
+    }
+
+    function _esc(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function _pluralize(n, forms) {
+        var mod10 = n % 10, mod100 = n % 100;
+        if (mod10 === 1 && mod100 !== 11) return forms[0];
+        if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return forms[1];
+        return forms[2];
+    }
+
+    function _deptModalEscHandler(e) {
+        if (e.key === 'Escape') closeDepartmentModal();
+    }
+
+    var _deptModalPanCleanup = null;
+    function closeDepartmentModal() {
+        var existing = document.getElementById('migrator-dept-modal');
+        if (document.fullscreenElement || document.webkitFullscreenElement) {
+            try {
+                var exitFs = document.exitFullscreen || document.webkitExitFullscreen || document.mozCancelFullScreen || document.msExitFullscreen;
+                if (exitFs) exitFs.call(document);
+            } catch (e) { /* ignore */ }
+        }
+        if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+        document.removeEventListener('keydown', _deptModalEscHandler);
+        if (_deptModalPanCleanup) { _deptModalPanCleanup(); _deptModalPanCleanup = null; }
+    }
+
+    function _closeEmployeesModal() {
+        var m = document.getElementById('migrator-dept-employees-modal');
+        if (m && m.parentNode) m.parentNode.removeChild(m);
+    }
+
+    function openDeptEmployeesModal(dept, userById) {
+        _closeEmployeesModal();
+
+        var overlay = document.createElement('div');
+        overlay.className = 'migrator-modal-overlay migrator-modal-overlay--nested';
+        overlay.id = 'migrator-dept-employees-modal';
+        overlay.addEventListener('click', function(e) {
+            if (e.target === overlay) _closeEmployeesModal();
+        });
+
+        var dialog = document.createElement('div');
+        dialog.className = 'migrator-modal-dialog migrator-modal-dialog--employees';
+        overlay.appendChild(dialog);
+
+        var header = el('div', { className: 'migrator-modal-header' });
+        var titleWrap = el('div');
+        titleWrap.appendChild(el('div', { className: 'migrator-modal-title' }, 'Сотрудники: ' + (dept.name || '')));
+        var subTitle = el('div', { className: 'migrator-modal-subtitle' }, dept.userIds.length + ' ' + _pluralize(dept.userIds.length, ['сотрудник', 'сотрудника', 'сотрудников']));
+        titleWrap.appendChild(subTitle);
+        header.appendChild(titleWrap);
+        var closeBtn = el('button', { type: 'button', className: 'migrator-modal-close', 'aria-label': 'Закрыть' }, '\u00D7');
+        closeBtn.addEventListener('click', _closeEmployeesModal);
+        header.appendChild(closeBtn);
+        dialog.appendChild(header);
+
+        var body = el('div', { className: 'migrator-modal-employees-body' });
+
+        if (dept.userIds.length === 0) {
+            body.appendChild(el('div', { className: 'migrator-modal-empty' }, 'В этом подразделении нет сотрудников'));
+        } else {
+            var users = dept.userIds.map(function(id) { return userById[id]; }).filter(Boolean);
+            users.sort(function(a, b) {
+                if (dept.ufHead && a.ID == dept.ufHead) return -1;
+                if (dept.ufHead && b.ID == dept.ufHead) return 1;
+                return (a.LAST_NAME || '').localeCompare(b.LAST_NAME || '');
+            });
+
+            var grid = el('div', { className: 'migrator-modal-users' });
+            users.forEach(function(u) {
+                var card = el('div', { className: 'migrator-modal-user' });
+                var avatar = el('div', { className: 'migrator-modal-user-avatar' });
+                if (u.PERSONAL_PHOTO && String(u.PERSONAL_PHOTO).indexOf('http') === 0) {
+                    avatar.style.backgroundImage = 'url(' + u.PERSONAL_PHOTO + ')';
+                } else {
+                    avatar.textContent = ((u.NAME || ' ').charAt(0) + (u.LAST_NAME || ' ').charAt(0)).toUpperCase();
+                }
+                card.appendChild(avatar);
+
+                var info = el('div', { className: 'migrator-modal-user-info' });
+                var nameLine = el('div', { className: 'migrator-modal-user-name' }, _userFullName(u));
+                if (dept.ufHead && u.ID == dept.ufHead) {
+                    nameLine.appendChild(el('span', { className: 'migrator-modal-user-badge' }, 'Руководитель'));
+                }
+                info.appendChild(nameLine);
+                if (u.WORK_POSITION) info.appendChild(el('div', { className: 'migrator-modal-user-pos' }, u.WORK_POSITION));
+                var meta = [];
+                if (u.EMAIL) meta.push(u.EMAIL);
+                if (u.WORK_PHONE) meta.push(u.WORK_PHONE);
+                if (meta.length > 0) info.appendChild(el('div', { className: 'migrator-modal-user-meta' }, meta.join(' \u00B7 ')));
+
+                card.appendChild(info);
+                grid.appendChild(card);
+            });
+            body.appendChild(grid);
+        }
+
+        dialog.appendChild(body);
+        // Append inside fullscreen element if present, otherwise body
+        var parent = document.fullscreenElement || document.webkitFullscreenElement || document.body;
+        parent.appendChild(overlay);
+    }
+
+    function _loadOrgChartLib(cb) {
+        if (typeof jQuery !== 'undefined' && jQuery.fn && jQuery.fn.orgchart) { cb(); return; }
+        var basePath = '/local/modules/bitrix_migrator/install/admin/js/vendor/orgchart.min.js';
+        function loadPlugin() {
+            if (jQuery.fn && jQuery.fn.orgchart) { cb(); return; }
+            var s = document.createElement('script');
+            s.src = basePath;
+            s.onload = function() { cb(); };
+            s.onerror = function() { cb(new Error('Не удалось загрузить orgchart.min.js')); };
+            document.head.appendChild(s);
+        }
+        if (typeof jQuery === 'undefined') {
+            var j = document.createElement('script');
+            j.src = '/bitrix/js/main/jquery/jquery-3.6.0.min.js';
+            j.onload = loadPlugin;
+            j.onerror = function() { cb(new Error('Не удалось загрузить jQuery')); };
+            document.head.appendChild(j);
+        } else {
+            loadPlugin();
+        }
+    }
+
+    function openDepartmentModal(departments, allUsers) {
+        closeDepartmentModal();
+        _loadOrgChartLib(function(err) {
+            if (err) { alert(err.message); return; }
+            _openDepartmentModalInternal(departments, allUsers);
+        });
+    }
+
+    function _openDepartmentModalInternal(departments, allUsers) {
+        var depMap = {};
+        departments.forEach(function(d) {
+            depMap[d.ID] = { id: d.ID, name: d.NAME || ('ID:' + d.ID), parent: d.PARENT || null, ufHead: d.UF_HEAD || null, userIds: [], children: [] };
+        });
+        var roots = [];
+        departments.forEach(function(d) {
+            var node = depMap[d.ID];
+            if (node.parent && depMap[node.parent]) depMap[node.parent].children.push(node);
+            else roots.push(node);
+        });
+
+        var userById = {};
+        (allUsers || []).forEach(function(u) {
+            userById[u.ID] = u;
+            (u.UF_DEPARTMENT || []).forEach(function(did) {
+                if (depMap[did]) depMap[did].userIds.push(u.ID);
+            });
+        });
+
+        function toDatasource(node) {
+            var head = node.ufHead && userById[node.ufHead] ? userById[node.ufHead] : null;
+            var subDeptCount = node.children.length;
+            var ds = {
+                id: 'dep_' + node.id,
+                name: node.name,
+                _deptId: node.id,
+                _head: head,
+                _directCount: node.userIds.length,
+                _childDeptCount: subDeptCount
+            };
+            if (subDeptCount > 0) ds.children = node.children.map(toDatasource);
+            return ds;
+        }
+
+        var datasource;
+        if (roots.length === 1) {
+            datasource = toDatasource(roots[0]);
+        } else {
+            datasource = {
+                id: 'dep_virtual_root',
+                name: 'Компания',
+                _deptId: 0, _head: null, _directCount: 0,
+                _childDeptCount: roots.length,
+                children: roots.map(toDatasource)
+            };
+        }
+
+        var overlay = document.createElement('div');
+        overlay.className = 'migrator-modal-overlay migrator-modal-overlay--fullscreen';
+        overlay.id = 'migrator-dept-modal';
+
+        var dialog = document.createElement('div');
+        dialog.className = 'migrator-modal-dialog migrator-modal-dialog--chart';
+        overlay.appendChild(dialog);
+
+        var header = el('div', { className: 'migrator-modal-header' });
+        header.appendChild(el('div', { className: 'migrator-modal-title' }, 'Структура компании'));
+        var closeBtn = el('button', { type: 'button', className: 'migrator-modal-close', 'aria-label': 'Закрыть' }, '\u00D7');
+        closeBtn.addEventListener('click', closeDepartmentModal);
+        header.appendChild(closeBtn);
+        dialog.appendChild(header);
+
+        var chartHost = document.createElement('div');
+        chartHost.className = 'migrator-orgchart-host';
+        dialog.appendChild(chartHost);
+
+        var pannable = document.createElement('div');
+        pannable.className = 'migrator-orgchart-pannable';
+        chartHost.appendChild(pannable);
+
+        document.body.appendChild(overlay);
+
+        // Request real fullscreen (F11-style) on the overlay
+        var reqFs = overlay.requestFullscreen || overlay.webkitRequestFullscreen || overlay.mozRequestFullScreen || overlay.msRequestFullscreen;
+        if (reqFs) {
+            try { reqFs.call(overlay); } catch (e) { /* ignore */ }
+        }
+
+        function nodeTemplate(data) {
+            var head = data._head;
+            var headHtml = '';
+            if (head) {
+                var photo = (head.PERSONAL_PHOTO && String(head.PERSONAL_PHOTO).indexOf('http') === 0)
+                    ? '<span class="mig-oc-avatar" style="background-image:url(\'' + _esc(head.PERSONAL_PHOTO) + '\')"></span>'
+                    : '<span class="mig-oc-avatar mig-oc-avatar--initials">' + _esc(((head.NAME || ' ').charAt(0) + (head.LAST_NAME || ' ').charAt(0)).toUpperCase()) + '</span>';
+                headHtml =
+                    '<div class="mig-oc-head">' +
+                        photo +
+                        '<div class="mig-oc-head-info">' +
+                            '<div class="mig-oc-head-name">' + _esc(_userFullName(head)) + '</div>' +
+                            '<div class="mig-oc-head-pos">' + _esc(head.WORK_POSITION || 'Должность не указана') + '</div>' +
+                        '</div>' +
+                        '<span class="mig-oc-head-badge">\uD83D\uDC65 ' + data._directCount + '</span>' +
+                    '</div>';
+            } else if (data._directCount > 0) {
+                headHtml =
+                    '<div class="mig-oc-head mig-oc-head--empty">' +
+                        '<span class="mig-oc-head-badge">\uD83D\uDC65 ' + data._directCount + ' сотр.</span>' +
+                    '</div>';
+            }
+
+            var subLabel = data._childDeptCount > 0
+                ? '<div class="mig-oc-sub">Подчинённые<br><span class="mig-oc-subcount">' + data._childDeptCount + ' ' + _pluralize(data._childDeptCount, ['отдел', 'отдела', 'отделов']) + '</span></div>'
+                : '<div class="mig-oc-sub mig-oc-sub--empty">нет отделов в подчинении</div>';
+
+            return '' +
+                '<div class="mig-oc-card-inner">' +
+                    '<div class="mig-oc-title">' +
+                        '<span class="mig-oc-icon">\uD83C\uDFE2</span>' +
+                        '<span class="mig-oc-name">' + _esc(data.name) + '</span>' +
+                    '</div>' +
+                    headHtml +
+                    subLabel +
+                '</div>';
+        }
+
+        if (typeof jQuery === 'undefined' || !jQuery.fn.orgchart) {
+            chartHost.textContent = 'Ошибка: библиотека OrgChart не загружена';
+            return;
+        }
+
+        jQuery(pannable).orgchart({
+            data: datasource,
+            nodeContent: 'name',
+            visibleLevel: 3,
+            pan: false,
+            zoom: true,
+            zoominLimit: 2,
+            zoomoutLimit: 0.4,
+            nodeTemplate: nodeTemplate
+        });
+
+        // Click on card -> open employees modal
+        jQuery(pannable).on('click', '.node', function(e) {
+            if (jQuery(e.target).closest('.edge, .topEdge, .bottomEdge, .leftEdge, .rightEdge, .toggleBtn').length) return;
+            var id = this.id || '';
+            var m = id.match(/^dep_(\d+)$/);
+            if (!m) return;
+            var deptId = parseInt(m[1], 10);
+            var dept = depMap[deptId];
+            if (dept) openDeptEmployeesModal(dept, userById);
+        });
+
+        // Custom pan — applied on wrapper, preserves OrgChart's zoom on .orgchart
+        var panState = { x: 0, y: 0, startX: 0, startY: 0, dragging: false };
+        function applyPan() {
+            pannable.style.transform = 'translate(' + panState.x + 'px, ' + panState.y + 'px)';
+        }
+        function onPanDown(e) {
+            if (e.button !== 0) return;
+            var t = e.target;
+            if (t.closest && t.closest('.node')) return; // let node clicks pass
+            panState.dragging = true;
+            panState.startX = e.clientX - panState.x;
+            panState.startY = e.clientY - panState.y;
+            chartHost.classList.add('migrator-panning');
+            e.preventDefault();
+        }
+        function onPanMove(e) {
+            if (!panState.dragging) return;
+            panState.x = e.clientX - panState.startX;
+            panState.y = e.clientY - panState.startY;
+            applyPan();
+        }
+        function onPanUp() {
+            if (!panState.dragging) return;
+            panState.dragging = false;
+            chartHost.classList.remove('migrator-panning');
+        }
+        chartHost.addEventListener('mousedown', onPanDown);
+        document.addEventListener('mousemove', onPanMove);
+        document.addEventListener('mouseup', onPanUp);
+        _deptModalPanCleanup = function() {
+            document.removeEventListener('mousemove', onPanMove);
+            document.removeEventListener('mouseup', onPanUp);
+        };
+
+        document.addEventListener('keydown', _deptModalEscHandler);
     }
 
     // =========================================================================

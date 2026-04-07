@@ -80,13 +80,13 @@ class LogService
             ]);
 
             if (!$result->isSuccess()) {
-                // Silently fail for logging to avoid recursion
+                error_log('[bitrix_migrator] LogService::addLog failed: ' . implode(', ', $result->getErrorMessages()));
                 return false;
             }
 
             return $result->getId();
         } catch (\Exception $e) {
-            // Silently fail
+            error_log('[bitrix_migrator] LogService::addLog exception: ' . $e->getMessage());
             return false;
         }
     }

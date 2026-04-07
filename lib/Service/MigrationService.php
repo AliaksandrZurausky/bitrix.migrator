@@ -18,6 +18,7 @@ class MigrationService
     // Caches
     private $userMapCache = [];      // cloud user ID => box user ID
     private $deptMapCache = [];      // cloud dept ID => box dept ID
+    private $rootDeptId = 0;         // box root department ID (explicitly stored)
     private $groupMapCache = [];     // cloud group ID => box group ID
     private $companyMapCache = [];   // cloud company ID => box company ID
     private $contactMapCache = [];   // cloud contact ID => box contact ID
@@ -134,6 +135,7 @@ class MigrationService
                 $this->addLog("[$phase] Завершено");
 
                 // Free memory between phases — Bitrix cache engine leaks memory
+                BoxD7Service::flushCrmCaches();
                 gc_collect_cycles();
                 try {
                     $app = \Bitrix\Main\Application::getInstance();
@@ -189,8 +191,9 @@ class MigrationService
     private function checkStop()
     {
         $this->checkStopCounter++;
-        // Periodic memory cleanup every 100 iterations — Bitrix cache engine leaks heavily
-        if ($this->checkStopCounter % 100 === 0) {
+        // Periodic memory cleanup every 50 iterations — Bitrix cache engine leaks heavily
+        if ($this->checkStopCounter % 50 === 0) {
+            BoxD7Service::flushCrmCaches();
             gc_collect_cycles();
             try {
                 $app = \Bitrix\Main\Application::getInstance();
@@ -322,6 +325,7 @@ class MigrationService
         // Map cloud root → box root
         if ($cloudRootId && $rootDeptId) {
             $this->deptMapCache[$cloudRootId] = $rootDeptId;
+            $this->rootDeptId = $rootDeptId;
 
             // Rename box root to match cloud root name
             $cloudRootName = null;
@@ -445,12 +449,8 @@ class MigrationService
                 // UF_DEPARTMENT is required for user.add on box — fallback to root dept
                 if (!empty($boxDeptIds)) {
                     $fields['UF_DEPARTMENT'] = $boxDeptIds;
-                } else {
-                    // Assign to root department if no dept mapping available
-                    $rootDeptId = reset($this->deptMapCache);
-                    if ($rootDeptId) {
-                        $fields['UF_DEPARTMENT'] = [$rootDeptId];
-                    }
+                } elseif ($this->rootDeptId > 0) {
+                    $fields['UF_DEPARTMENT'] = [$this->rootDeptId];
                 }
 
                 // Personal info — normalize birthday to YYYY-MM-DD
@@ -959,11 +959,20 @@ class MigrationService
                     try {
                         BoxD7Service::deleteUserfield($fId);
                         $totalDeleted++;
+                        $this->addLog("  Удалено поле $fName (ID=$fId)");
                     } catch (\Throwable $e) {
                         $this->addLog("  Ошибка удаления поля $fName ($entityType): " . $e->getMessage());
                     }
                 }
+                // Clear userfield cache after deletion so new fields can be created
+                BoxD7Service::flushCrmCaches();
+                // Re-fetch remaining fields (some may have failed to delete)
+                $remainingFields = BoxD7Service::getUserfields($entityType);
                 $boxFieldNames = [];
+                foreach ($remainingFields as $f) {
+                    $boxFieldNames[] = $f['FIELD_NAME'] ?? '';
+                }
+                $this->addLog("  После удаления осталось полей ($entityType): " . count($boxFieldNames));
             } else {
                 $boxFieldNames = [];
                 foreach ($boxFields as $f) {
@@ -1180,8 +1189,8 @@ class MigrationService
                         ]);
                         $this->stageMapCache[$cloudStatusId] = $boxStatusId;
                     } catch (\Throwable $e) {
-                        $this->stageMapCache[$cloudStatusId] = $boxStatusId;
-                        $this->addLog("  Ошибка создания стадии '{$stage['NAME']}' ($boxStatusId): " . $e->getMessage());
+                        // Do NOT map failed stages — deals referencing them will fail
+                        $this->addLog("  WARN: Стадия '{$stage['NAME']}' ($boxStatusId) НЕ создана, маппинг пропущен: " . $e->getMessage());
                     }
                 }
             }
@@ -1379,14 +1388,16 @@ class MigrationService
     }
 
     // =========================================================================
-    // Phase 6: Contacts
+    // Phase 7: Contacts
     // =========================================================================
 
     private function migrateContacts()
     {
         // In incremental mode, pre-load existing mappings for timeline/activities
+        // Also load company mappings so COMPANY_ID and M:N links resolve correctly
         if (!empty($this->plan['settings']['incremental'])) {
             $this->loadExistingMappings('contact');
+            $this->loadExistingMappings('company');
         }
 
         $total = $this->cloudAPI->getContactsCount();
@@ -1525,14 +1536,18 @@ class MigrationService
     }
 
     // =========================================================================
-    // Phase 7: Deals
+    // Phase 9: Deals
     // =========================================================================
 
     private function migrateDeals()
     {
         // In incremental mode, pre-load existing mappings for timeline/activities
+        // Also load company/contact/lead mappings so foreign keys resolve correctly
         if (!empty($this->plan['settings']['incremental'])) {
             $this->loadExistingMappings('deal');
+            $this->loadExistingMappings('company');
+            $this->loadExistingMappings('contact');
+            $this->loadExistingMappings('lead');
         }
 
         $total = $this->cloudAPI->getDealsCount();
@@ -1727,8 +1742,11 @@ class MigrationService
     private function migrateLeads()
     {
         // In incremental mode, pre-load existing mappings for timeline/activities
+        // Also load company/contact mappings so foreign keys resolve correctly
         if (!empty($this->plan['settings']['incremental'])) {
             $this->loadExistingMappings('lead');
+            $this->loadExistingMappings('company');
+            $this->loadExistingMappings('contact');
         }
 
         $total = $this->cloudAPI->getLeadsCount();
@@ -1855,7 +1873,7 @@ class MigrationService
     }
 
     // =========================================================================
-    // Phase 9: Requisites (companies + contacts)
+    // Phase 10: Requisites (companies + contacts)
     // =========================================================================
 
     private function migrateRequisites()
@@ -1924,7 +1942,7 @@ class MigrationService
     }
 
     // =========================================================================
-    // Phase 10: Timeline (Activities & Comments)
+    // Phase 13: Timeline (Activities & Comments)
     // =========================================================================
 
     private function migrateTimeline()
@@ -2264,7 +2282,7 @@ class MigrationService
     }
 
     // =========================================================================
-    // Phase 10: Workgroups
+    // Phase 12: Workgroups
     // =========================================================================
 
     private function migrateWorkgroups()
@@ -2403,7 +2421,7 @@ class MigrationService
     }
 
     // =========================================================================
-    // Phase 11: Smart Processes
+    // Phase 11: Smart Processes (types + items)
     // =========================================================================
 
     private function migrateSmartProcesses()
@@ -2599,7 +2617,7 @@ class MigrationService
     }
 
     // =========================================================================
-    // Phase 12: Tasks (delegate to TaskMigrationService)
+    // Phase 14: Tasks (delegate to TaskMigrationService)
     // =========================================================================
 
     private function migrateTasks()

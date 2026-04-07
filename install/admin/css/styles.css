@@ -741,3 +741,378 @@
         flex-wrap: wrap;
     }
 }
+
+/* ============================================================== */
+/* Department Modal                                                 */
+/* ============================================================== */
+.migrator-modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(30, 40, 55, 0.55);
+    z-index: 10000;
+    display: flex; align-items: center; justify-content: center;
+    animation: migFadeIn 0.15s ease-out;
+}
+@keyframes migFadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+.migrator-modal-dialog {
+    background: #fff;
+    border-radius: 6px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+    width: 1100px; max-width: 96vw;
+    height: 82vh;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+}
+
+.migrator-modal-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 20px;
+    border-bottom: 1px solid #e6eaef;
+    background: #f7f9fb;
+}
+.migrator-modal-title {
+    font-size: 16px; font-weight: 600; color: #333;
+}
+.migrator-modal-close {
+    background: none; border: none;
+    font-size: 26px; line-height: 1;
+    color: #888; cursor: pointer;
+    padding: 0 6px;
+}
+.migrator-modal-close:hover { color: #333; }
+
+.migrator-modal-search {
+    padding: 12px 20px;
+    border-bottom: 1px solid #eef1f5;
+    background: #fafbfc;
+}
+.migrator-modal-search .migrator-input {
+    width: 100%;
+}
+
+.migrator-modal-body {
+    flex: 1; display: flex; min-height: 0;
+}
+
+.migrator-modal-left {
+    width: 360px; min-width: 280px;
+    border-right: 1px solid #e6eaef;
+    overflow-y: auto; overflow-x: hidden;
+    padding: 10px 0;
+    background: #fcfdfe;
+}
+
+.migrator-modal-right {
+    flex: 1; overflow-y: auto;
+    padding: 18px 22px;
+    background: #fff;
+}
+
+/* Tree in modal */
+.migrator-modal-tree, .migrator-modal-tree-children {
+    list-style: none; margin: 0; padding: 0;
+}
+.migrator-modal-tree-children {
+    display: none; padding-left: 18px;
+}
+.migrator-modal-tree-item.expanded > .migrator-modal-tree-children {
+    display: block;
+}
+.migrator-modal-tree-node {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 12px;
+    cursor: pointer;
+    font-size: 13px;
+    border-radius: 3px;
+    margin: 0 8px;
+    user-select: none;
+}
+.migrator-modal-tree-node:hover {
+    background: #eef4fb;
+}
+.migrator-modal-tree-node.selected {
+    background: #0080c8;
+    color: #fff;
+}
+.migrator-modal-tree-node.selected .migrator-modal-tree-count {
+    background: rgba(255,255,255,0.25); color: #fff;
+}
+.migrator-modal-tree-icon { font-size: 13px; }
+.migrator-modal-tree-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.migrator-modal-tree-count {
+    background: #e6eaef; color: #555;
+    padding: 1px 8px; border-radius: 10px;
+    font-size: 11px; font-weight: 600;
+}
+
+/* Right pane */
+.migrator-modal-crumb {
+    font-size: 12px; color: #8893a2;
+    margin-bottom: 6px;
+}
+.migrator-modal-dept-header {
+    border-bottom: 1px solid #eef1f5;
+    padding-bottom: 12px; margin-bottom: 16px;
+}
+.migrator-modal-dept-title {
+    font-size: 18px; font-weight: 600; color: #222;
+    margin-bottom: 4px;
+}
+.migrator-modal-dept-head {
+    font-size: 13px; color: #555;
+}
+.migrator-modal-dept-head-label { color: #8893a2; }
+.migrator-modal-dept-head-name { font-weight: 600; color: #0080c8; }
+
+.migrator-modal-empty {
+    padding: 40px 0; text-align: center; color: #999;
+    font-size: 14px;
+}
+
+.migrator-modal-users {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 10px;
+}
+.migrator-modal-user {
+    display: flex; gap: 12px;
+    padding: 12px;
+    border: 1px solid #eef1f5;
+    border-radius: 5px;
+    background: #fff;
+    transition: all 0.15s;
+}
+.migrator-modal-user:hover {
+    border-color: #b9d7ee;
+    box-shadow: 0 2px 6px rgba(0, 128, 200, 0.08);
+}
+.migrator-modal-user-avatar {
+    width: 42px; height: 42px;
+    border-radius: 50%;
+    background: #0080c8 center/cover no-repeat;
+    color: #fff; font-weight: 600; font-size: 14px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+.migrator-modal-user-info {
+    flex: 1; min-width: 0;
+}
+.migrator-modal-user-name {
+    font-weight: 600; color: #222; font-size: 14px;
+    display: flex; align-items: center; gap: 6px;
+}
+.migrator-modal-user-badge {
+    background: #fff4d4; color: #a67000;
+    font-size: 10px; font-weight: 700;
+    padding: 2px 6px; border-radius: 3px;
+    text-transform: uppercase;
+}
+.migrator-modal-user-pos {
+    font-size: 12px; color: #666; margin-top: 2px;
+}
+.migrator-modal-user-meta {
+    font-size: 11px; color: #8893a2; margin-top: 4px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+@media (max-width: 800px) {
+    .migrator-modal-dialog { width: 96vw; height: 92vh; }
+    .migrator-modal-left { width: 220px; min-width: 180px; }
+}
+
+/* Fullscreen overlay (for tree modal using Fullscreen API) */
+.migrator-modal-overlay--fullscreen {
+    background: #f4f7fb;
+    padding: 0;
+}
+.migrator-modal-overlay--fullscreen:fullscreen {
+    background: #f4f7fb;
+}
+.migrator-modal-overlay--fullscreen .migrator-modal-dialog--chart {
+    width: 100%; height: 100%;
+    max-width: none; max-height: none;
+    border-radius: 0;
+    box-shadow: none;
+}
+
+/* OrgChart host inside modal */
+.migrator-modal-dialog--chart {
+    width: 96vw; height: 90vh;
+    max-width: none;
+}
+.migrator-orgchart-host {
+    flex: 1;
+    overflow: auto;
+    background: #f4f7fb;
+    padding: 20px;
+    text-align: center;
+}
+.migrator-orgchart-host .orgchart {
+    background-image: none;
+    background: transparent;
+    display: inline-block;
+    margin: 0 auto;
+    text-align: center;
+}
+.migrator-orgchart-host .orgchart .hierarchy {
+    text-align: center;
+}
+.migrator-orgchart-host .orgchart > ul > li > ul li::before {
+    border-top-color: #7fd0f5;
+}
+.migrator-orgchart-host .orgchart > ul > li > ul li > .oc-node::before,
+.migrator-orgchart-host .orgchart ul li .oc-node:not(:only-child)::after {
+    background-color: #7fd0f5;
+}
+.migrator-orgchart-host .orgchart .node {
+    width: 260px;
+    min-width: 260px;
+    padding: 0;
+    border: none;
+    background: transparent;
+}
+.migrator-orgchart-host .orgchart .node .title,
+.migrator-orgchart-host .orgchart .node .content {
+    display: none;
+}
+
+/* Card content */
+.mig-oc-card-inner {
+    background: #fff;
+    border: 1px solid #cde8f6;
+    border-radius: 10px;
+    padding: 14px 16px 10px;
+    text-align: left;
+    box-shadow: 0 2px 8px rgba(0, 128, 200, 0.08);
+    transition: all 0.15s;
+}
+.migrator-orgchart-host .orgchart .node:hover .mig-oc-card-inner {
+    border-color: #0080c8;
+    box-shadow: 0 4px 14px rgba(0, 128, 200, 0.18);
+}
+.mig-oc-title {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 14px; font-weight: 600; color: #222;
+    margin-bottom: 10px;
+}
+.mig-oc-icon { font-size: 14px; }
+.mig-oc-name {
+    flex: 1;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mig-oc-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 0;
+    margin-bottom: 8px;
+}
+.mig-oc-head--empty { justify-content: flex-start; }
+.mig-oc-avatar {
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    background: #0080c8 center/cover no-repeat;
+    color: #fff; font-size: 11px; font-weight: 600;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+}
+.mig-oc-avatar--initials { background: #0080c8; }
+.mig-oc-head-info {
+    flex: 1; min-width: 0;
+}
+.mig-oc-head-name {
+    font-size: 12px; font-weight: 600; color: #222;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mig-oc-head-pos {
+    font-size: 11px; color: #8893a2;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mig-oc-head-badge {
+    background: #eef5fb;
+    color: #0080c8;
+    font-size: 11px; font-weight: 600;
+    padding: 2px 7px; border-radius: 10px;
+    white-space: nowrap;
+}
+.mig-oc-sub {
+    font-size: 11px; color: #666;
+    padding-top: 8px;
+    border-top: 1px solid #eef1f5;
+    text-align: center;
+}
+.mig-oc-subcount {
+    display: inline-block;
+    background: #eaf7ee;
+    color: #27864a;
+    padding: 3px 10px;
+    border-radius: 3px;
+    font-weight: 600;
+    font-size: 11px;
+    margin-top: 4px;
+}
+.mig-oc-sub--empty {
+    color: #bbb;
+    padding-top: 8px;
+    border-top: 1px solid #eef1f5;
+    text-align: center;
+    font-style: italic;
+}
+
+/* Pan cursor */
+.migrator-orgchart-host {
+    cursor: grab;
+}
+.migrator-orgchart-host.migrator-panning,
+.migrator-orgchart-host.migrator-panning * {
+    cursor: grabbing !important;
+    user-select: none;
+}
+.migrator-orgchart-host .orgchart {
+    transition: none;
+}
+.migrator-orgchart-host .node,
+.migrator-orgchart-host .mig-oc-card-inner {
+    cursor: pointer;
+}
+
+/* Pannable wrapper that holds the orgchart — pan is applied here, zoom stays on .orgchart */
+.migrator-orgchart-pannable {
+    display: inline-block;
+    min-width: 100%;
+    text-align: center;
+    transform-origin: 0 0;
+    will-change: transform;
+}
+
+/* Hide side + top toggle arrows — keep only bottom (subordinates collapse) */
+.migrator-orgchart-host .leftEdge,
+.migrator-orgchart-host .rightEdge,
+.migrator-orgchart-host .topEdge {
+    display: none !important;
+}
+
+/* Employees modal — compact */
+.migrator-modal-dialog--employees {
+    width: 860px;
+    max-width: 94vw;
+    height: auto;
+    max-height: 82vh;
+}
+
+/* Nested employees modal */
+.migrator-modal-overlay--nested {
+    z-index: 10010;
+    background: rgba(30, 40, 55, 0.45);
+}
+.migrator-modal-dialog--employees {
+    width: 820px; max-width: 94vw;
+    height: 78vh;
+    display: flex; flex-direction: column;
+}
+.migrator-modal-subtitle {
+    font-size: 12px; color: #8893a2; margin-top: 2px;
+}
+.migrator-modal-employees-body {
+    flex: 1; overflow-y: auto;
+    padding: 18px 22px;
+    background: #fff;
+}

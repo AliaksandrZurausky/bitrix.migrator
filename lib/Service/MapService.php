@@ -223,10 +223,11 @@ class MapService
             'select' => ['UF_CLOUD_ID', 'UF_LOCAL_ID'],
         ]);
         while ($row = $rs->fetch()) {
-            $cloudId = (int)$row['UF_CLOUD_ID'];
-            $localId = (int)$row['UF_LOCAL_ID'];
-            if ($cloudId > 0 && $localId > 0) {
-                $map[$cloudId] = $localId;
+            $cloudId = $row['UF_CLOUD_ID'];
+            $localId = $row['UF_LOCAL_ID'];
+            if ($cloudId !== '' && $cloudId !== null && $localId !== '' && $localId !== null) {
+                // Use int keys for compatibility with cache arrays, but safe for PHP int range
+                $map[(int)$cloudId] = (int)$localId;
             }
         }
 

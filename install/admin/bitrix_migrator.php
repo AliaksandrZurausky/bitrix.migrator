@@ -22,7 +22,9 @@ if (!Loader::includeModule($MODULE_ID)) {
 }
 
 $APPLICATION->SetTitle(Loc::getMessage('BITRIX_MIGRATOR_PAGE_TITLE'));
+\CJSCore::Init(['jquery']);
 $APPLICATION->AddHeadScript('/local/modules/bitrix_migrator/install/admin/js/script.js');
+$APPLICATION->SetAdditionalCSS('/local/modules/bitrix_migrator/install/admin/js/vendor/orgchart.min.css');
 $APPLICATION->SetAdditionalCSS('/local/modules/bitrix_migrator/install/admin/css/styles.css');
 
 require($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_admin_after.php');
