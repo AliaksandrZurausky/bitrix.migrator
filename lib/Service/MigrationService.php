@@ -30,6 +30,12 @@ class MigrationService
     private $smartItemMapCache = [];     // cloud item ID => box item ID
     private $smartItemsByType = [];      // boxEntityTypeId => [cloudItemId => boxItemId, ...]
 
+    // UF field schemas + enum mappings, populated during migrateCrmFields()
+    // Structure: $ufFieldSchema[entityType][fieldName] = ['type' => 'enumeration|file|date|...', 'multiple' => 'Y'|'N']
+    //            $ufEnumMap[entityType][fieldName][cloudEnumId] = boxEnumId
+    private $ufFieldSchema = [];
+    private $ufEnumMap = [];
+
     private $log = [];
     private $opCount = 0;
     private $saveMapEnabled = false; // persist created IDs to MigratorMap HL block
@@ -952,17 +958,26 @@ class MigrationService
 
             if ($shouldDelete && !empty($boxFields)) {
                 $this->addLog("Удаление пользовательских полей ($entityType): " . count($boxFields) . " шт.");
+                $skippedSystem = 0;
                 foreach ($boxFields as $f) {
                     $fId = (int)($f['ID'] ?? 0);
                     $fName = $f['FIELD_NAME'] ?? '';
+                    $fXmlId = $f['XML_ID'] ?? '';
                     if (!$fId) continue;
+                    // Skip system/protected fields managed by other modules
+                    if (BoxD7Service::isProtectedUserfield($fName, $fXmlId)) {
+                        $skippedSystem++;
+                        continue;
+                    }
                     try {
                         BoxD7Service::deleteUserfield($fId);
                         $totalDeleted++;
-                        $this->addLog("  Удалено поле $fName (ID=$fId)");
                     } catch (\Throwable $e) {
                         $this->addLog("  Ошибка удаления поля $fName ($entityType): " . $e->getMessage());
                     }
+                }
+                if ($skippedSystem > 0) {
+                    $this->addLog("  Пропущено системных полей ($entityType): $skippedSystem");
                 }
                 // Clear userfield cache after deletion so new fields can be created
                 BoxD7Service::flushCrmCaches();
@@ -980,6 +995,18 @@ class MigrationService
                 }
             }
 
+            // Known system fields that are auto-created by CRM module on box.
+            // Cloud returns them WITHOUT the UF_CRM_ prefix (e.g. UF_LOGO), but box stores
+            // them WITH the prefix (UF_CRM_LOGO). These should NEVER be migrated — they're
+            // module-managed and attempting to create them always fails with "уже существует".
+            $systemCrmFields = [
+                'company' => ['UF_LOGO', 'UF_STAMP', 'UF_DIRECTOR_SIGN', 'UF_ACCOUNTANT_SIGN'],
+                'contact' => [],
+                'deal'    => [],
+                'lead'    => [],
+            ];
+            $systemFieldsForEntity = $systemCrmFields[$entityType] ?? [];
+
             // --- Step 2: Create fields from cloud ---
             foreach ($cloudFields as $field) {
                 $this->rateLimit();
@@ -993,7 +1020,17 @@ class MigrationService
                     }
                 }
 
-                if (in_array($fieldName, $boxFieldNames)) continue;
+                // Skip system fields auto-managed by CRM module
+                if (in_array($fieldName, $systemFieldsForEntity, true)) {
+                    continue;
+                }
+
+                // Check if field already exists on box — match both with and without UF_CRM_ prefix
+                // (cloud may return UF_LOGO while box stores it as UF_CRM_LOGO, and vice versa)
+                $fieldNameWithPrefix = (strncmp($fieldName, 'UF_CRM_', 7) === 0) ? $fieldName : 'UF_CRM_' . substr($fieldName, 3);
+                if (in_array($fieldName, $boxFieldNames) || in_array($fieldNameWithPrefix, $boxFieldNames)) {
+                    continue;
+                }
 
                 // Skip field types that are module-specific and can't be created on box
                 $userTypeId = $field['USER_TYPE_ID'] ?? 'string';
@@ -1052,6 +1089,223 @@ class MigrationService
         }
 
         $this->addLog("CRM поля: удалено=$totalDeleted, создано=$totalCreated");
+
+        // Build UF field schema cache + enum mappings (used by build*Fields to transform values)
+        $this->buildUfFieldSchemaCache($entityTypes, $allCloudFields);
+    }
+
+    /**
+     * Build UF field schema cache + cloud→box enum item mapping for all CRM entity types.
+     * Cache is consumed by transformUfValue() during entity migration.
+     */
+    private function buildUfFieldSchemaCache(array $entityTypes, array $allCloudFields): void
+    {
+        \Bitrix\Main\Loader::includeModule('main');
+        $entityIdMap = [
+            'deal'    => 'CRM_DEAL',
+            'contact' => 'CRM_CONTACT',
+            'company' => 'CRM_COMPANY',
+            'lead'    => 'CRM_LEAD',
+        ];
+
+        foreach ($entityTypes as $entityType) {
+            $boxEntityId = $entityIdMap[$entityType] ?? null;
+            if (!$boxEntityId) continue;
+
+            $cloudFieldsByName = [];
+            foreach (($allCloudFields[$entityType] ?? []) as $f) {
+                $cloudFieldsByName[$f['FIELD_NAME']] = $f;
+            }
+
+            // Iterate box UF fields for this entity
+            $res = \CUserTypeEntity::GetList([], ['ENTITY_ID' => $boxEntityId]);
+            while ($boxField = $res->Fetch()) {
+                $fn = $boxField['FIELD_NAME'];
+                $type = $boxField['USER_TYPE_ID'];
+                $this->ufFieldSchema[$entityType][$fn] = [
+                    'type' => $type,
+                    'multiple' => ($boxField['MULTIPLE'] ?? 'N') === 'Y',
+                ];
+
+                // For enumeration: build cloud_enum_id → box_enum_id mapping by VALUE
+                if ($type === 'enumeration' && !empty($cloudFieldsByName[$fn]['LIST'])) {
+                    $boxItemsByValue = [];
+                    $enumRes = \CUserFieldEnum::GetList([], ['USER_FIELD_ID' => $boxField['ID']]);
+                    while ($item = $enumRes->Fetch()) {
+                        $key = mb_strtolower(trim($item['VALUE']));
+                        if ($key !== '') $boxItemsByValue[$key] = (int)$item['ID'];
+                    }
+                    foreach ($cloudFieldsByName[$fn]['LIST'] as $cloudItem) {
+                        $key = mb_strtolower(trim($cloudItem['VALUE'] ?? ''));
+                        if ($key !== '' && isset($boxItemsByValue[$key])) {
+                            $this->ufEnumMap[$entityType][$fn][(int)$cloudItem['ID']] = $boxItemsByValue[$key];
+                        }
+                    }
+                }
+            }
+        }
+
+        $totalEnumFields = 0;
+        foreach ($this->ufEnumMap as $entityMap) $totalEnumFields += count($entityMap);
+        $this->addLog("UF схема: " . array_sum(array_map('count', $this->ufFieldSchema)) . " полей, enum маппингов: $totalEnumFields");
+    }
+
+    /**
+     * Transform a single UF value from cloud format to box format based on field type.
+     * Returns null if value should be skipped (e.g., unmapped enum, file download failed).
+     *
+     * @param string $entityType  'deal'|'contact'|'company'|'lead'
+     * @param string $fieldName   UF field name (UF_CRM_*)
+     * @param mixed  $cloudValue  Raw value from cloud REST response
+     * @return mixed|null  Transformed value or null to skip
+     */
+    private function transformUfValue(string $entityType, string $fieldName, $cloudValue)
+    {
+        if ($cloudValue === '' || $cloudValue === null) return null;
+
+        $schema = $this->ufFieldSchema[$entityType][$fieldName] ?? null;
+        if (!$schema) return $cloudValue; // unknown field, copy as-is
+
+        $type = $schema['type'];
+        $isMultiple = $schema['multiple'];
+
+        // Handle multiple values: recursively transform each
+        if ($isMultiple && is_array($cloudValue)) {
+            $result = [];
+            foreach ($cloudValue as $v) {
+                $tmp = $this->transformSingleUfValue($entityType, $fieldName, $type, $v);
+                if ($tmp !== null) $result[] = $tmp;
+            }
+            return !empty($result) ? $result : null;
+        }
+
+        return $this->transformSingleUfValue($entityType, $fieldName, $type, $cloudValue);
+    }
+
+    private function transformSingleUfValue(string $entityType, string $fieldName, string $type, $value)
+    {
+        switch ($type) {
+            case 'enumeration':
+                $cloudId = (int)$value;
+                return $this->ufEnumMap[$entityType][$fieldName][$cloudId] ?? null;
+
+            case 'date':
+                $ts = strtotime((string)$value);
+                return $ts ? date('d.m.Y', $ts) : null;
+
+            case 'datetime':
+                $ts = strtotime((string)$value);
+                return $ts ? date('d.m.Y H:i:s', $ts) : null;
+
+            case 'file':
+                return $this->downloadCrmFileField($value);
+
+            default:
+                return $value;
+        }
+    }
+
+    /**
+     * Download a CRM file (either disk_file or legacy CFile) from cloud and return
+     * a CFile array suitable for CCrm*::Add. Returns null on failure.
+     *
+     * Used by:
+     * - UF fields of type `file` (through transformSingleUfValue)
+     * - Standard fields PHOTO (contact), LOGO (company)
+     *
+     * Cloud format: int ID or object {id, showUrl, downloadUrl}
+     *
+     * KNOWN LIMITATION: For CRM legacy file fields (b_file direct, not disk),
+     * webhook auth token doesn't work against /bitrix/components/.../show_file.php
+     * — it returns HTML login page. See TODO: OAuth Local App in CLAUDE.md.
+     */
+    private function downloadCrmFileField($value): ?array
+    {
+        $fileId = is_array($value) ? (int)($value['id'] ?? 0) : (int)$value;
+        $relUrl = is_array($value) ? ($value['downloadUrl'] ?? '') : '';
+        if ($fileId <= 0) return null;
+
+        // Try Disk first (works for disk_file UFs and Disk-stored CRM files)
+        try {
+            $diskInfo = $this->cloudAPI->getDiskFile($fileId);
+            $dlUrl = $diskInfo['DOWNLOAD_URL'] ?? '';
+            if (!empty($dlUrl)) {
+                $tmp = $this->downloadCrmFileToTemp($dlUrl);
+                if ($tmp) {
+                    $arr = \CFile::MakeFileArray($tmp);
+                    if (!empty($diskInfo['NAME'])) $arr['name'] = $diskInfo['NAME'];
+                    return $arr;
+                }
+            }
+        } catch (\Throwable $e) { /* not in disk — try CRM file storage */ }
+
+        // Fall back to CRM file storage URL with webhook auth
+        // (will fail with HTML login page for webhook — OAuth required)
+        if (!empty($relUrl)) {
+            $absUrl = $this->cloudAPI->getPortalBaseUrl() . $relUrl;
+            $absUrl = $this->cloudAPI->authorizeUrl($absUrl);
+            $tmp = $this->downloadCrmFileToTemp($absUrl);
+            if ($tmp) {
+                return \CFile::MakeFileArray($tmp);
+            }
+            $this->addLog("  Файл #$fileId не скачан (webhook не авторизован для component endpoint, нужен OAuth)");
+        }
+        return null;
+    }
+
+    /**
+     * Download a CRM file to a temp path and return the path. Caller must unlink.
+     */
+    private function downloadCrmFileToTemp(string $url): ?string
+    {
+        $tmp = tempnam(sys_get_temp_dir(), 'bx_uf_');
+        $ch = curl_init($url);
+        $fp = fopen($tmp, 'wb');
+        curl_setopt_array($ch, [
+            CURLOPT_FILE => $fp,
+            CURLOPT_TIMEOUT => 120,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_SSL_VERIFYPEER => false,
+        ]);
+        curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $contentType = curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
+        curl_close($ch);
+        fclose($fp);
+
+        if ($code !== 200 || filesize($tmp) === 0) {
+            @unlink($tmp);
+            return null;
+        }
+
+        // Detect HTML login page (happens when cloud session auth is required but webhook
+        // token isn't accepted — e.g. CRM standard file fields PHOTO/LOGO, UF type=file).
+        // The response is HTTP 200 but contains the Bitrix login form instead of the file.
+        if (stripos((string)$contentType, 'text/html') !== false) {
+            $head = @file_get_contents($tmp, false, null, 0, 200);
+            if (stripos($head, '<!DOCTYPE') !== false || stripos($head, '<html') !== false) {
+                @unlink($tmp);
+                return null;
+            }
+        }
+
+        return $tmp;
+    }
+
+    /**
+     * Apply transformUfValue to all UF_CRM_* keys in $entity, populate $fields.
+     * Used by build*Fields methods.
+     */
+    private function copyUfFields(string $entityType, array $entity, array &$fields): void
+    {
+        foreach ($entity as $k => $v) {
+            if (strncmp($k, 'UF_CRM_', 7) !== 0) continue;
+            if ($v === '' || $v === null) continue;
+            $transformed = $this->transformUfValue($entityType, $k, $v);
+            if ($transformed !== null) {
+                $fields[$k] = $transformed;
+            }
+        }
     }
 
     // =========================================================================
@@ -1063,27 +1317,45 @@ class MigrationService
         $cloudCategories = $this->cloudAPI->getDealCategories();
         $boxCategories = $this->boxAPI->getDealCategories();
 
+        $this->addLog("Воронок в облаке: " . count($cloudCategories) . ", в коробке: " . count($boxCategories));
+        foreach ($cloudCategories as $cat) {
+            $this->addLog("  Cloud воронка: ID=" . ($cat['ID'] ?? '?') . " NAME='" . ($cat['NAME'] ?? '') . "'");
+        }
+
         $cloudStagesGrouped = $this->cloudAPI->getAllDealStagesGrouped();
 
         // --- Default pipeline (ID=0) ---
         $this->pipelineMapCache[0] = 0;
 
         // Rename default pipeline on box to match cloud
-        $cloudDefaultCat = null;
-        foreach ($cloudCategories as $cat) {
-            if ((int)($cat['ID'] ?? -1) === 0) {
-                $cloudDefaultCat = $cat;
-                break;
+        // Cloud crm.dealcategory.list does NOT return ID=0 — use crm.dealcategory.default.get
+        $cloudDefaultName = '';
+        try {
+            $defaultCat = $this->cloudAPI->getDefaultDealCategory();
+            if (!empty($defaultCat['NAME'])) {
+                $cloudDefaultName = $defaultCat['NAME'];
+            }
+        } catch (\Throwable $e) {
+            $this->addLog("  Не удалось получить имя основной воронки из облака: " . $e->getMessage());
+        }
+        // Fallback: try crm.dealcategory.list (rare case where ID=0 is included)
+        if (empty($cloudDefaultName)) {
+            foreach ($cloudCategories as $cat) {
+                if ((int)($cat['ID'] ?? -1) === 0 && !empty($cat['NAME'])) {
+                    $cloudDefaultName = $cat['NAME'];
+                    break;
+                }
             }
         }
-        // If crm.dealcategory.list doesn't return ID=0, try crm.dealcategory.get
-        if (!$cloudDefaultCat) {
-            $cloudDefaultCat = $this->cloudAPI->getDealCategoryById(0);
-        }
-        if ($cloudDefaultCat && !empty($cloudDefaultCat['NAME'])) {
+
+        $this->addLog("Основная воронка облака: '" . ($cloudDefaultName ?: '(не получено)') . "'");
+        if (!empty($cloudDefaultName)) {
             try {
-                $this->boxAPI->updateDealCategory(0, ['NAME' => $cloudDefaultCat['NAME']]);
-                $this->addLog("Основная воронка переименована: '{$cloudDefaultCat['NAME']}'");
+                if (BoxD7Service::setDefaultDealCategoryName($cloudDefaultName)) {
+                    $this->addLog("Основная воронка переименована: '{$cloudDefaultName}'");
+                } else {
+                    $this->addLog("  Не удалось переименовать основную воронку (D7 вернул false)");
+                }
             } catch (\Throwable $e) {
                 $this->addLog("  Не удалось переименовать основную воронку: " . $e->getMessage());
             }
@@ -1140,58 +1412,234 @@ class MigrationService
         }
 
         $this->addLog("Воронки: создано $created, всего маппингов=" . count($this->pipelineMapCache));
+
+        // Diagnostic: dump pipeline + stage caches
+        $this->addLog('  pipelineMapCache: ' . json_encode($this->pipelineMapCache));
+        $this->addLog('  stageMapCache (' . count($this->stageMapCache) . ' entries):');
+        foreach ($this->stageMapCache as $cloudId => $boxId) {
+            $this->addLog('    ' . $cloudId . ' -> ' . $boxId);
+        }
+
+        // Migrate lead statuses (entity STATUS) — lead phase uses these for STATUS_ID
+        try {
+            $cloudLeadStatuses = $this->cloudAPI->getStatusesByEntityId('STATUS');
+            if (!empty($cloudLeadStatuses)) {
+                $this->addLog("Статусы лидов в облаке: " . count($cloudLeadStatuses));
+                $this->syncPipelineStages('STATUS', 'STATUS', $cloudLeadStatuses);
+            }
+        } catch (\Throwable $e) {
+            $this->addLog("  Ошибка миграции статусов лидов: " . $e->getMessage());
+        }
+
+        // Also migrate lead source (SOURCE) and source description (SOURCE_DESCRIPTION)
+        foreach (['SOURCE', 'CONTACT_TYPE', 'COMPANY_TYPE', 'INDUSTRY'] as $entId) {
+            try {
+                $cloudList = $this->cloudAPI->getStatusesByEntityId($entId);
+                if (!empty($cloudList)) {
+                    $this->syncPipelineStages($entId, $entId, $cloudList);
+                }
+            } catch (\Throwable $e) { /* non-critical */ }
+        }
+
+        // CRITICAL: invalidate CRM status/pipeline caches.
+        // Bitrix's StatusTable::getStatusesByEntityId() caches via ManagedCache (TTL=3600)
+        // and also via static $statusesCache in memory. Without explicit invalidation, the
+        // CCrmDeal::Add stage validation may use STALE data from previous run, causing it
+        // to silently reset CATEGORY_ID=0 and STAGE_ID=NEW. This is the root cause of
+        // "deals sometimes all fly to default pipeline" on re-runs.
+        $this->flushCrmStatusCaches();
+    }
+
+    /**
+     * Force invalidation of all CRM status/pipeline caches (static + managed).
+     * Required after creating/modifying deal categories and their stages, otherwise
+     * CCrmDeal::Add may validate stage_id against stale data and silently downgrade
+     * the deal to default category.
+     */
+    public function flushCrmStatusCaches(): void
+    {
+        // 1. Clear Bitrix managed cache for b_crm_status table
+        try {
+            $app = \Bitrix\Main\Application::getInstance();
+            $app->getManagedCache()->cleanAll();
+        } catch (\Throwable $e) {}
+
+        // 2. Clear static cache in StatusTable via reflection (removeStatusesFromCache is protected)
+        try {
+            $ref = new \ReflectionClass('\\Bitrix\\Crm\\StatusTable');
+            if ($ref->hasProperty('statusesCache')) {
+                $prop = $ref->getProperty('statusesCache');
+                $prop->setAccessible(true);
+                $prop->setValue(null, []);
+            }
+        } catch (\Throwable $e) {}
+
+        // 3. Clear DealCategory::$all static cache
+        try {
+            $ref = new \ReflectionClass('\\Bitrix\\Crm\\Category\\DealCategory');
+            foreach (['all', 'fieldInfos'] as $propName) {
+                if ($ref->hasProperty($propName)) {
+                    $prop = $ref->getProperty($propName);
+                    $prop->setAccessible(true);
+                    $prop->setValue(null, null);
+                }
+            }
+        } catch (\Throwable $e) {}
+
+        // 4. Clear cache_dir files for b_crm_status table explicitly
+        try {
+            $app = \Bitrix\Main\Application::getInstance();
+            $cache = $app->getCache();
+            $cache->cleanDir('/b_crm_status');
+            $cache->cleanDir('/b_crm_deal');
+        } catch (\Throwable $e) {}
+
+        $this->addLog("  CRM status caches invalidated");
     }
 
     private function syncPipelineStages($cloudEntityId, $boxEntityId, $cloudStages)
     {
         if (empty($cloudStages)) return;
 
-        // Get current box stages for this entity
+        // Get all current box stages for this entity
         $boxStatuses = $this->boxAPI->getStatuses();
-        $boxStagesByStatusId = [];
-        $boxStagesByName = [];
+        $existingBoxStages = [];
         foreach ($boxStatuses as $s) {
             if (($s['ENTITY_ID'] ?? '') === $boxEntityId) {
-                $boxStagesByStatusId[$s['STATUS_ID']] = $s;
-                $name = mb_strtolower(trim($s['NAME'] ?? ''));
-                if ($name) $boxStagesByName[$name] = $s;
+                $existingBoxStages[$s['STATUS_ID']] = $s;
             }
         }
 
+        // Build set of cloud STATUS_IDs (after prefix remap) — these are the FINAL stages
+        $boxCatId = str_replace('DEAL_STAGE_', '', $boxEntityId);
+        $isDealPipeline = (strpos($boxEntityId, 'DEAL_STAGE') === 0);
+        $remap = function ($cloudStatusId) use ($cloudEntityId, $boxEntityId, $boxCatId) {
+            if ($cloudEntityId !== $boxEntityId && preg_match('/^C(\d+):(.+)$/', $cloudStatusId, $m)) {
+                return 'C' . $boxCatId . ':' . $m[2];
+            }
+            return $cloudStatusId;
+        };
+
+        // STEP 1: Delete existing box stages that don't match any cloud stage
+        // Skip system stages (SYSTEM='Y') — Bitrix protects them
+        $cloudStatusIds = [];
         foreach ($cloudStages as $stage) {
+            $cloudStatusIds[$remap($stage['STATUS_ID'] ?? '')] = true;
+        }
+        foreach ($existingBoxStages as $sid => $boxStage) {
+            if (isset($cloudStatusIds[$sid])) continue; // keep matching
+            if (($boxStage['SYSTEM'] ?? 'N') === 'Y') continue; // system stage
+            try {
+                $this->boxAPI->deleteStatus((int)$boxStage['ID']);
+            } catch (\Throwable $e) {
+                // Non-critical
+            }
+        }
+
+        // Re-fetch box stages after delete
+        $boxStatuses = $this->boxAPI->getStatuses();
+        $existingBoxStages = [];
+        foreach ($boxStatuses as $s) {
+            if (($s['ENTITY_ID'] ?? '') === $boxEntityId) {
+                $existingBoxStages[$s['STATUS_ID']] = $s;
+            }
+        }
+
+        // STEP 2a: BUMP existing WIN/LOST stages to very high SORT so new process stages
+        // (with SORT 100-900) fit BEFORE them. Bitrix requires: process SORT < won/lost SORT.
+        $winBumpSort = 10000;
+        $lostBumpSort = 20000;
+        foreach ($existingBoxStages as $sid => $s) {
+            $sem = $s['SEMANTICS'] ?? '';
+            if ($sem === 'S' || $sem === 'F') {
+                try {
+                    $newSort = ($sem === 'S') ? $winBumpSort : $lostBumpSort;
+                    $this->boxAPI->updateStatus((int)$s['ID'], ['SORT' => $newSort]);
+                    $existingBoxStages[$sid]['SORT'] = $newSort;
+                    if ($sem === 'S') $winBumpSort += 10;
+                    else $lostBumpSort += 10;
+                } catch (\Throwable $e) { /* non-critical */ }
+            }
+        }
+
+        // STEP 2b: Sort cloud stages by semantic — Bitrix REQUIRES order: process → WON → LOST
+        $processStages = [];
+        $wonStages = [];
+        $lostStages = [];
+        foreach ($cloudStages as $stage) {
+            $sem = $stage['SEMANTICS'] ?? '';
+            if ($sem === 'S') {
+                $wonStages[] = $stage;
+            } elseif ($sem === 'F') {
+                $lostStages[] = $stage;
+            } else {
+                $processStages[] = $stage;
+            }
+        }
+        $orderedStages = array_merge($processStages, $wonStages, $lostStages);
+
+        // STEP 3: Add/update stages with SORT bucketed by semantic
+        $processSort = 100;
+        $wonSort = 10000;
+        $lostSort = 20000;
+
+        foreach ($orderedStages as $stage) {
             $this->rateLimit();
             $cloudStatusId = $stage['STATUS_ID'] ?? '';
+            $boxStatusId = $remap($cloudStatusId);
 
-            // Remap STATUS_ID prefix for custom pipelines: C5:NEW → C12:NEW
-            $boxStatusId = $cloudStatusId;
-            if ($cloudEntityId !== $boxEntityId && preg_match('/^C(\d+):(.+)$/', $cloudStatusId, $m)) {
-                $boxCatId = str_replace('DEAL_STAGE_', '', $boxEntityId);
-                $boxStatusId = 'C' . $boxCatId . ':' . $m[2];
+            $semantic = $stage['SEMANTICS'] ?? '';
+            if ($semantic === 'S') {
+                $sort = $wonSort;
+                $wonSort += 10;
+            } elseif ($semantic === 'F') {
+                $sort = $lostSort;
+                $lostSort += 10;
+            } else {
+                $sort = $processSort;
+                $processSort += 10;
             }
 
-            if (isset($boxStagesByStatusId[$boxStatusId])) {
+            if (isset($existingBoxStages[$boxStatusId])) {
+                // Stage exists — try to update SORT/NAME to match cloud order
                 $this->stageMapCache[$cloudStatusId] = $boxStatusId;
-            } else {
-                // Try match by name (stage may exist with different prefix)
-                $stageName = mb_strtolower(trim($stage['NAME'] ?? ''));
-                if ($stageName && isset($boxStagesByName[$stageName])) {
-                    $this->stageMapCache[$cloudStatusId] = $boxStagesByName[$stageName]['STATUS_ID'];
-                } else {
-                    // Create stage on box with remapped STATUS_ID
-                    try {
-                        $this->boxAPI->addStatus([
-                            'ENTITY_ID' => $boxEntityId,
-                            'STATUS_ID' => $boxStatusId,
-                            'NAME' => $stage['NAME'] ?? $cloudStatusId,
-                            'SORT' => $stage['SORT'] ?? 10,
-                            'COLOR' => $stage['COLOR'] ?? '',
-                            'SEMANTICS' => $stage['SEMANTICS'] ?? '',
-                        ]);
-                        $this->stageMapCache[$cloudStatusId] = $boxStatusId;
-                    } catch (\Throwable $e) {
-                        // Do NOT map failed stages — deals referencing them will fail
-                        $this->addLog("  WARN: Стадия '{$stage['NAME']}' ($boxStatusId) НЕ создана, маппинг пропущен: " . $e->getMessage());
+                try {
+                    $updFields = [
+                        'NAME' => $stage['NAME'] ?? $cloudStatusId,
+                        'SORT' => $sort,
+                        'COLOR' => $stage['COLOR'] ?? '',
+                    ];
+                    $this->boxAPI->updateStatus((int)$existingBoxStages[$boxStatusId]['ID'], $updFields);
+                } catch (\Throwable $e) { /* non-critical */ }
+                continue;
+            }
+
+            $stageFields = [
+                'ENTITY_ID' => $boxEntityId,
+                'STATUS_ID' => $boxStatusId,
+                'NAME' => $stage['NAME'] ?? $cloudStatusId,
+                'SORT' => $sort,
+                'COLOR' => $stage['COLOR'] ?? '',
+            ];
+            // Only set SEMANTICS for deal pipelines, and only if non-empty
+            if ($isDealPipeline && !empty($semantic)) {
+                $stageFields['SEMANTICS'] = $semantic;
+            }
+
+            try {
+                $this->boxAPI->addStatus($stageFields);
+                $this->stageMapCache[$cloudStatusId] = $boxStatusId;
+            } catch (\Throwable $e) {
+                // Retry without SEMANTICS if conflict
+                try {
+                    unset($stageFields['SEMANTICS']);
+                    $this->boxAPI->addStatus($stageFields);
+                    $this->stageMapCache[$cloudStatusId] = $boxStatusId;
+                    if (!empty($semantic)) {
+                        $this->addLog("  Стадия '{$stage['NAME']}' создана без SEMANTICS=$semantic");
                     }
+                } catch (\Throwable $e2) {
+                    $this->addLog("  WARN: Стадия '{$stage['NAME']}' ($boxStatusId) НЕ создана: " . $e2->getMessage());
                 }
             }
         }
@@ -1294,6 +1742,13 @@ class MigrationService
                 continue;
             }
 
+            // crm.company.list does NOT return multifields (PHONE/EMAIL/WEB/IM)
+            // → fetch full data via crm.company.get
+            try {
+                $full = $this->cloudAPI->getCompany($cloudId);
+                if (!empty($full)) $company = $full;
+            } catch (\Throwable $e) { /* fall back to list data */ }
+
             // Fast title lookup from pre-built cache
             $existing = null;
             $titleKey = mb_strtolower(trim($company['TITLE'] ?? ''));
@@ -1351,11 +1806,41 @@ class MigrationService
         $this->saveStats(['companies' => ['total' => $total, 'created' => $created, 'updated' => $updated, 'skipped' => $skipped, 'errors' => $errors]]);
     }
 
+    /**
+     * Convert cloud-style flat multifield arrays (PHONE/EMAIL/WEB/IM) to the
+     * FM[] format expected by CCrmContact/Company/Lead::Add().
+     *
+     * Cloud format: $entity['PHONE'] = [['ID'=>123, 'VALUE'=>'+375...', 'VALUE_TYPE'=>'WORK'], ...]
+     * Box FM format: $fields['FM']['PHONE']['n1'] = ['VALUE'=>'+375...', 'VALUE_TYPE'=>'WORK']
+     */
+    private function packMultifields(array $entity): array
+    {
+        $fm = [];
+        foreach (['PHONE', 'EMAIL', 'WEB', 'IM'] as $type) {
+            if (empty($entity[$type]) || !is_array($entity[$type])) continue;
+            $i = 0;
+            foreach ($entity[$type] as $row) {
+                if (!is_array($row)) continue;
+                $value = trim((string)($row['VALUE'] ?? ''));
+                if ($value === '') continue;
+                $valueType = (string)($row['VALUE_TYPE'] ?? '');
+                if ($valueType === '') {
+                    $valueType = ($type === 'EMAIL' || $type === 'PHONE') ? 'WORK' : 'OTHER';
+                }
+                $fm[$type]['n' . (++$i)] = [
+                    'VALUE'      => $value,
+                    'VALUE_TYPE' => $valueType,
+                ];
+            }
+        }
+        return $fm;
+    }
+
     private function buildCompanyFields($company)
     {
         $fields = [];
         $copy = ['TITLE', 'COMPANY_TYPE', 'INDUSTRY', 'EMPLOYEES', 'REVENUE', 'CURRENCY_ID',
-                 'COMMENTS', 'OPENED', 'ADDRESS', 'ADDRESS_2', 'ADDRESS_CITY',
+                 'COMMENTS', 'OPENED', 'IS_MY_COMPANY', 'ADDRESS', 'ADDRESS_2', 'ADDRESS_CITY',
                  'ADDRESS_POSTAL_CODE', 'ADDRESS_REGION', 'ADDRESS_PROVINCE', 'ADDRESS_COUNTRY',
                  'SOURCE_ID', 'SOURCE_DESCRIPTION', 'BANKING_DETAILS',
                  'UTM_SOURCE', 'UTM_MEDIUM', 'UTM_CAMPAIGN', 'UTM_CONTENT', 'UTM_TERM'];
@@ -1373,16 +1858,18 @@ class MigrationService
             if ($boxUser) $fields['ASSIGNED_BY_ID'] = $boxUser;
         }
 
-        if (!empty($company['PHONE'])) $fields['PHONE'] = $company['PHONE'];
-        if (!empty($company['EMAIL'])) $fields['EMAIL'] = $company['EMAIL'];
-        if (!empty($company['WEB'])) $fields['WEB'] = $company['WEB'];
-        if (!empty($company['IM'])) $fields['IM'] = $company['IM'];
+        $fm = $this->packMultifields($company);
+        if (!empty($fm)) $fields['FM'] = $fm;
 
-        foreach ($company as $k => $v) {
-            if (strncmp($k, 'UF_CRM_', 7) === 0 && $v !== '' && $v !== null) {
-                $fields[$k] = $v;
+        // Download LOGO (standard CRM file field, same format as UF type=file)
+        if (!empty($company['LOGO'])) {
+            $logoArray = $this->downloadCrmFileField($company['LOGO']);
+            if ($logoArray) {
+                $fields['LOGO'] = $logoArray;
             }
         }
+
+        $this->copyUfFields('company', $company, $fields);
 
         return $fields;
     }
@@ -1427,6 +1914,13 @@ class MigrationService
                 $skipped++;
                 continue;
             }
+
+            // crm.contact.list does NOT return multifields (PHONE/EMAIL/WEB/IM)
+            // → fetch full data via crm.contact.get
+            try {
+                $full = $self->cloudAPI->getContact($cloudId);
+                if (!empty($full)) $contact = $full;
+            } catch (\Throwable $e) { /* fall back to list data */ }
 
             $existing = $self->findDuplicate('contact', $contact, $matchBy);
             if ($existing) {
@@ -1498,16 +1992,18 @@ class MigrationService
             $fields['COMPANY_ID'] = $this->companyMapCache[(int)$contact['COMPANY_ID']];
         }
 
-        if (!empty($contact['PHONE'])) $fields['PHONE'] = $contact['PHONE'];
-        if (!empty($contact['EMAIL'])) $fields['EMAIL'] = $contact['EMAIL'];
-        if (!empty($contact['WEB'])) $fields['WEB'] = $contact['WEB'];
-        if (!empty($contact['IM'])) $fields['IM'] = $contact['IM'];
+        $fm = $this->packMultifields($contact);
+        if (!empty($fm)) $fields['FM'] = $fm;
 
-        foreach ($contact as $k => $v) {
-            if (strncmp($k, 'UF_CRM_', 7) === 0 && $v !== '' && $v !== null) {
-                $fields[$k] = $v;
+        // Download PHOTO (standard CRM file field, same format as UF type=file)
+        if (!empty($contact['PHOTO'])) {
+            $photoArray = $this->downloadCrmFileField($contact['PHOTO']);
+            if ($photoArray) {
+                $fields['PHOTO'] = $photoArray;
             }
         }
+
+        $this->copyUfFields('contact', $contact, $fields);
 
         return $fields;
     }
@@ -1643,11 +2139,52 @@ class MigrationService
                     $cb = $self->mapUser($deal['CREATED_BY_ID']);
                     if ($cb) $fields['CREATED_BY_ID'] = $cb;
                 }
+                $sentCatId = $fields['CATEGORY_ID'] ?? 0;
+                $sentStageId = $fields['STAGE_ID'] ?? '';
+
+                // PRE-CREATE CHECK: verify pipeline actually exists in DB and has the stage
+                if ($sentCatId > 0) {
+                    try {
+                        $conn = \Bitrix\Main\Application::getConnection();
+                        $catRow = $conn->query("SELECT ID FROM b_crm_deal_category WHERE ID = " . (int)$sentCatId)->fetch();
+                        $stageCount = 0;
+                        if ($sentStageId) {
+                            $stageEntityId = 'DEAL_STAGE_' . (int)$sentCatId;
+                            $stageRow = $conn->query("SELECT COUNT(*) AS cnt FROM b_crm_status WHERE ENTITY_ID = '" . $conn->getSqlHelper()->forSql($stageEntityId) . "' AND STATUS_ID = '" . $conn->getSqlHelper()->forSql($sentStageId) . "'")->fetch();
+                            $stageCount = (int)($stageRow['cnt'] ?? 0);
+                        }
+                        if (!$catRow || $stageCount === 0) {
+                            $self->addLog('    PRE-CHECK: cat#' . $sentCatId . ' exists=' . ($catRow ? 'YES' : 'NO') . ', stage "' . $sentStageId . '" exists=' . $stageCount);
+                            // Invalidate caches and retry verification
+                            $self->flushCrmStatusCaches();
+                        }
+                    } catch (\Throwable $e) { /* diagnostic only */ }
+                }
+
                 $newId = BoxD7Service::createDeal($fields);
                 if ($newId) {
                     $self->dealMapCache[$cloudId] = $newId;
                     $self->saveToMap('deal', $cloudId, $newId);
                     $created++;
+
+                    // Verify: fetch the deal from DB and check what Bitrix actually stored
+                    try {
+                        $conn = \Bitrix\Main\Application::getConnection();
+                        $row = $conn->query("SELECT CATEGORY_ID, STAGE_ID FROM b_crm_deal WHERE ID = " . (int)$newId)->fetch();
+                        if ($row) {
+                            $actualCat = (int)$row['CATEGORY_ID'];
+                            $actualStage = $row['STAGE_ID'];
+                            if ($actualCat !== (int)$sentCatId || $actualStage !== $sentStageId) {
+                                $self->addLog('    OVERRIDE: box deal #' . $newId . ' cat=' . $actualCat . ' (sent ' . $sentCatId . '), stage=' . $actualStage . ' (sent ' . $sentStageId . ')');
+                                // Attempt to FIX by direct SQL UPDATE (bypasses CCrmDeal::Update validation)
+                                $conn->queryExecute("UPDATE b_crm_deal SET CATEGORY_ID = " . (int)$sentCatId
+                                    . ", STAGE_ID = '" . $conn->getSqlHelper()->forSql($sentStageId) . "'"
+                                    . " WHERE ID = " . (int)$newId);
+                                $self->addLog('    FIXED: SQL UPDATE cat=' . $sentCatId . ' stage=' . $sentStageId);
+                            }
+                        }
+                    } catch (\Throwable $e) { /* diagnostic only */ }
+
                     if (!empty($deal['DATE_CREATE'])) {
                         try {
                             BoxD7Service::backdateEntity('b_crm_deal', $newId, $deal['DATE_CREATE'], $deal['DATE_MODIFY'] ?? '');
@@ -1679,12 +2216,26 @@ class MigrationService
         }
 
         $catId = (int)($deal['CATEGORY_ID'] ?? 0);
-        $boxCatId = $this->pipelineMapCache[$catId] ?? $catId;
+        if (isset($this->pipelineMapCache[$catId])) {
+            $boxCatId = $this->pipelineMapCache[$catId];
+        } else {
+            // Cloud category not mapped to box → log warning, fall back to default
+            $this->addLog("  WARN: Сделка #{$deal['ID']} ссылается на воронку $catId которой нет в pipelineMapCache, ставлю CATEGORY_ID=0");
+            $boxCatId = 0;
+        }
         $fields['CATEGORY_ID'] = $boxCatId;
 
-        if (!empty($deal['STAGE_ID'])) {
-            $fields['STAGE_ID'] = $this->remapStageId($deal['STAGE_ID'], $catId, $boxCatId);
+        $cloudStageId = $deal['STAGE_ID'] ?? '';
+        $boxStageId = '';
+        if (!empty($cloudStageId)) {
+            $boxStageId = $this->remapStageId($cloudStageId, $catId, $boxCatId);
+            $fields['STAGE_ID'] = $boxStageId;
         }
+
+        // Diagnostic: log per-deal mapping (cloud cat/stage -> box cat/stage)
+        $stageMappedFlag = (isset($this->stageMapCache[$cloudStageId])) ? 'OK' : 'NO_MAP';
+        $this->addLog('  Сделка #' . $deal['ID'] . " '" . ($deal['TITLE'] ?? '') . "': cat " . $catId . '->' . $boxCatId
+            . ', stage ' . $cloudStageId . '->' . $boxStageId . ' [' . $stageMappedFlag . ']');
 
         if (!empty($deal['ASSIGNED_BY_ID'])) {
             $boxUser = $this->mapUser($deal['ASSIGNED_BY_ID']);
@@ -1703,11 +2254,7 @@ class MigrationService
             $fields['LEAD_ID'] = $this->leadMapCache[(int)$deal['LEAD_ID']];
         }
 
-        foreach ($deal as $k => $v) {
-            if (strncmp($k, 'UF_CRM_', 7) === 0 && $v !== '' && $v !== null) {
-                $fields[$k] = $v;
-            }
-        }
+        $this->copyUfFields('deal', $deal, $fields);
 
         return $fields;
     }
@@ -1782,6 +2329,13 @@ class MigrationService
                 $skipped++;
                 continue;
             }
+
+            // crm.lead.list does NOT return multifields (PHONE/EMAIL/WEB/IM)
+            // → fetch full data via crm.lead.get
+            try {
+                $full = $self->cloudAPI->getLead($cloudId);
+                if (!empty($full)) $lead = $full;
+            } catch (\Throwable $e) { /* fall back to list data */ }
 
             $existing = $self->findDuplicate('lead', $lead, $matchBy);
             if ($existing) {
@@ -1858,16 +2412,10 @@ class MigrationService
             $fields['CONTACT_ID'] = $this->contactMapCache[(int)$lead['CONTACT_ID']];
         }
 
-        if (!empty($lead['PHONE'])) $fields['PHONE'] = $lead['PHONE'];
-        if (!empty($lead['EMAIL'])) $fields['EMAIL'] = $lead['EMAIL'];
-        if (!empty($lead['WEB'])) $fields['WEB'] = $lead['WEB'];
-        if (!empty($lead['IM'])) $fields['IM'] = $lead['IM'];
+        $fm = $this->packMultifields($lead);
+        if (!empty($fm)) $fields['FM'] = $fm;
 
-        foreach ($lead as $k => $v) {
-            if (strncmp($k, 'UF_CRM_', 7) === 0 && $v !== '' && $v !== null) {
-                $fields[$k] = $v;
-            }
-        }
+        $this->copyUfFields('lead', $lead, $fields);
 
         return $fields;
     }
@@ -1884,6 +2432,12 @@ class MigrationService
             3 => ['name' => 'contact', 'cache' => &$this->contactMapCache],
         ];
 
+        // Build cloud→box preset mapping (critical — cloud and box may use
+        // different preset IDs, especially when country differs: cloud BY vs box RU).
+        // Match by (COUNTRY_ID, NAME) with fallback to (NAME) only.
+        $presetMap = $this->buildRequisitePresetMap();
+        $this->addLog("  Маппинг пресетов реквизитов: " . json_encode($presetMap));
+
         $totalReq = 0;
         $totalBank = 0;
         $errors = 0;
@@ -1899,15 +2453,58 @@ class MigrationService
                     foreach ($requisites as $req) {
                         $this->rateLimit();
                         $cloudReqId = (int)$req['ID'];
+                        $cloudPresetId = (int)($req['PRESET_ID'] ?? 0);
                         unset($req['ID'], $req['DATE_CREATE'], $req['DATE_MODIFY'],
                               $req['CREATED_BY_ID'], $req['MODIFY_BY_ID']);
                         $req['ENTITY_TYPE_ID'] = $typeId;
                         $req['ENTITY_ID'] = $boxEntityId;
 
+                        // Remap PRESET_ID (or create missing preset on box)
+                        if ($cloudPresetId > 0) {
+                            if (isset($presetMap[$cloudPresetId])) {
+                                $req['PRESET_ID'] = $presetMap[$cloudPresetId];
+                            } else {
+                                $this->addLog("  WARN: preset #$cloudPresetId не найден в маппинге, будет использован как есть");
+                            }
+                        }
+
                         try {
-                            $boxReqId = BoxD7Service::addRequisite($req);
-                            if ($boxReqId) {
+                            $requisiteObj = new \Bitrix\Crm\EntityRequisite();
+                            $result = $requisiteObj->add($req);
+                            if ($result->isSuccess()) {
+                                $boxReqId = $result->getId();
+                                $boxPresetId = (int)($req['PRESET_ID'] ?? 0);
                                 $totalReq++;
+
+                                // Migrate addresses attached to this requisite (from crm.address.list)
+                                // Address ENTITY_TYPE_ID=8 (Requisite), ENTITY_ID=requisite_id
+                                try {
+                                    $addresses = $this->cloudAPI->getRequisiteAddresses($cloudReqId);
+                                    foreach ($addresses as $addr) {
+                                        $typeIdAddr = (int)($addr['TYPE_ID'] ?? 1);
+                                        $addrFields = [
+                                            'ADDRESS_1'    => $addr['ADDRESS_1'] ?? '',
+                                            'ADDRESS_2'    => $addr['ADDRESS_2'] ?? '',
+                                            'CITY'         => $addr['CITY'] ?? '',
+                                            'POSTAL_CODE'  => $addr['POSTAL_CODE'] ?? '',
+                                            'REGION'       => $addr['REGION'] ?? '',
+                                            'PROVINCE'     => $addr['PROVINCE'] ?? '',
+                                            'COUNTRY'      => $addr['COUNTRY'] ?? '',
+                                            'COUNTRY_CODE' => $addr['COUNTRY_CODE'] ?? '',
+                                        ];
+                                        try {
+                                            \Bitrix\Crm\EntityAddress::register(
+                                                \CCrmOwnerType::Requisite,
+                                                $boxReqId,
+                                                $typeIdAddr,
+                                                $addrFields
+                                            );
+                                        } catch (\Throwable $e) {
+                                            $this->addLog("  Ошибка адреса реквизита #{$boxReqId}: " . $e->getMessage());
+                                        }
+                                    }
+                                } catch (\Throwable $e) { /* non-critical */ }
+
                                 // Migrate bank details for this requisite
                                 try {
                                     $bankDetails = $this->cloudAPI->getBankDetails($cloudReqId);
@@ -1916,16 +2513,32 @@ class MigrationService
                                         unset($bank['ID'], $bank['DATE_CREATE'], $bank['DATE_MODIFY'],
                                               $bank['CREATED_BY_ID'], $bank['MODIFY_BY_ID']);
                                         $bank['ENTITY_ID'] = $boxReqId;
+                                        // Required: ENTITY_TYPE_ID=8 (Requisite) — без этого "Не заполнено обязательное поле ID типа сущности"
+                                        $bank['ENTITY_TYPE_ID'] = \CCrmOwnerType::Requisite;
                                         try {
-                                            BoxD7Service::addBankDetail($bank);
-                                            $totalBank++;
+                                            $bankObj = new \Bitrix\Crm\EntityBankDetail();
+                                            // Required: FIELD_CHECK_OPTIONS[PRESET_ID] — без этого "The presetId must be defined"
+                                            $bankResult = $bankObj->add($bank, [
+                                                'FIELD_CHECK_OPTIONS' => ['PRESET_ID' => $boxPresetId],
+                                            ]);
+                                            if ($bankResult->isSuccess()) {
+                                                $totalBank++;
+                                            } else {
+                                                $errors++;
+                                                $this->addLog("  Ошибка банк.реквизита: " . implode('; ', $bankResult->getErrorMessages()));
+                                            }
                                         } catch (\Throwable $e) {
                                             $errors++;
+                                            $this->addLog("  Ошибка банк.реквизита: " . $e->getMessage());
                                         }
                                     }
                                 } catch (\Throwable $e) {
                                     // non-critical
                                 }
+                            } else {
+                                $errors++;
+                                $this->addLog("  Ошибка реквизита ({$cfg['name']} box#{$boxEntityId}): "
+                                    . implode('; ', $result->getErrorMessages()));
                             }
                         } catch (\Throwable $e) {
                             $errors++;
@@ -1941,12 +2554,103 @@ class MigrationService
         $this->addLog("Реквизиты: создано=$totalReq, банковских реквизитов=$totalBank, ошибок=$errors");
     }
 
+    /**
+     * Build cloud preset ID → box preset ID mapping.
+     * Cloud and box may have different preset IDs even for same-named presets,
+     * especially when the default country differs (cloud BY vs box RU).
+     *
+     * Strategy:
+     * 1. Match by (COUNTRY_ID, NAME) — exact match
+     * 2. If not found, create a new preset on box by copying cloud preset fields
+     * 3. Fallback: match by NAME only (any country)
+     */
+    private function buildRequisitePresetMap(): array
+    {
+        $map = [];
+        try {
+            $cloudPresets = $this->cloudAPI->request('crm.requisite.preset.list', [])['result'] ?? [];
+        } catch (\Throwable $e) {
+            $this->addLog("  Не удалось получить пресеты из облака: " . $e->getMessage());
+            return $map;
+        }
+        if (empty($cloudPresets)) return $map;
+
+        // Load box presets
+        $conn = \Bitrix\Main\Application::getConnection();
+        $boxPresets = $conn->query("SELECT ID, NAME, COUNTRY_ID, ENTITY_TYPE_ID FROM b_crm_preset")->fetchAll();
+
+        // Index box presets by (country_id + name) and by name
+        $byCountryName = [];
+        $byName = [];
+        foreach ($boxPresets as $p) {
+            $name = mb_strtolower(trim($p['NAME'] ?? ''));
+            $country = (int)($p['COUNTRY_ID'] ?? 0);
+            $byCountryName["$country|$name"] = (int)$p['ID'];
+            if (!isset($byName[$name])) $byName[$name] = (int)$p['ID'];
+        }
+
+        foreach ($cloudPresets as $cp) {
+            $cloudId = (int)($cp['ID'] ?? 0);
+            if ($cloudId <= 0) continue;
+            $cloudName = mb_strtolower(trim($cp['NAME'] ?? ''));
+            $cloudCountry = (int)($cp['COUNTRY_ID'] ?? 0);
+
+            // 1. Exact match by country + name
+            $key = "$cloudCountry|$cloudName";
+            if (isset($byCountryName[$key])) {
+                $map[$cloudId] = $byCountryName[$key];
+                continue;
+            }
+
+            // 2. Create missing preset on box via EntityPreset
+            try {
+                $presetObj = new \Bitrix\Crm\EntityPreset();
+                $newPresetFields = [
+                    'NAME' => $cp['NAME'] ?? 'Preset ' . $cloudId,
+                    'COUNTRY_ID' => $cloudCountry,
+                    'ENTITY_TYPE_ID' => (int)($cp['ENTITY_TYPE_ID'] ?? 8),
+                    'ACTIVE' => 'Y',
+                    'SORT' => (int)($cp['SORT'] ?? 500),
+                    'SETTINGS' => $cp['SETTINGS'] ?? [],
+                ];
+                $presetResult = $presetObj->add($newPresetFields);
+                if ($presetResult->isSuccess()) {
+                    $newId = $presetResult->getId();
+                    $map[$cloudId] = $newId;
+                    // Update cache for next iterations
+                    $byCountryName[$key] = $newId;
+                    $byName[$cloudName] = $newId;
+                    $this->addLog("  Создан пресет '{$cp['NAME']}' (country=$cloudCountry) box#$newId");
+                    continue;
+                }
+            } catch (\Throwable $e) { /* try next strategy */ }
+
+            // 3. Fallback: match by name only
+            if (isset($byName[$cloudName])) {
+                $map[$cloudId] = $byName[$cloudName];
+                $this->addLog("  Fallback пресет cloud#$cloudId → box#{$byName[$cloudName]} (по имени, country не совпал)");
+            }
+        }
+
+        return $map;
+    }
+
     // =========================================================================
     // Phase 13: Timeline (Activities & Comments)
     // =========================================================================
 
     private function migrateTimeline()
     {
+        // Authorize admin (USER ID=1) in CLI — required for FileUserType::checkFields
+        // which calls $fileModel->canRead($securityContext) using the current user
+        global $USER;
+        if (!is_object($USER)) {
+            $USER = new \CUser;
+        }
+        if (!$USER->IsAuthorized()) {
+            $USER->Authorize(1);
+        }
+
         // Allow attaching files to timeline comments from any user context
         if (\Bitrix\Main\Loader::includeModule('disk')) {
             \Bitrix\Disk\Uf\FileUserType::setValueForAllowEdit('CRM_TIMELINE', true);
@@ -2067,20 +2771,53 @@ class MigrationService
                     foreach ($comments as $comment) {
                         $this->rateLimit();
 
+                        // crm.timeline.comment.list does NOT return FILES
+                        // → fetch full data via crm.timeline.comment.get
+                        try {
+                            $cId = (int)($comment['ID'] ?? 0);
+                            if ($cId > 0) {
+                                $full = $this->cloudAPI->getTimelineComment($cId);
+                                if (!empty($full)) $comment = $full;
+                            }
+                        } catch (\Throwable $e) { /* fall back to list data */ }
+
                         // Download files via disk.file.get (auth URL, not urlDownload)
                         $diskFileIds = [];
                         $commentFiles = $comment['FILES'] ?? [];
+
+                        // DIAGNOSTIC: log full comment structure if FILES is empty/missing
+                        if (empty($commentFiles)) {
+                            $cId = (int)($comment['ID'] ?? 0);
+                            $hasFilesFlag = $comment['SETTINGS']['HAS_FILES'] ?? '?';
+                            $textPreview = mb_substr($comment['COMMENT'] ?? '', 0, 30);
+                            $allKeys = implode(',', array_keys($comment));
+                            $this->addLog("  Комментарий #$cId: FILES пустое, HAS_FILES=$hasFilesFlag, текст='$textPreview', ключи: $allKeys");
+                        }
+
                         if (!empty($commentFiles) && is_array($commentFiles)) {
+                            $this->addLog("  Комментарий #" . ($comment['ID'] ?? '?') . ": " . count($commentFiles) . " файлов");
                             foreach ($commentFiles as $cf) {
-                                $cfId = (int)($cf['id'] ?? 0);
-                                if ($cfId <= 0) continue;
+                                $cfId = (int)($cf['id'] ?? $cf['ID'] ?? 0);
+                                $cfName = $cf['name'] ?? $cf['NAME'] ?? 'file';
+                                if ($cfId <= 0) {
+                                    $this->addLog("    Файл без ID: " . json_encode($cf, JSON_UNESCAPED_UNICODE));
+                                    continue;
+                                }
                                 try {
                                     $diskInfo = $this->cloudAPI->getDiskFile($cfId);
                                     $dlUrl = $diskInfo['DOWNLOAD_URL'] ?? '';
-                                    if (empty($dlUrl)) continue;
-                                    $boxDiskId = $this->downloadCloudFileToBox($dlUrl, $cf['name'] ?? $diskInfo['NAME'] ?? 'file');
-                                    if ($boxDiskId > 0) $diskFileIds[] = $boxDiskId;
-                                } catch (\Throwable $e) { /* skip */ }
+                                    if (empty($dlUrl)) {
+                                        $this->addLog("    Файл #$cfId '$cfName': нет DOWNLOAD_URL");
+                                        continue;
+                                    }
+                                    $boxDiskId = $this->downloadCloudFileToBox($dlUrl, $cfName);
+                                    if ($boxDiskId > 0) {
+                                        $diskFileIds[] = $boxDiskId;
+                                        $this->addLog("    Файл '$cfName' -> box disk #$boxDiskId");
+                                    }
+                                } catch (\Throwable $e) {
+                                    $this->addLog("    Файл #$cfId '$cfName': " . $e->getMessage());
+                                }
                             }
                         }
 
@@ -2096,11 +2833,19 @@ class MigrationService
                                 'BINDINGS' => [['ENTITY_TYPE_ID' => $typeId, 'ENTITY_ID' => $boxId]],
                             ];
                             if (!empty($diskFileIds)) {
+                                // FILES go through CommentEntry::create -> attachFiles -> $USER_FIELD_MANAGER->Update
+                                // Field name is UF_CRM_COMMENT_FILES (CommentController::UF_COMMENT_FILE_NAME)
+                                // Requires authorized $USER (set above) for FileUserType::checkFields canRead check
                                 $createParams['FILES'] = array_map(fn($id) => 'n' . $id, $diskFileIds);
                                 $createParams['SETTINGS'] = ['HAS_FILES' => 'Y'];
                             }
                             $commentId = \Bitrix\Crm\Timeline\CommentEntry::create($createParams);
                             $totalComments++;
+
+                            if ($commentId > 0 && !empty($diskFileIds)) {
+                                $this->addLog("    Прикреплено " . count($diskFileIds) . " файлов к комментарию #$commentId");
+                            }
+
                             if ($commentId > 0 && !empty($comment['CREATED'])) {
                                 try {
                                     BoxD7Service::backdateEntity('b_crm_timeline', $commentId, $comment['CREATED']);
@@ -2802,23 +3547,41 @@ class MigrationService
     private function downloadCloudFileToBox(string $downloadUrl, string $fileName): int
     {
         if ($this->migrationFolderId <= 0) return 0;
+        if (empty($downloadUrl)) return 0;
 
+        // Try downloading the URL as-is first (cloud DOWNLOAD_URL has its own embedded token)
+        // If that fails with 401, try with ?auth=<webhook_secret> appended
         $tmpPath = tempnam(sys_get_temp_dir(), 'bx_mig_');
         try {
-            $ch = curl_init($downloadUrl);
-            $fp = fopen($tmpPath, 'wb');
-            curl_setopt_array($ch, [
-                CURLOPT_FILE           => $fp,
-                CURLOPT_TIMEOUT        => 120,
-                CURLOPT_FOLLOWLOCATION => true,
-                CURLOPT_SSL_VERIFYPEER => false,
-            ]);
-            curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
-            fclose($fp);
+            $download = function ($url) use ($tmpPath) {
+                @ftruncate(fopen($tmpPath, 'wb'), 0);
+                $ch = curl_init($url);
+                $fp = fopen($tmpPath, 'wb');
+                curl_setopt_array($ch, [
+                    CURLOPT_FILE           => $fp,
+                    CURLOPT_TIMEOUT        => 120,
+                    CURLOPT_FOLLOWLOCATION => true,
+                    CURLOPT_SSL_VERIFYPEER => false,
+                ]);
+                curl_exec($ch);
+                $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
+                fclose($fp);
+                return $code;
+            };
+
+            $httpCode = $download($downloadUrl);
+            if ($httpCode !== 200 || filesize($tmpPath) === 0) {
+                // Retry with webhook auth token
+                $authedUrl = $this->cloudAPI->authorizeUrl($downloadUrl);
+                if ($authedUrl !== $downloadUrl) {
+                    $httpCode = $download($authedUrl);
+                }
+            }
 
             if ($httpCode !== 200 || filesize($tmpPath) === 0) {
+                $body = @file_get_contents($tmpPath, false, null, 0, 200);
+                $this->addLog("  Файл '$fileName' не скачан: HTTP $httpCode, размер " . filesize($tmpPath) . ", body: " . substr($body, 0, 150));
                 return 0;
             }
 

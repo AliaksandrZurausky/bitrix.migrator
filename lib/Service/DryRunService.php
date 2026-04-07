@@ -57,12 +57,16 @@ class DryRunService
         // --- 2. Users ---
         try {
             $allCloudUsers = $cloudAPI->getUsers();
-            $activeUsers   = array_values(array_filter($allCloudUsers, static function ($u) {
+            $isActive = static function ($u) {
                 return ($u['ACTIVE'] ?? '') === 'Y' || $u['ACTIVE'] === true;
+            };
+            $activeUsers   = array_values(array_filter($allCloudUsers, $isActive));
+            $inactiveUsers = array_values(array_filter($allCloudUsers, static function ($u) use ($isActive) {
+                return !$isActive($u);
             }));
 
-            // Compact list for department modal (minimal fields only).
-            $compactActive = array_map(static function ($u) {
+            // Compact list for department modal — includes inactive users too
+            $toCompact = static function ($u) {
                 $deptIds = $u['UF_DEPARTMENT'] ?? [];
                 if (!is_array($deptIds)) {
                     $deptIds = [$deptIds];
@@ -77,36 +81,37 @@ class DryRunService
                     'WORK_PHONE'     => $u['WORK_PHONE'] ?? '',
                     'PERSONAL_PHOTO' => $u['PERSONAL_PHOTO'] ?? '',
                     'UF_DEPARTMENT'  => array_values(array_map('intval', $deptIds)),
+                    'ACTIVE'         => ($u['ACTIVE'] ?? '') === 'Y' || $u['ACTIVE'] === true ? 'Y' : 'N',
                 ];
-            }, $activeUsers);
+            };
+            $compactAll = array_map($toCompact, $allCloudUsers);
 
             $data['users'] = [
-                'cloud_count'        => count($allCloudUsers),
-                'cloud_active_count' => count($activeUsers),
-                'all_active_list'    => $compactActive,
+                'cloud_count'          => count($allCloudUsers),
+                'cloud_active_count'   => count($activeUsers),
+                'cloud_inactive_count' => count($inactiveUsers),
+                'all_active_list'      => $compactAll, // includes both active and inactive
             ];
 
             if ($boxAPI) {
-                $allBoxUsers    = $boxAPI->getUsers();
-                $boxActiveUsers = array_filter($allBoxUsers, static function ($u) {
-                    return ($u['ACTIVE'] ?? '') === 'Y' || $u['ACTIVE'] === true;
-                });
+                $allBoxUsers = $boxAPI->getUsers();
                 $boxEmails = array_filter(array_map(static function ($u) {
                     return strtolower(trim($u['EMAIL'] ?? ''));
-                }, $boxActiveUsers));
+                }, $allBoxUsers));
 
-                $newUsers     = array_values(array_filter($activeUsers, static function ($u) use ($boxEmails) {
+                // Compare ALL cloud users (active + inactive) against box
+                $newUsers = array_values(array_filter($allCloudUsers, static function ($u) use ($boxEmails) {
                     return !in_array(strtolower(trim($u['EMAIL'] ?? '')), $boxEmails, true);
                 }));
-                $matchedUsers = array_values(array_filter($activeUsers, static function ($u) use ($boxEmails) {
+                $matchedUsers = array_values(array_filter($allCloudUsers, static function ($u) use ($boxEmails) {
                     return in_array(strtolower(trim($u['EMAIL'] ?? '')), $boxEmails, true);
                 }));
 
                 $data['users']['box_count']        = count($allBoxUsers);
-                $data['users']['box_active_count']  = count($boxActiveUsers);
-                $data['users']['new_count']         = count($newUsers);
-                $data['users']['matched_count']     = count($matchedUsers);
-                $data['users']['new_list']          = $newUsers;
+                $data['users']['box_active_count'] = count(array_filter($allBoxUsers, $isActive));
+                $data['users']['new_count']        = count($newUsers);
+                $data['users']['matched_count']    = count($matchedUsers);
+                $data['users']['new_list']         = array_map($toCompact, $newUsers);
             }
 
             // Build department name map for UI

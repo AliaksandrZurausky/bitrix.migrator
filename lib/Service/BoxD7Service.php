@@ -591,6 +591,14 @@ class BoxD7Service
      * Upload a local temp file to a disk folder via D7.
      * Returns box disk file ID, or null on failure.
      */
+    /**
+     * Upload a file to a folder via CFile + addFile.
+     * Returns Disk OBJECT ID (b_disk_object), suitable for 'n' . $id prefix in UF fields.
+     *
+     * NOTE: For files to be attachable to CRM timeline comments, the calling code MUST:
+     *   1. Authorize a user via $USER->Authorize(1)  — required for FileUserType::canRead
+     *   2. Call FileUserType::setValueForAllowEdit('CRM_TIMELINE', true) before CommentEntry::create
+     */
     public static function uploadFileToFolder(int $folderId, string $tmpPath, string $fileName): ?int
     {
         if (!Loader::includeModule('disk')) return null;
@@ -598,19 +606,29 @@ class BoxD7Service
         $folder = \Bitrix\Disk\Folder::loadById($folderId);
         if (!$folder) return null;
 
-        $file = $folder->uploadFile(
+        $cfileArr = \CFile::MakeFileArray($tmpPath);
+        if (!$cfileArr) return null;
+
+        $savedFileId = \CFile::SaveFile($cfileArr, 'disk');
+        if (!$savedFileId) return null;
+
+        $diskFile = $folder->addFile(
             [
-                'name'     => $fileName,
-                'tmp_name' => $tmpPath,
-                'type'     => mime_content_type($tmpPath) ?: 'application/octet-stream',
-                'size'     => filesize($tmpPath),
+                'NAME' => $fileName,
+                'FILE_ID' => $savedFileId,
+                'SIZE' => filesize($tmpPath),
+                'CREATED_BY' => 1,
             ],
-            ['NAME' => $fileName, 'CREATED_BY' => 1],
             [],
             true // generateUniqueName
         );
 
-        return $file ? $file->getId() : null;
+        if (!$diskFile) {
+            \CFile::Delete($savedFileId);
+            return null;
+        }
+
+        return $diskFile->getId();
     }
 
     /**
@@ -931,6 +949,37 @@ class BoxD7Service
     // CRM Requisites (D7)
     // =========================================================================
 
+    /**
+     * Rename the default deal pipeline (ID=0).
+     * REST crm.dealcategory.update does NOT work for ID=0 (system virtual category).
+     * The name is stored in b_option (module=crm, name=default_deal_category_name).
+     */
+    public static function setDefaultDealCategoryName(string $name): bool
+    {
+        $name = trim($name);
+        if (empty($name)) return false;
+        if (!\Bitrix\Main\Loader::includeModule('crm')) return false;
+
+        // Use the official setter if available
+        if (class_exists('\\Bitrix\\Crm\\Category\\DealCategory') &&
+            method_exists('\\Bitrix\\Crm\\Category\\DealCategory', 'setDefaultCategoryName')) {
+            \Bitrix\Crm\Category\DealCategory::setDefaultCategoryName($name);
+        }
+
+        // Always write directly to option as the source of truth
+        \Bitrix\Main\Config\Option::set('crm', 'default_deal_category_name', $name, '');
+
+        // Clear caches so UI reflects the change immediately
+        try {
+            if (isset($GLOBALS['CACHE_MANAGER'])) {
+                $GLOBALS['CACHE_MANAGER']->clearByTag('crm_deal_category');
+            }
+            \Bitrix\Main\Application::getInstance()->getManagedCache()->clean('b_crm_deal_category');
+        } catch (\Throwable $e) {}
+
+        return true;
+    }
+
     public static function addRequisite(array $fields): int
     {
         if (!Loader::includeModule('crm')) return 0;
@@ -975,8 +1024,45 @@ class BoxD7Service
      */
     public static function deleteUserfield(int $fieldId): bool
     {
+        global $APPLICATION;
+        if ($APPLICATION) {
+            $APPLICATION->ResetException();
+        }
         $userField = new \CUserTypeEntity();
-        return (bool)$userField->Delete($fieldId);
+        $ok = $userField->Delete($fieldId);
+        if (!$ok) {
+            $msg = 'unknown';
+            if ($APPLICATION && ($ex = $APPLICATION->GetException())) {
+                $msg = $ex->GetString();
+                $APPLICATION->ResetException();
+            }
+            throw new \RuntimeException("CUserTypeEntity::Delete($fieldId) failed: $msg");
+        }
+        return true;
+    }
+
+    /**
+     * Check if a UF field name is system/protected and should not be deleted.
+     * These fields are managed by other modules and their deletion is vetoed.
+     */
+    public static function isProtectedUserfield(string $fieldName, string $xmlId = ''): bool
+    {
+        $protectedPrefixes = [
+            'UF_CRM_BP_',
+            'UF_CRM_WEBFORM_',
+            'UF_CRM_TASK',
+            'UF_CRM_ROBOT_',
+            'UF_CRM_SMART_INVOICE_',
+        ];
+        foreach ($protectedPrefixes as $prefix) {
+            if (strpos($fieldName, $prefix) === 0) return true;
+        }
+        if (!empty($xmlId)) {
+            foreach (['BX_', 'WEBFORM_', 'BP_', 'RPA_', 'BIZPROC_'] as $xmlPrefix) {
+                if (strpos($xmlId, $xmlPrefix) === 0) return true;
+            }
+        }
+        return false;
     }
 
     /**

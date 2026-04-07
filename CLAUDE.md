@@ -198,6 +198,100 @@ Dynamic types: T + hex(entityTypeId), например 1038 = T40e
 - Timestamp сохраняется в `Option::set('last_migration_timestamp', date('c'))` при завершении
 - Admin UI: кнопка "Инкрементальная миграция" (disabled если нет предыдущего timestamp)
 
+## TODO: Реквизиты — доработать маппинг пресетов и полноту полей
+
+Текущее состояние: добавлен `buildRequisitePresetMap()` который маппит cloud→box preset_id по `(COUNTRY_ID, NAME)` с fallback на создание нового пресета через `EntityPreset`. Но есть нерешённые вопросы:
+
+**1. Несоответствие country_id и схемы полей в cloud**
+Cloud preset `ID=1 country=4 name='Организация'` возвращает реквизиты с **российскими** полями (`RQ_INN`, `RQ_OKPO`, `RQ_VAT_PAYER`, `RQ_BASE_DOC`), а не белорусскими (`RQ_UNP`). То есть `COUNTRY_ID=4` не означает реально "Беларусь со схемой полей БЕЛ". Возможно cloud использует custom-пресет или country_id не совпадает с ожиданиями.
+
+**2. Тестирование маппинга не проведено**
+Добавленный `buildRequisitePresetMap` не протестирован на реальной миграции:
+- Что произойдёт при создании cloud пресета на боксе с `COUNTRY_ID=4` — не столкнёмся ли с box `ID=4 'Организация РБ'` (тоже country=4)?
+- Fallback по имени работает? (cloud `Организация` → box `Организация RU` ID=1)
+- Ошибки `создано=4, ошибок=2` из оригинального лога — закрыты ли?
+
+**3. Полнота полей реквизитов**
+Cloud реквизит содержит многие `RQ_*` поля. Мигратор просто копирует их целиком через `unset($req['ID'], ...)` + передача массива. Не валидируется:
+- Все ли поля принимаются box-пресетом
+- Нужны ли трансформации для файловых полей (скан паспорта, подпись, печать)
+- Адреса реквизитов (`RQ_ADDR`) — отдельная подтаблица в `b_crm_requisite`, может не копироваться
+
+**4. Банковские реквизиты**
+`migrateRequisites` вызывает `getBankDetails($cloudReqId)` после создания реквизита. Нужно проверить что:
+- Сам метод корректно отрабатывает
+- `addBankDetail` принимает fields (аналогично могут быть пресет-специфичные поля)
+- Связь `ENTITY_ID` в bank detail указывает на box requisite ID (не cloud)
+
+**План тестирования когда вернёмся:**
+1. Запустить миграцию контакта 1 (preset=3) и компании 1 (preset=1) через основной мигратор
+2. Проверить созданные реквизиты в БД: все ли поля заполнены, правильный ли PRESET_ID
+3. Проверить банковские реквизиты (если есть в cloud)
+4. Сравнить визуально в UI — выглядит ли корректно в карточке сущности
+
+## TODO: UF трансформации для смарт-процессов
+
+В `buildSmartProcessItemFields()` (строки 3309-3319) UF поля копируются "как есть" без трансформации:
+```php
+foreach ($item as $k => $v) {
+    if (strncmp($k, 'uf', 2) === 0 || strncmp($k, 'UF', 2) === 0) {
+        $upperKey = $this->ufFieldToUpperCase($k);
+        $fields[$upperKey] = $v;  // ← нет transformUfValue
+    }
+}
+```
+
+**Что не работает для смарт-процессов:**
+- ❌ `enumeration` — cloud enum ID не маппится в box enum ID
+- ❌ `date`/`datetime` — ISO формат не конвертируется в DD.MM.YYYY
+- ❌ `file` — объект {id, downloadUrl} не скачивается
+- ❌ `buildUfFieldSchemaCache` вызывается только для `['deal','contact','company','lead']`, смарты вообще не попадают в `$ufFieldSchema`/`$ufEnumMap`
+
+**Почему непросто:**
+1. **Entity ID формат**: для смартов UF entity = `CRM_<entityTypeId>` (например `CRM_1030`). `entityIdMap` сейчас хардкод только для 4 стандартных сущностей.
+2. **Имена полей**: cloud REST отдаёт camelCase (`ufCrm5_1775542300`), box D7 Factory ожидает UPPER_SNAKE (`UF_CRM_5_1775542300`). Маппинг enum нужно уметь искать по обоим вариантам.
+3. **Timing**: UF кэш для смартов надо строить **после** `migrateSmartProcesses()` создаст `smartProcessMapCache` (cloud entityTypeId → box entityTypeId). Текущий `buildUfFieldSchemaCache` вызывается в конце `migrateCrmFields()` — до фазы smart_processes.
+
+**План реализации:**
+1. Расширить `$entityIdMap` в `buildUfFieldSchemaCache` так, чтобы принимать произвольный entity ID (не только CRM_DEAL/CRM_CONTACT/CRM_COMPANY/CRM_LEAD)
+2. После `migrateSmartProcesses()` вызывать второй раз `buildUfFieldSchemaCache` для смартов: для каждого `(cloudEntityTypeId => boxEntityTypeId)` из `smartProcessMapCache` строить ключ `smart_<boxId>` → поля entity `CRM_<boxId>`
+3. В `transformSingleUfValue` добавить нормализацию поля: искать `$fieldName` с учётом camelCase/UPPER_SNAKE варианта — чтобы cloud `ufCrm5_1775542300` находил box `UF_CRM_5_1775542300` в схеме
+4. В `buildSmartProcessItemFields` заменить ручной цикл на:
+   ```php
+   $smartEntityType = 'smart_' . $spId;
+   foreach ($item as $k => $v) {
+       if (strncmp($k, 'uf', 2) !== 0 && strncmp($k, 'UF', 2) !== 0) continue;
+       $upperKey = $this->ufFieldToUpperCase($k);
+       $transformed = $this->transformUfValue($smartEntityType, $upperKey, $v);
+       if ($transformed !== null) $fields[$upperKey] = $transformed;
+   }
+   ```
+5. Тестирование: смарт-процесс "Договоры" из тестового cloud имеет enum, date, file поля — можно проверить на них
+
+**Оценка:** 1-1.5 часа на реализацию + тест
+
+## TODO: OAuth Local App для скачивания UF type=file файлов
+
+**Проблема:** Файлы в UF полях типа `file` (не `disk_file`) хранятся в `b_file` напрямую без обёртки в Disk. REST API НЕ предоставляет webhook-доступа к ним:
+- `disk.file.get` → not found (файл не в Disk)
+- `disk.attachedobject.get` → not found
+- `user.userfield.file.get` → работает только для entity=USER, не для CRM
+- `crm.deal.userfield.update` USER_TYPE_ID → REST возвращает true, но молча игнорирует
+- `/bitrix/components/.../show_file.php?auth=<webhook_secret>` → возвращает HTML страницу логина (auth= принимает только OAuth access_token)
+
+**Текущее поведение мигратора:** UF type=file поля попадают в `transformUfValue()` → пытается через `disk.file.get` → fallback на CRM file URL с webhook auth → скачивается HTML страница логина (21455 байт), а не реальный файл.
+
+**Решение (на будущее):** Локальное OAuth приложение в Bitrix24 cloud
+1. Создать на cloud: Приложения → Разработчикам → Локальное приложение
+2. Scope: `crm, disk, user`
+3. Получить `client_id` + `client_secret`
+4. Через `/oauth/token/?grant_type=client_credentials&client_id=...&client_secret=...&scope=crm,disk` получить `access_token`
+5. Использовать в `auth=<access_token>` для component endpoints типа `/bitrix/components/bitrix/crm.deal.show/show_file.php?auth=...`
+
+Альтернативно — добавить в админку поле "OAuth client_id/secret" и переключатель "Использовать OAuth для file полей" в дополнение к webhook.
+
+**Временный обходной путь:** на cloud стороне вручную пересоздать UF поля типа `file` с типом `disk_file` (с миграцией значений). Тогда файлы уйдут в Disk и станут доступны через REST.
+
 ## Последние изменения (сессия 2026-04-05, обновлено)
 
 ### Реализованы все TODO (сессия 2026-04-05):

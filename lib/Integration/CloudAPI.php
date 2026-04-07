@@ -12,6 +12,23 @@ class CloudAPI
     }
 
     /**
+     * Append the webhook auth token to a download URL.
+     * Bitrix24 cloud disk download URLs require ?auth=<token> to authorize the request,
+     * otherwise they return 401/redirect to login page.
+     */
+    public function authorizeUrl(string $url): string
+    {
+        if (empty($url)) return $url;
+        // Webhook URL format: https://domain.bitrix24.ru/rest/1/SECRET_TOKEN
+        // Extract the SECRET_TOKEN segment
+        $parts = explode('/', $this->webhookUrl);
+        $token = end($parts);
+        if (empty($token) || $token === 'rest') return $url;
+        $sep = (strpos($url, '?') !== false) ? '&' : '?';
+        return $url . $sep . 'auth=' . urlencode($token);
+    }
+
+    /**
      * Returns cloud portal base URL (e.g. https://domain.bitrix24.ru).
      * Extracted from webhookUrl: https://domain.bitrix24.ru/rest/1/xxx → https://domain.bitrix24.ru
      */
@@ -140,7 +157,10 @@ class CloudAPI
     {
         $items = [];
         $this->fetchBatched($method, $params, function ($batch) use (&$items) {
-            array_push($items, ...$batch);
+            // Use foreach instead of array_push(...) — PHP 8.1+ rejects string-keyed unpacking
+            foreach ($batch as $item) {
+                $items[] = $item;
+            }
         }, $resultKey);
         return $items;
     }
@@ -249,9 +269,15 @@ class CloudAPI
      */
     public function getUsers()
     {
-        $active   = $this->fetchAll('user.get', ['USER_TYPE' => 'employee']);
+        $active   = $this->fetchAll('user.get', ['USER_TYPE' => 'employee', 'ACTIVE' => true]);
         $inactive = $this->fetchAll('user.get', ['USER_TYPE' => 'employee', 'ACTIVE' => false]);
-        return array_merge($active, $inactive);
+        // Deduplicate by ID just in case
+        $byId = [];
+        foreach (array_merge($active, $inactive) as $u) {
+            $id = (int)($u['ID'] ?? 0);
+            if ($id > 0) $byId[$id] = $u;
+        }
+        return array_values($byId);
     }
 
     /**
@@ -939,6 +965,16 @@ class CloudAPI
         return $result['result'] ?? false;
     }
 
+    /**
+     * Get the default (system, ID=0) deal category — its name lives in a separate option,
+     * not in the dealcategory.list response.
+     */
+    public function getDefaultDealCategory()
+    {
+        $result = $this->request('crm.dealcategory.default.get', []);
+        return $result['result'] ?? [];
+    }
+
     public function getDealCategoryStages($categoryId)
     {
         $result = $this->request('crm.dealcategory.stage.list', ['id' => (int)$categoryId]);
@@ -960,9 +996,20 @@ class CloudAPI
         return $this->fetchAll('crm.status.list', []);
     }
 
+    public function getStatusesByEntityId(string $entityId): array
+    {
+        return $this->fetchAll('crm.status.list', ['filter' => ['ENTITY_ID' => $entityId]]);
+    }
+
     public function addStatus($fields)
     {
         $result = $this->request('crm.status.add', ['fields' => $fields]);
+        return $result['result'] ?? null;
+    }
+
+    public function updateStatus(int $id, array $fields)
+    {
+        $result = $this->request('crm.status.update', ['id' => $id, 'fields' => $fields]);
         return $result['result'] ?? null;
     }
 
@@ -1167,6 +1214,15 @@ class CloudAPI
         return $result['result'] ?? null;
     }
 
+    /**
+     * Get full timeline comment by ID — includes FILES which list method omits.
+     */
+    public function getTimelineComment($id)
+    {
+        $result = $this->request('crm.timeline.comment.get', ['id' => (int)$id]);
+        return $result['result'] ?? [];
+    }
+
     // =========================================================================
     // CRM Contact-Company binding
     // =========================================================================
@@ -1227,6 +1283,20 @@ class CloudAPI
     {
         return $this->fetchAll('crm.requisite.bankdetail.list', [
             'filter' => ['ENTITY_ID' => (int)$requisiteId],
+        ]);
+    }
+
+    /**
+     * Get addresses attached to a requisite via crm.address.list.
+     * Requisite addresses have ENTITY_TYPE_ID=8 (Requisite), ENTITY_ID=requisite_id.
+     */
+    public function getRequisiteAddresses($requisiteId)
+    {
+        return $this->fetchAll('crm.address.list', [
+            'filter' => [
+                'ENTITY_TYPE_ID' => 8, // Requisite
+                'ENTITY_ID' => (int)$requisiteId,
+            ],
         ]);
     }
 
