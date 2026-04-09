@@ -193,26 +193,6 @@ function migratorStatusText($status) {
                             <option value="create">Создать новую</option>
                         </select>
                     </div>
-                    <div class="migrator-form-group" style="margin-bottom:16px;">
-                        <label class="migrator-label">Перенос ID в HL блок (для возможности отката):</label>
-                        <div style="margin-top:8px;">
-                            <label style="display:flex;align-items:center;gap:6px;font-weight:600;">
-                                <input type="checkbox" id="plan-save-migrated-ids">
-                                Сохранять ID созданных записей в HL блок
-                            </label>
-                            <p style="margin:6px 0 0 24px;font-size:12px;color:#888;">При включении IDs компаний, контактов, сделок и лидов, созданных в ходе миграции, будут записаны в MigratorMap. Это позволит удалить только их при следующем запуске.</p>
-                        </div>
-                    </div>
-                    <div class="migrator-form-group" style="margin-bottom:16px;" id="plan-delete-migrated-group">
-                        <label class="migrator-label" style="color:#c00;">Удаление ранее перенесённых данных:</label>
-                        <div style="margin-top:8px;">
-                            <label style="display:flex;align-items:center;gap:6px;font-weight:600;color:#c00;">
-                                <input type="checkbox" id="plan-delete-migrated-data">
-                                Удалить ранее перенесённые данные из HL блока перед миграцией
-                            </label>
-                            <p style="margin:6px 0 0 24px;font-size:12px;color:#888;">Перед стартом миграции удалит только те компании, контакты, сделки и лиды, ID которых хранятся в MigratorMap. Затем очистит записи из HL блока. Не затрагивает данные, добавленные вручную.</p>
-                        </div>
-                    </div>
                     <div class="migrator-form-group" style="margin-bottom:0;">
                         <label class="migrator-label">Удаление пользовательских полей перед миграцией:</label>
                         <div style="margin-top:8px;">
@@ -254,6 +234,13 @@ function migratorStatusText($status) {
                 </div>
                 <div class="migrator-accordion-body" id="plan-cleanup-body">
                     <p style="margin:0 0 12px;font-size:13px;color:#888;">Отмеченные этапы — перед переносом все существующие данные этого типа на box будут <b style="color:#c00;">удалены</b>. Полезно для повторного тестирования.</p>
+                    <div style="margin:0 0 12px;padding:10px;background:#fff5f5;border:1px solid #f5c6c6;border-radius:4px;" id="plan-delete-migrated-group">
+                        <label style="display:flex;align-items:center;gap:6px;font-weight:600;color:#c00;">
+                            <input type="checkbox" id="plan-delete-migrated-data">
+                            Удалить ранее перенесённые данные из HL блока перед миграцией
+                        </label>
+                        <p style="margin:6px 0 0 24px;font-size:12px;color:#888;">Перед стартом удалит только те компании, контакты, сделки и лиды, ID которых хранятся в MigratorMap. Затем очистит записи из HL блока. Не затрагивает данные, добавленные вручную.</p>
+                    </div>
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 24px;">
                         <label style="display:flex;align-items:center;gap:6px;">
                             <input type="checkbox" class="plan-cleanup-phase" data-phase="pipelines"> Воронки сделок
@@ -295,6 +282,35 @@ function migratorStatusText($status) {
     <div id="tab-migration" class="migrator-tab-content">
         <h2>Миграция данных</h2>
         <p style="color:#666;font-size:14px;margin:0 0 20px;">Запуск и контроль миграции данных из облака в коробку на основе сохранённого плана.</p>
+
+        <div id="migration-test-panel" style="margin:0 0 20px;padding:12px 16px;border:1px solid #d6e4f0;background:#f5f9fd;border-radius:4px;">
+            <div style="font-weight:600;margin-bottom:8px;">🧪 Тестовый прогон (по одной сущности)</div>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                <label style="display:flex;align-items:center;gap:4px;">
+                    <input type="radio" name="test-scope-type" value="company" checked>
+                    Компания
+                </label>
+                <label style="display:flex;align-items:center;gap:4px;">
+                    <input type="radio" name="test-scope-type" value="contact">
+                    Контакт
+                </label>
+                <label style="display:flex;align-items:center;gap:4px;">
+                    <input type="radio" name="test-scope-type" value="task">
+                    Задача
+                </label>
+                <input type="number" id="test-scope-id" class="migrator-input" placeholder="ID в облаке" style="width:150px;" min="1">
+                <label style="display:flex;align-items:center;gap:4px;margin-left:8px;">
+                    <input type="checkbox" id="test-skip-prereqs">
+                    Пропустить предусловия (пользователи/поля/воронки/валюты)
+                </label>
+                <button type="button" id="btn-start-test-migration" class="adm-btn-save">
+                    Запустить тестовый прогон
+                </button>
+            </div>
+            <p style="margin:8px 0 0;font-size:12px;color:#888;">
+                Мигрирует выбранную сущность и всё, что с ней связано (контакты, сделки, лиды, счета, таймлайн, задачи по CRM). Для задачи — только саму задачу с комментариями/файлами/чатом.
+            </p>
+        </div>
 
         <div id="migration-controls" style="margin-top:20px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
             <button type="button" id="btn-start-migration" class="adm-btn-save">

@@ -487,6 +487,212 @@ class BoxD7Service
         return true;
     }
 
+    // =========================================================================
+    // D7 ID listers + D7 deleters for cleanup (no raw SQL, no REST rate limit)
+    // =========================================================================
+
+    /**
+     * Generic D7 ID lister via DataManager::getList(['select' => ['ID']]).
+     * ORM quotes reserved words and handles dialect differences automatically.
+     */
+    private static function listIdsViaDataManager(string $dataManagerClass, string $idField = 'ID'): array
+    {
+        $ids = [];
+        $rows = $dataManagerClass::getList(['select' => [$idField]])->fetchAll();
+        foreach ($rows as $r) {
+            $ids[] = (int)$r[$idField];
+        }
+        return $ids;
+    }
+
+    public static function listCompanyIds(): array
+    {
+        self::ensureCrmLoaded();
+        return self::listIdsViaDataManager(\Bitrix\Crm\CompanyTable::class);
+    }
+
+    public static function listContactIds(): array
+    {
+        self::ensureCrmLoaded();
+        return self::listIdsViaDataManager(\Bitrix\Crm\ContactTable::class);
+    }
+
+    public static function listDealIds(): array
+    {
+        self::ensureCrmLoaded();
+        return self::listIdsViaDataManager(\Bitrix\Crm\DealTable::class);
+    }
+
+    public static function listLeadIds(): array
+    {
+        self::ensureCrmLoaded();
+        return self::listIdsViaDataManager(\Bitrix\Crm\LeadTable::class);
+    }
+
+    public static function listTaskIds(): array
+    {
+        if (!Loader::includeModule('tasks')) {
+            throw new \Exception('Tasks module not loaded');
+        }
+        return self::listIdsViaDataManager(\Bitrix\Tasks\Internals\TaskTable::class);
+    }
+
+    public static function listDealCategoryIds(): array
+    {
+        self::ensureCrmLoaded();
+        return self::listIdsViaDataManager(\Bitrix\Crm\Category\Entity\DealCategoryTable::class);
+    }
+
+    /**
+     * List non-system deal stage IDs via D7 StatusTable::getList().
+     * Filter: ENTITY_ID is 'DEAL_STAGE' (default pipeline) or 'DEAL_STAGE_*'
+     * (custom categories), and SYSTEM != 'Y'. ORM handles the `SYSTEM`
+     * reserved-word quoting automatically.
+     */
+    public static function listDealStageIds(): array
+    {
+        self::ensureCrmLoaded();
+        $rows = \Bitrix\Crm\StatusTable::getList([
+            'select' => ['ID', 'ENTITY_ID', 'SYSTEM'],
+        ])->fetchAll();
+        $ids = [];
+        foreach ($rows as $r) {
+            if (($r['SYSTEM'] ?? 'N') === 'Y') continue;
+            $eid = (string)($r['ENTITY_ID'] ?? '');
+            if ($eid === 'DEAL_STAGE' || strncmp($eid, 'DEAL_STAGE_', 11) === 0) {
+                $ids[] = (int)$r['ID'];
+            }
+        }
+        return $ids;
+    }
+
+    /**
+     * List all dynamic smart process types via D7 TypeTable::getList().
+     * Returns rows with an extra `is_system` flag derived from CODE (system
+     * types carry codes prefixed with 'BX_' — SmartInvoice='BX_SMART_INVOICE',
+     * SmartDocument='BX_SMART_DOCUMENT', SmartB2eDocument='BX_SMART_B2E_DOC').
+     *
+     * @return array<int, array{row_id:int, entity_type_id:int, code:string, title:string, is_system:bool}>
+     */
+    public static function listSmartProcessTypes(): array
+    {
+        self::ensureCrmLoaded();
+        $rows = \Bitrix\Crm\Model\Dynamic\TypeTable::getList([
+            'select' => ['ID', 'ENTITY_TYPE_ID', 'CODE', 'TITLE'],
+        ])->fetchAll();
+        $types = [];
+        foreach ($rows as $r) {
+            $code = (string)($r['CODE'] ?? '');
+            $types[] = [
+                'row_id'         => (int)$r['ID'],
+                'entity_type_id' => (int)$r['ENTITY_TYPE_ID'],
+                'code'           => $code,
+                'title'          => (string)($r['TITLE'] ?? ''),
+                'is_system'      => $code !== '' && strncmp($code, 'BX_', 3) === 0,
+            ];
+        }
+        return $types;
+    }
+
+    /**
+     * List all item IDs for a given smart process entityTypeId via the CRM
+     * Service Container factory (pure D7). Returns empty array if the type
+     * is not registered or the factory is not available.
+     */
+    public static function listSmartProcessItemIds(int $entityTypeId): array
+    {
+        self::ensureCrmLoaded();
+        $factory = \Bitrix\Crm\Service\Container::getInstance()->getFactory($entityTypeId);
+        if (!$factory) return [];
+        $items = $factory->getItems(['select' => ['ID']]);
+        $ids = [];
+        foreach ($items as $item) {
+            $ids[] = (int)$item->getId();
+        }
+        return $ids;
+    }
+
+    /**
+     * Delete deal category (pipeline) via D7 \Bitrix\Crm\Category\DealCategory::delete.
+     * Automatically removes associated stages via eraseStages() internals.
+     * Throws on dependency failure (category still has deals).
+     */
+    public static function deleteDealCategory(int $id): bool
+    {
+        self::ensureCrmLoaded();
+        try {
+            \Bitrix\Crm\Category\DealCategory::delete($id);
+        } catch (\Throwable $e) {
+            throw new \Exception('DealCategory::delete error for ID=' . $id . ': ' . $e->getMessage(), 0, $e);
+        }
+        return true;
+    }
+
+    /**
+     * Delete a CRM status (deal stage, lead status, etc.) by numeric ID via CCrmStatus.
+     */
+    public static function deleteCrmStatus(int $id): bool
+    {
+        self::ensureCrmLoaded();
+        $obj = new \CCrmStatus('');
+        $result = $obj->Delete($id);
+        if (!$result) {
+            throw new \Exception('CCrmStatus::Delete error for ID=' . $id);
+        }
+        return true;
+    }
+
+    /**
+     * Delete task via CTaskItem::delete (D7-ish, uses admin ID=1 context).
+     */
+    public static function deleteTask(int $id): bool
+    {
+        if (!Loader::includeModule('tasks')) {
+            throw new \Exception('Tasks module not loaded');
+        }
+        // CTaskItem requires an executive user id — use admin (1).
+        $task = \CTaskItem::getInstance($id, 1);
+        $task->delete(['SKIP_NOT_FOUND_ERROR' => true]);
+        return true;
+    }
+
+    /**
+     * Delete a smart process item via the CRM Factory's delete operation.
+     */
+    public static function deleteSmartProcessItem(int $entityTypeId, int $id): bool
+    {
+        self::ensureCrmLoaded();
+        $factory = \Bitrix\Crm\Service\Container::getInstance()->getFactory($entityTypeId);
+        if (!$factory) {
+            throw new \Exception("No factory for entityTypeId=$entityTypeId");
+        }
+        $item = $factory->getItem($id);
+        if (!$item) return false; // already gone
+        $op = $factory->getDeleteOperation($item);
+        $op->disableCheckAccess();
+        if (method_exists($op, 'disableBizProc'))     $op->disableBizProc();
+        if (method_exists($op, 'disableAutomation'))  $op->disableAutomation();
+        $result = $op->launch();
+        if (!$result->isSuccess()) {
+            throw new \Exception('DeleteOperation failed for entityTypeId=' . $entityTypeId . ' id=' . $id . ': ' . implode('; ', $result->getErrorMessages()));
+        }
+        return true;
+    }
+
+    /**
+     * Delete a smart process type (dynamic CRM type) via TypeTable.
+     * `$typeRowId` is the row ID in b_crm_type (NOT entityTypeId).
+     */
+    public static function deleteSmartProcessType(int $typeRowId): bool
+    {
+        self::ensureCrmLoaded();
+        $result = \Bitrix\Crm\Model\Dynamic\TypeTable::delete($typeRowId);
+        if (!$result->isSuccess()) {
+            throw new \Exception('TypeTable::delete error for row ID=' . $typeRowId . ': ' . implode('; ', $result->getErrorMessages()));
+        }
+        return true;
+    }
+
     /**
      * Create workgroup via D7 (CSocNetGroup::createGroup).
      * REST sonet_group.create ignores OWNER_ID unless caller is admin.
@@ -881,6 +1087,51 @@ class BoxD7Service
      * @param int $userId User who sends the file
      * @return int Message ID or 0 on failure
      */
+    /**
+     * Update the AUTHOR_ID of a forum message directly (for task comments
+     * created through task.comment.add which always assigns webhook user as
+     * author). Uses direct D7 Connection::queryExecute — safe because we only
+     * touch the AUTHOR_ID column of a known ID.
+     */
+    public static function setForumMessageAuthor(int $forumMessageId, int $authorId): void
+    {
+        if ($forumMessageId <= 0 || $authorId <= 0) return;
+        $conn = \Bitrix\Main\Application::getConnection();
+        $conn->queryExecute(
+            'UPDATE b_forum_message SET AUTHOR_ID = ' . (int)$authorId
+            . ' WHERE ID = ' . (int)$forumMessageId
+        );
+    }
+
+    /**
+     * Attach disk objects to a forum message (task comment) via UF_FORUM_MESSAGE_DOC.
+     * This is the D7-safe way to add files to forum comments, because REST
+     * `task.commentitem.add` doesn't accept UF fields. Bitrix's
+     * USER_FIELD_MANAGER->Update() takes disk-file values in the form ['n'.$diskObjectId]
+     * and automatically creates the b_disk_attached_object rows with
+     * ENTITY_TYPE='Bitrix\Disk\Uf\ForumMessageConnector'.
+     *
+     * @param int   $forumMessageId ID from b_forum_message (the task comment id)
+     * @param int[] $diskObjectIds  Disk object IDs from b_disk_object (not attached_object)
+     * @return bool true on success
+     */
+    public static function attachFilesToForumMessage(int $forumMessageId, array $diskObjectIds): bool
+    {
+        if (!Loader::includeModule('forum')) return false;
+        if (empty($diskObjectIds)) return true;
+
+        // USER_FIELD_MANAGER expects disk-file UF values as ['n'.$diskObjectId, ...]
+        $values = array_map(fn($id) => 'n' . (int)$id, $diskObjectIds);
+
+        global $USER_FIELD_MANAGER;
+        if (!$USER_FIELD_MANAGER) return false;
+
+        $USER_FIELD_MANAGER->Update('FORUM_MESSAGE', $forumMessageId, [
+            'UF_FORUM_MESSAGE_DOC' => $values,
+        ]);
+        return true;
+    }
+
     public static function sendFileToChatD7(int $chatId, string $tmpPath, string $fileName, string $text = '', int $userId = 1): int
     {
         if (!Loader::includeModule('disk') || !Loader::includeModule('im')) return 0;

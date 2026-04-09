@@ -1,13 +1,13 @@
 # Bitrix Migrator — Модуль миграции из облака на коробку
 
 ## Описание
-Модуль `bitrix_migrator` переносит данные из облачного Bitrix24 на коробочную версию. Данные из облака получаются через REST API, на коробке создаются через D7 (минуя nginx и лимиты). Админ-панель с real-time прогрессом, pause/resume/stop, фоновый CLI worker.
+Переносит данные из облачного Bitrix24 в коробочную версию. Облако — через REST API, коробка — через D7 (минуя nginx-лимиты). Админ-панель с real-time прогрессом, pause/resume/stop, фоновый CLI worker.
 
 ## Окружение
 - **PHP**: 8.2 (Docker: `quay.io/bitrix24/php:8.2.29-fpm-v1-alpine`)
-- **Nginx**: Docker контейнер `dev_nginx` (порт 8588->80, 8589->443)
-- **БД**: MySQL в Docker `dev_mysql`
-- **Облако**: `https://regiuslab.bitrix24.by`
+- **БД**: MySQL в Docker `dev_mysql`, база `bitrix`, root creds — в `/home/bitrix/www/bitrix/.settings.php`
+- **Контейнеры**: `dev_php`, `dev_mysql`, `dev_nginx` (порты 8588/8589)
+- **Облако (тестовое)**: `https://regiuslab.bitrix24.by`
 - **Коробка**: `https://dev.regius24.by`
 
 ## Карта модуля
@@ -16,328 +16,147 @@
 bitrix_migrator/
 ├── lib/
 │   ├── Integration/
-│   │   └── CloudAPI.php          — REST-обёртка для облака И коробки (запросы, пагинация, rate-limit)
+│   │   └── CloudAPI.php          REST-обёртка для облака И коробки (rate-limit, cursor-пагинация)
 │   └── Service/
-│       ├── MigrationService.php  — Главный оркестратор: 14 фаз, cleanup, кэши, прогресс (~2600 строк)
-│       ├── TaskMigrationService.php — Миграция задач: комментарии, файлы, чеклисты, чат-сообщения
-│       ├── BoxD7Service.php      — D7 операции на коробке (users, CRM, disk, workgroups, IM chat)
-│       ├── DryRunService.php     — Предварительный анализ (подсчёт сущностей, конфликты)
-│       ├── MapService.php        — Маппинг ID облако->коробка
-│       ├── LogService.php        — Логирование
-│       ├── StateService.php      — Состояние миграции
-│       └── QueueService.php      — Очередь
+│       ├── MigrationService.php  Оркестратор: 15 фаз, scope, респаун, cleanup (~4600 строк)
+│       ├── TaskMigrationService.php  Задачи + комменты/чекликсты/чат-файлы
+│       ├── BoxD7Service.php      D7-операции на коробке (users, CRM, disk, workgroups, IM chat)
+│       ├── DryRunService.php     Предварительный анализ (подсчёты, конфликты)
+│       └── MapService.php        HL-блок cloud↔box маппинга (`MigratorMap`)
 ├── install/
-│   ├── admin/
-│   │   └── bitrix_migrator.php   — Админ-панель (5 вкладок: подключение, анализ, план, миграция, логи)
-│   ├── ajax/                     — AJAX endpoints (check_connection, start/stop/pause/resume, status)
-│   └── cli/
-│       └── migrate.php           — Фоновый CLI worker (nohup)
-└── ajax/                         — Legacy AJAX endpoints
+│   ├── admin/bitrix_migrator.php Админ-панель (5 вкладок + тестовый прогон)
+│   ├── ajax/                     check_connection, start/stop/pause/resume, status
+│   └── cli/migrate.php           Фоновый CLI worker (nohup + auto-respawn)
 ```
 
-## 14 фаз миграции (const PHASES)
+## 15 фаз миграции (const PHASES)
+Диспатч: `'migrate' . ucwords($phase, '_')` → автовызов метода.
 
-Диспатч: `'migrate' . ucwords($phase, '_')` -> автовызов метода.
-
-| # | Фаза | Метод | API | Статус |
-|---|------|-------|-----|--------|
-| 1 | departments | migrateDepartments() | REST | проверено |
-| 2 | users | migrateUsers() | D7 CUser | проверено |
-| 3 | crm_fields | migrateCrmFields() | REST | реализовано |
-| 4 | pipelines | migratePipelines() | REST | реализовано |
-| 5 | currencies | migrateCurrencies() | REST | реализовано |
-| 6 | companies | migrateCompanies() | D7 CCrmCompany | реализовано |
-| 7 | contacts | migrateContacts() | D7 CCrmContact | реализовано |
-| 8 | deals | migrateDeals() | D7 CCrmDeal | реализовано |
-| 9 | leads | migrateLeads() | D7 CCrmLead | реализовано |
-| 10 | requisites | migrateRequisites() | REST | реализовано |
-| 11 | timeline | migrateTimeline() | D7 CCrmActivity + CommentEntry | проверено |
-| 12 | workgroups | migrateWorkgroups() | D7 CSocNetGroup | проверено |
-| 13 | smart_processes | migrateSmartProcesses() | REST | реализовано |
-| 14 | tasks | migrateTasks() | REST + D7 | проверено |
-
-## Stable — do NOT modify
-
-- **Подразделения** — `MigrationService::migrateDepartments()`
-- **Пользователи** — `BoxD7Service::createUser()` + `MigrationService::migrateUsers()`
-- **Рабочие группы** — `BoxD7Service::createWorkgroup/addWorkgroupMember/getAllWorkgroups/deleteWorkgroup` + `MigrationService::migrateWorkgroups()`
-- **Задачи** — `TaskMigrationService`:
-  - Комментарии: REST `task.commentitem.add` с `AUTHOR_ID`
-  - Файлы в комментариях: REST `im.disk.file.commit` (admin как AUDITOR)
-  - Чат-сообщения с файлами: D7 `ChatFactory::addUniqueChat()` + `CIMDisk::UploadFileFromDisk(USER_ID, SKIP_USER_CHECK, SYMLINK)`
-  - Загрузка файлов: D7 через личное хранилище пользователя — минует nginx
-  - Чеклисты, base64 картинки, связи CRM
-
-## Технические решения и ограничения
-
-### Файлы в чатах задач (D7 путь)
-1. Создать чат: `ChatFactory::addUniqueChat(TYPE='X', ENTITY_TYPE='TASKS_TASK', ENTITY_ID=$taskId)`
-2. Загруз��ть файл: `Driver::getStorageByUserId(1)->getFolderForUploadedFiles()->addFile()`
-3. Отправить: `CIMDisk::UploadFileFromDisk($chatId, ['disk'.$id], $text, [USER_ID=>1, SKIP_USER_CHECK=>true, SYMLINK=>true])`
-
-### Таймлайн CRM (D7) — проверено
-- Комментарии: `CommentEntry::create(['TEXT'=>..., 'AUTHOR_ID'=>..., 'BINDINGS'=>[['ENTITY_TYPE_ID'=>2, 'ENTITY_ID'=>$id]]])`
-- ВАЖНО: ключи `ENTITY_TYPE_ID`/`ENTITY_ID`, НЕ `OWNER_TYPE_ID`/`OWNER_ID` — иначе bindings не создаются
-- Файлы в комментариях: `'FILES' => ['n'.$diskId]` + `'SETTINGS' => ['HAS_FILES' => 'Y']` — без SETTINGS фронтенд не рендерит файлы
-- Перед созданием: `FileUserType::setValueForAllowEdit('CRM_TIMELINE', true)`
-- Файлы комментариев скачивать через `disk.file.get` → `DOWNLOAD_URL` (с auth), НЕ через `urlDownload` из комментария (без auth → HTML)
-- Активности: `CCrmActivity::Add()` с датами в формате `DD.MM.YYYY HH:MI:SS`
-- Записи звонков: сначала `Add()` без файлов, потом `Update($id, ['STORAGE_TYPE_ID'=>3, 'STORAGE_ELEMENT_IDS'=>[$diskId]])`
-- ВАЖНО: для плеера записей нужен `ORIGIN_ID = 'VI_imported_' . $cloudActId . '.' . time()`
-- Документы (crm.documentgenerator.document.list): скачать PDF, создать как комментарий с файлом
-- Реквизиты: D7 `EntityRequisite::add()` + `EntityBankDetail::add()`
-- M:N связи: D7 `ContactCompanyTable::bindCompanyIDs()`, `DealContactTable::bindContactIDs()`
-- Smart Invoice: D7 `Container::getFactory(SmartInvoice)->createItem()->getAddOperation()->launch()`
-
-### Что НЕ работает для комментариев задач
-- D7 `Forum\Comments\Feed::add()` — проверяет `canAdd()`, не проходит из мигратора
-- D7 `Feed::addComment()` — пропускает права, но не привязывает к задаче
-- D7 `CTaskCommentItem::add` — требует `global $USER` + форум-права
-- REST `task.commentitem.add` — не поддерживает `UF_FORUM_MESSAGE_DOC` для файлов
-
-### Nginx лимиты
-- Внешний прокси хостинга: ~1-2MB по умолчанию, 413 для больших файлов через REST
-- Решение: D7 загрузка файлов минует nginx
+| # | Фаза | API |
+|---|------|-----|
+| 1 | departments | REST |
+| 2 | users | D7 CUser |
+| 3 | crm_fields | REST |
+| 4 | pipelines | REST + D7 |
+| 5 | currencies | REST |
+| 6 | companies | D7 CCrmCompany |
+| 7 | contacts | D7 CCrmContact |
+| 8 | leads | D7 CCrmLead |
+| 9 | deals | D7 CCrmDeal |
+| 10 | invoices | `crm.item.list?entityTypeId=31` + D7 addSmartItem |
+| 11 | requisites | D7 EntityRequisite/BankDetail |
+| 12 | smart_processes | REST + D7 Factory |
+| 13 | workgroups | D7 CSocNetGroup |
+| 14 | timeline | D7 CCrmActivity + CommentEntry |
+| 15 | tasks | REST + D7 (через TaskMigrationService) |
 
 ## Правила разработки
+- Облако — только REST (чтение). Коробка — всё через D7 (создание/удаление).
+- Вся разработка в `/local/`, не трогать `/bitrix/`.
+- PSR-4 автозагрузка, namespace.
+- Сперва обсуждаем, потом кодим.
 
-- Облако — только REST API (получение данных)
-- Коробка — всё через D7 (создание данных, файлов, чатов)
-- Всю разработку вести в `/local/`
-- PSR-4 автозагрузка, namespace
-- Сперва обсуждаем, потом кодим
-- Коммиты по комплексу работ
+## Ключевые технические решения
 
-## Рекомендуемый порядок миграции (обновлённый)
+### Файлы в чате задачи (D7)
+1. `ChatFactory::addUniqueChat(TYPE='X', ENTITY_TYPE='TASKS_TASK', ENTITY_ID=$taskId)`
+2. `Driver::getStorageByUserId(1)->getFolderForUploadedFiles()->addFile(...)`
+3. `CIMDisk::UploadFileFromDisk($chatId, ['disk'.$id], $text, [USER_ID=>N, SKIP_USER_CHECK=>true, SYMLINK=>true])`
 
-### Фаза 0: Предварительные данные
-0.1 Users / Departments — ASSIGNED_BY_ID, CREATED_BY_ID
-0.2 Currencies — CURRENCY_ID
-0.3 Statuses / Sources — STATUS_ID, SOURCE_ID, STAGE_ID
-0.4 Deal Categories (Pipelines) — CATEGORY_ID
-0.5 Smart Process Types — crm.type.add (перед элементами)
-0.6 Custom Fields (UF) — перед данными
-0.7 Products / Catalog — товарные позиции
+### Таймлайн CRM
+- Комментарии: `CommentEntry::create(['TEXT','AUTHOR_ID','BINDINGS'=>[['ENTITY_TYPE_ID'=>2,'ENTITY_ID'=>$id]]])`. Ключи `ENTITY_TYPE_ID`/`ENTITY_ID`, НЕ `OWNER_TYPE_ID`.
+- Файлы в комментах: `'FILES'=>['n'.$diskId]` + `'SETTINGS'=>['HAS_FILES'=>'Y']` (без SETTINGS фронт не рендерит).
+- Перед созданием: `FileUserType::setValueForAllowEdit('CRM_TIMELINE', true)`.
+- Файлы качать через `disk.file.get.DOWNLOAD_URL` (с auth), НЕ `urlDownload` (вернёт HTML логина).
+- Активности: `CCrmActivity::Add()`, даты в формате `DD.MM.YYYY HH:MI:SS`.
+- Записи звонков: сначала `Add()` без файлов, потом `Update(['STORAGE_TYPE_ID'=>3,'STORAGE_ELEMENT_IDS'=>[$diskId]])`, `ORIGIN_ID='VI_imported_'.$cloudId.'.'.time()`.
+- M:N связи: `ContactCompanyTable::bindCompanyIDs()`, `DealContactTable::bindContactIDs()`.
+- SmartInvoice: `Container::getFactory(SmartInvoice)->createItem()->getAddOperation()->launch()`.
 
-### Фаза 1: Базовые CRM сущности
-1.1 Company (LEAD_ID=0, backfill позже)
-1.2 Contact (COMPANY_ID заполнен, LEAD_ID=0)
-1.3 Lead (COMPANY_ID, CONTACT_ID заполнены)
-1.4 Backfill: Company.LEAD_ID, Contact.LEAD_ID
+### Что НЕ работает для комментов задач
+- `Forum\Comments\Feed::add()` — `canAdd()` не проходит из мигратора.
+- `Feed::addComment()` — пропускает права, но не привязывает к задаче.
+- REST `task.commentitem.add` — не поддерживает `UF_FORUM_MESSAGE_DOC` для файлов.
+- **Рабочий путь**: файлы из комментов → `im.disk.file.commit` в чат задачи (admin должен быть в `AUDITORS`).
 
-### Фаза 2: Зависимые CRM сущности
-2.1 Deal (COMPANY_ID, CONTACT_ID, LEAD_ID, CATEGORY_ID)
-2.2 Quote/Предложение (entityTypeId=7: dealId, companyId, contactId)
-2.3 Requisites + BankDetails (ENTITY_TYPE_ID=3/4)
+### Nginx-лимиты хостинга
+Внешний прокси режет ~1-2MB → 413 для файлов через REST. **Решение**: D7-загрузка минует nginx.
 
-### Фаза 3: Smart Processes
-3.1 SmartInvoice (31) — companyId, contactId, parentId2(deal)
-3.2 Custom SPs (>=1030) — с backfill circular dependencies
-3.3 Product Rows (товарные позиции: Deal, Quote, Invoice, SP)
+### REST через внешний прокси НЕ работает для
+- `crm.requisite.add` → "Entity not found"
+- `crm.deal.contact.items.set` → "Not found"
+- `crm.item.add` → "Неверное значение поля"
+- Решение: всё через D7.
 
-### Фаза 4: Кросс-сущностные данные
-4.1 Workgroups
-4.2 Tasks (UF_CRM_TASK: "CO_20", "D_123") + чат-файлы
-4.3 Activities (M:N привязки к любым сущностям) + записи звонков
-4.4 Timeline Comments (TYPE_ID=7, CommentEntry::create)
+## Маппинг ID и кросс-ран миграции
 
-### Фаза 5: Backfill
-5.1 Circular parentId references в SmartProcesses
-5.2 Contact<->Company M:N (crm.contact.company.items)
-5.3 Deal<->Contact M:N (crm.deal.contact.items)
+**Два места хранения:**
+1. **In-memory кэши** в `MigrationService`: `$companyMapCache`, `$contactMapCache`, `$dealMapCache`, `$leadMapCache`, `$pipelineMapCache`, `$stageMapCache`, `$smartProcessMapCache`, `$smartItemsByType`, `$invoiceMapCache`, `$userMapCache`, `$deptMapCache` — живут только в рамках одного PHP-процесса.
+2. **HL-блок `MigratorMap`** (`MapService::addMap`/`loadMap`/`getAllMappings`): persistent `(entity_type, cloud_id, box_id)`. Пишется **всегда** через `saveToMap()` (не за флагом).
 
-## Карта связей CRM сущностей
+**Инварианты для работы через несколько запусков / респауна:**
+- Каждая зависимая фаза в начале зовёт `loadExistingMappings($entityType)` для всех нужных типов. Для деалов — `deal/company/contact/lead`. Для timeline — `company/contact/deal/lead` (критично! без этого фаза молча проходит по 0 сущностей).
+- Smart process caches (`smartProcessMapCache`, `smartItemsByType`) персистятся в `Option`, т.к. их нет в HL-блоке. Аналогично: `pipeline_map_cache`, `stage_map_cache`, `uf_field_schema`, `uf_enum_map`.
+- Респаун (batched execution) = новый PHP-процесс. `migrate()` детектит его по `migration_phases` в Option и восстанавливает Option-кэши. CRM-сущностные кэши каждая фаза поднимает из HL сама.
+- Облако должно быть доступно в каждом запуске (даже "пост-обработка" `linkDealCompanies`/`linkDealContacts` делает REST-вызовы).
+
+**Частый симптом**: "сделки созданы, но `COMPANY_ID = 0`" или "timeline пустой" или "tasks не нашли CRM entity по `UF_CRM_TASK`".
+
+**Диагностика**:
+```sql
+SELECT UF_ENTITY_TYPE, COUNT(*) FROM b_hlbd_migratormap GROUP BY UF_ENTITY_TYPE;
+-- 0 для нужного типа → HL не записывался в предыдущем запуске, зависимая фаза не увидит связи
+```
+
+## Scoped (тестовый) прогон
+
+Через UI-блок "Тестовый прогон" (вкладка Миграция) или `plan.scope = {entity_type, entity_ids, skip_prereqs}`:
+- `entity_type=company|contact` — мигрирует выбранную сущность + всё что с ней прямо связано: контакты/леды/сделки/счета/smart-items/timeline/tasks. Глубина = 1 уровень (не тянет соседей через M:N).
+- `entity_type=task` — пропускает все CRM-фазы, мигрирует только указанные задачи.
+- `skip_prereqs` — пропускает `departments/users/crm_fields/pipelines/currencies/requisites`.
+- Логика в `MigrationService::initScope()`, `isScopedMode()`, `inScope($entityKey, $cloudId)`. Реализация: server-side фильтр `filter[ID]=<whitelist>` + PHP-safety check.
+
+## Batched execution / респаун
+
+При миграции 2000+ CRM-сущностей процесс ест память (Bitrix eval'ит ORM-классы, не чистятся). Решение: фаза создаёт N сущностей → `requestBatchRespawn()` → `migrate.php` спавнит свежий процесс через `nohup`.
+- `batch_size` — настройка плана (default 2000).
+- Курсоры `phase_cursor_<phase>` в Option.
+- Stats накопительные: новый воркер читает `migration_stats` и продолжает счёт.
+- В каждой CRM-фазе в цикле: `if ($processed % 50 === 0) $self->freeMemory();` — `USER_FIELD_MANAGER->CleanCache` + `ManagedCache::cleanAll` + `gc_collect_cycles`. **НЕ вызывать `TaggedCache::clearByTag('*')`** — валит ServiceLocator и даёт фатал `Cannot declare class Mediator...`.
+
+## Очистка (cleanup)
+
+Все методы используют **D7 + ORM**, без raw SQL, без rate-limit пауз:
+- CRM: `CompanyTable/ContactTable/DealTable/LeadTable::getList(['select'=>['ID']])` → `CCrmCompany::Delete` и т.д.
+- Pipelines: `Bitrix\Crm\Category\Entity\DealCategoryTable::getList` → `\Bitrix\Crm\Category\DealCategory::delete` (каскадно удаляет стадии). Остатки default-стадий через `StatusTable::getList` → `CCrmStatus::Delete`.
+- Tasks: `\Bitrix\Tasks\Internals\TaskTable::getList` → `CTaskItem::delete(['SKIP_NOT_FOUND_ERROR'=>true])`.
+- Smart processes: `\Bitrix\Crm\Model\Dynamic\TypeTable::getList` → для каждого типа items через `Container::getFactory($etId)->getItems()` → `getDeleteOperation()->launch()`. **Системные типы** (CODE=`BX_SMART_*` — SmartInvoice=31, SmartDocument=36, SmartB2eDocument=39) чистятся только по items, **сам тип не удалять** (сломает портал).
+- Порядок в `runAllCleanups`: `tasks → deals → contacts → companies → leads → pipelines → workgroups → smart_processes` (FK-safe).
+
+## Карта связей CRM
 
 ```
-Company(4) <--M:N--> Contact(3)       via b_crm_contact_company
+Company(4) <--M:N--> Contact(3)        via b_crm_contact_company
      |                    |
-     +---> Lead(1) <------+            COMPANY_ID, CONTACT_ID
+     +---> Lead(1) <------+             COMPANY_ID, CONTACT_ID
            |
-           +---> Deal(2)               COMPANY_ID, CONTACT_ID, LEAD_ID
+           +---> Deal(2)                COMPANY_ID, CONTACT_ID, LEAD_ID
                  |
-                 +---> Quote(7)        dealId, companyId, contactId
+                 +---> Quote(7)         dealId, companyId, contactId
                  +---> SmartInvoice(31) parentId2, companyId, contactId
                  +---> SmartProcess(>=1030) parentId<X>, companyId, contactId
-                 
-Activity(6) --M:N--> ANY entity        via b_crm_act_bind
-ProductRow  --> Deal/Quote/Invoice/SP   via b_crm_product_row (OWNER_TYPE=abbr)
-Requisite(8) --> Contact/Company        ENTITY_TYPE_ID=3/4
+
+Activity(6) --M:N--> ANY entity         via b_crm_act_bind
 Timeline    --M:N--> ANY entity         via b_crm_timeline_bind
+Requisite(8) --> Contact/Company        ENTITY_TYPE_ID=3/4
 ```
 
-## Типы записей таймлайна
+**Аббревиатуры** (CCrmOwnerTypeAbbr, для `UF_CRM_TASK`): `L`=Lead, `D`=Deal, `C`=Contact, `CO`=Company, `SI`=SmartInvoice, `Q`=Quote, `RQ`=Requisite. Dynamic types: `T` + hex(entityTypeId) (напр. `1038` = `T40e`).
 
-Мигрировать: TYPE_ID=7 (COMMENT) через CommentEntry::create, TYPE_ID=25 subtype 5 (LOG_MESSAGE REST)
-НЕ мигрировать (авто): 1(ACTIVITY), 2(CREATION), 3(MODIFICATION), 6(MARK), 9(BIZPROC), 10(CONVERSION), 12(DOCUMENT), 13(RESTORATION), 25(TODO/PING/EMAIL)
-
-## Ключевые аббревиатуры (CCrmOwnerTypeAbbr)
-L=Lead, D=Deal, C=Contact, CO=Company, I=Invoice, Q=Quote, SI=SmartInvoice, O=Order, RQ=Requisite
-Dynamic types: T + hex(entityTypeId), например 1038 = T40e
-
-## Реализовано: Файлы в чате задач от реального автора
-
-- `migrateChatFiles()` собирает всех участников задачи (createdBy, responsibleId, accomplices, auditors) и передаёт в `createTaskChat()` как USERS
-- `sendFileToChatD7()` вызывается с замапленным USER_ID автора сообщения (`$msg['senderId']`), fallback на admin (1)
-- Все участники добавлены в чат до отправки файлов
-
-## Реализовано: Сохранение оригинальных дат
-
-- `BoxD7Service::backdateEntity($table, $id, $dateCreate, $dateModify)` — прямой SQL UPDATE после создания (CCrm*::Add игнорирует DATE_CREATE)
-- Таблицы и колонки: `b_crm_company/contact/deal/lead` (DATE_CREATE, DATE_MODIFY), `b_crm_act` (CREATED, LAST_UPDATED), `b_crm_timeline` (CREATED), `b_crm_dynamic_items_*` (CREATED_TIME, UPDATED_TIME)
-- Вызывается после каждого создания: компании, контакты, сделки, лиды, активности, комментарии таймлайна, smart items
-- Каждый вызов обёрнут в try/catch — ошибка даты не ломает миграцию
-
-## Реализовано: Инкрементальная (дельта) миграция
-
-- `MigrationService::getIncrementalFilter()` — возвращает `['>DATE_CREATE' => $lastTs]` если включён режим incremental
-- `getIncrementalTaskFilter()` — то же для задач (`>CREATED_DATE`)
-- `loadExistingMappings($entityType)` — загружает маппинги из HL-блока в кэш (для timeline/activities ранее созданных сущностей)
-- `MapService::getAllMappings($entityType)` — новый метод, возвращает cloudId->localId из HL-блока
-- `CloudAPI`: методы `getCompanies/Contacts/Deals/Leads/Tasks/SmartProcessItems` принимают `$filter = []`
-- CLI worker: `$migrateType === 'incremental'` -> `$plan['settings']['incremental'] = true`
-- Timestamp сохраняется в `Option::set('last_migration_timestamp', date('c'))` при завершении
-- Admin UI: кнопка "Инкрементальная миграция" (disabled если нет предыдущего timestamp)
-
-## TODO: Реквизиты — доработать маппинг пресетов и полноту полей
-
-Текущее состояние: добавлен `buildRequisitePresetMap()` который маппит cloud→box preset_id по `(COUNTRY_ID, NAME)` с fallback на создание нового пресета через `EntityPreset`. Но есть нерешённые вопросы:
-
-**1. Несоответствие country_id и схемы полей в cloud**
-Cloud preset `ID=1 country=4 name='Организация'` возвращает реквизиты с **российскими** полями (`RQ_INN`, `RQ_OKPO`, `RQ_VAT_PAYER`, `RQ_BASE_DOC`), а не белорусскими (`RQ_UNP`). То есть `COUNTRY_ID=4` не означает реально "Беларусь со схемой полей БЕЛ". Возможно cloud использует custom-пресет или country_id не совпадает с ожиданиями.
-
-**2. Тестирование маппинга не проведено**
-Добавленный `buildRequisitePresetMap` не протестирован на реальной миграции:
-- Что произойдёт при создании cloud пресета на боксе с `COUNTRY_ID=4` — не столкнёмся ли с box `ID=4 'Организация РБ'` (тоже country=4)?
-- Fallback по имени работает? (cloud `Организация` → box `Организация RU` ID=1)
-- Ошибки `создано=4, ошибок=2` из оригинального лога — закрыты ли?
-
-**3. Полнота полей реквизитов**
-Cloud реквизит содержит многие `RQ_*` поля. Мигратор просто копирует их целиком через `unset($req['ID'], ...)` + передача массива. Не валидируется:
-- Все ли поля принимаются box-пресетом
-- Нужны ли трансформации для файловых полей (скан паспорта, подпись, печать)
-- Адреса реквизитов (`RQ_ADDR`) — отдельная подтаблица в `b_crm_requisite`, может не копироваться
-
-**4. Банковские реквизиты**
-`migrateRequisites` вызывает `getBankDetails($cloudReqId)` после создания реквизита. Нужно проверить что:
-- Сам метод корректно отрабатывает
-- `addBankDetail` принимает fields (аналогично могут быть пресет-специфичные поля)
-- Связь `ENTITY_ID` в bank detail указывает на box requisite ID (не cloud)
-
-**План тестирования когда вернёмся:**
-1. Запустить миграцию контакта 1 (preset=3) и компании 1 (preset=1) через основной мигратор
-2. Проверить созданные реквизиты в БД: все ли поля заполнены, правильный ли PRESET_ID
-3. Проверить банковские реквизиты (если есть в cloud)
-4. Сравнить визуально в UI — выглядит ли корректно в карточке сущности
-
-## TODO: UF трансформации для смарт-процессов
-
-В `buildSmartProcessItemFields()` (строки 3309-3319) UF поля копируются "как есть" без трансформации:
-```php
-foreach ($item as $k => $v) {
-    if (strncmp($k, 'uf', 2) === 0 || strncmp($k, 'UF', 2) === 0) {
-        $upperKey = $this->ufFieldToUpperCase($k);
-        $fields[$upperKey] = $v;  // ← нет transformUfValue
-    }
-}
-```
-
-**Что не работает для смарт-процессов:**
-- ❌ `enumeration` — cloud enum ID не маппится в box enum ID
-- ❌ `date`/`datetime` — ISO формат не конвертируется в DD.MM.YYYY
-- ❌ `file` — объект {id, downloadUrl} не скачивается
-- ❌ `buildUfFieldSchemaCache` вызывается только для `['deal','contact','company','lead']`, смарты вообще не попадают в `$ufFieldSchema`/`$ufEnumMap`
-
-**Почему непросто:**
-1. **Entity ID формат**: для смартов UF entity = `CRM_<entityTypeId>` (например `CRM_1030`). `entityIdMap` сейчас хардкод только для 4 стандартных сущностей.
-2. **Имена полей**: cloud REST отдаёт camelCase (`ufCrm5_1775542300`), box D7 Factory ожидает UPPER_SNAKE (`UF_CRM_5_1775542300`). Маппинг enum нужно уметь искать по обоим вариантам.
-3. **Timing**: UF кэш для смартов надо строить **после** `migrateSmartProcesses()` создаст `smartProcessMapCache` (cloud entityTypeId → box entityTypeId). Текущий `buildUfFieldSchemaCache` вызывается в конце `migrateCrmFields()` — до фазы smart_processes.
-
-**План реализации:**
-1. Расширить `$entityIdMap` в `buildUfFieldSchemaCache` так, чтобы принимать произвольный entity ID (не только CRM_DEAL/CRM_CONTACT/CRM_COMPANY/CRM_LEAD)
-2. После `migrateSmartProcesses()` вызывать второй раз `buildUfFieldSchemaCache` для смартов: для каждого `(cloudEntityTypeId => boxEntityTypeId)` из `smartProcessMapCache` строить ключ `smart_<boxId>` → поля entity `CRM_<boxId>`
-3. В `transformSingleUfValue` добавить нормализацию поля: искать `$fieldName` с учётом camelCase/UPPER_SNAKE варианта — чтобы cloud `ufCrm5_1775542300` находил box `UF_CRM_5_1775542300` в схеме
-4. В `buildSmartProcessItemFields` заменить ручной цикл на:
-   ```php
-   $smartEntityType = 'smart_' . $spId;
-   foreach ($item as $k => $v) {
-       if (strncmp($k, 'uf', 2) !== 0 && strncmp($k, 'UF', 2) !== 0) continue;
-       $upperKey = $this->ufFieldToUpperCase($k);
-       $transformed = $this->transformUfValue($smartEntityType, $upperKey, $v);
-       if ($transformed !== null) $fields[$upperKey] = $transformed;
-   }
-   ```
-5. Тестирование: смарт-процесс "Договоры" из тестового cloud имеет enum, date, file поля — можно проверить на них
-
-**Оценка:** 1-1.5 часа на реализацию + тест
-
-## TODO: OAuth Local App для скачивания UF type=file файлов
-
-**Проблема:** Файлы в UF полях типа `file` (не `disk_file`) хранятся в `b_file` напрямую без обёртки в Disk. REST API НЕ предоставляет webhook-доступа к ним:
-- `disk.file.get` → not found (файл не в Disk)
-- `disk.attachedobject.get` → not found
-- `user.userfield.file.get` → работает только для entity=USER, не для CRM
-- `crm.deal.userfield.update` USER_TYPE_ID → REST возвращает true, но молча игнорирует
-- `/bitrix/components/.../show_file.php?auth=<webhook_secret>` → возвращает HTML страницу логина (auth= принимает только OAuth access_token)
-
-**Текущее поведение мигратора:** UF type=file поля попадают в `transformUfValue()` → пытается через `disk.file.get` → fallback на CRM file URL с webhook auth → скачивается HTML страница логина (21455 байт), а не реальный файл.
-
-**Решение (на будущее):** Локальное OAuth приложение в Bitrix24 cloud
-1. Создать на cloud: Приложения → Разработчикам → Локальное приложение
-2. Scope: `crm, disk, user`
-3. Получить `client_id` + `client_secret`
-4. Через `/oauth/token/?grant_type=client_credentials&client_id=...&client_secret=...&scope=crm,disk` получить `access_token`
-5. Использовать в `auth=<access_token>` для component endpoints типа `/bitrix/components/bitrix/crm.deal.show/show_file.php?auth=...`
-
-Альтернативно — добавить в админку поле "OAuth client_id/secret" и переключатель "Использовать OAuth для file полей" в дополнение к webhook.
-
-**Временный обходной путь:** на cloud стороне вручную пересоздать UF поля типа `file` с типом `disk_file` (с миграцией значений). Тогда файлы уйдут в Disk и станут доступны через REST.
-
-## Последние изменения (сессия 2026-04-05, обновлено)
-
-### Реализованы все TODO (сессия 2026-04-05):
-- **TODO 1**: Файлы в чатах задач от реального автора (TaskMigrationService::migrateChatFiles)
-- **TODO 2**: Сохранение оригинальных дат (BoxD7Service::backdateEntity + SQL UPDATE после создания)
-- **TODO 3**: Инкрементальная миграция (CloudAPI фильтры, MapService::getAllMappings, admin UI кнопка)
-
-### Внедрено в основной мигратор:
-- **migrateTimeline()**: активности через D7 `CCrmActivity::Add()` вместо REST, даты в формате DD.MM.YYYY
-- **migrateTimeline()**: записи звонков через двухфазный подход (Add → Update STORAGE_ELEMENT_IDS)
-- **migrateTimeline()**: комментарии через D7 `CommentEntry::create` с FILES + SETTINGS['HAS_FILES']
-- **migrateTimeline()**: `FileUserType::setValueForAllowEdit('CRM_TIMELINE', true)` в начале фазы
-- **BoxD7Service**: добавлены `bindContactCompany()`, `bindDealContacts()`, `addRequisite()`, `addBankDetail()`, `addSmartItem()`
-- **TaskMigrationService**: `migrateChatFiles()` — перенос файлов из чата задач через D7 `CIMDisk::UploadFileFromDisk`
-- **CloudAPI**: `getChatMessages()` для получения сообщений чата, исправлен `getTimelineComments()` (ENTITY_TYPE строкой)
-
-### Тестовые скрипты (в `/home/bitrix/www/local/Claude code/Мигратор/`):
-- `test_full_company20.php` — полная выгрузка компании #20 со всеми связями (эталонный тест)
-- `test_contact_1442_v2.php` — контакт с лидом, сделкой, звонками, записями, таймлайном
-- `test_task_3762.php` — задача с файлами в чате через D7
-- `test_comment_file.php` — тест прикрепления файлов к комментариям таймлайна
-- Запуск тестов через Docker: `curl -k -s "https://127.0.0.1:8589/local/Claude%20code/Мигратор/<script>.php"`
-
-### Проверено на реальных данных (компания #20):
-- ✅ Компания + контакт + 2 сделки через D7
-- ✅ Реквизиты через D7 EntityRequisite
-- ✅ Счёт через D7 Factory SmartInvoice
-- ✅ 10 активностей через D7 CCrmActivity
-- ✅ Комментарий таймлайна с файлом (SETTINGS['HAS_FILES'] + disk.file.get auth URL)
-- ✅ 15 документов как комментарии с PDF
-- ✅ M:N связи через D7 ContactCompanyTable, DealContactTable
-
-### Проверено (контакт #1442):
-- ✅ 3 звонка VOXIMPLANT_CALL с MP3 записями (ORIGIN_ID='VI_imported_...')
-- ✅ 9 комментариев таймлайна с анализом ИИ (ENTITY_TYPE_ID/ENTITY_ID bindings)
-
-### REST через внешний прокси НЕ работает для:
-- Реквизиты (crm.requisite.add) — "Entity not found" 
-- M:N bindings (crm.deal.contact.items.set) — "Not found"
-- Счета (crm.item.add) — "Неверное значение поля"
-- Причина: внешний прокси хостинга или DNS, D7-сущности не видны из REST в другом процессе
-- Решение: ВСЁ через D7
-
-## Что НЕ нужно делать
-
-- ��е рефакторить код, не связанный с задачей
-- Не добавлять docblock к неизменённым функциям
-- Не менять рабочий код "для улучшения"
-- Не использовать устаревший API без необходимости
+## Что НЕ делать
+- Не рефакторить код, не связанный с задачей.
+- Не добавлять docblock к неизменённым функциям.
+- Не менять рабочий код "для улучшения".
+- Не вызывать `TaggedCache::clearByTag('*')` — валит ServiceLocator.
+- Не удалять системные smart process types (CODE=`BX_SMART_*`).
+- Не использовать `fetchAll('crm.company.list')` для очистки — есть быстрый `BoxD7Service::list<Entity>Ids()`.

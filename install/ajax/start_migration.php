@@ -53,6 +53,21 @@ if (!in_array($migrateType, ['full', 'tasks', 'incremental'], true)) {
     $migrateType = 'full';
 }
 
+// Test (scoped) migration: single company/contact/task and everything bound to it
+$scopeJson = '';
+$scopeType = $_POST['scope_type'] ?? '';
+$scopeIdsRaw = $_POST['scope_ids'] ?? '';
+if (in_array($scopeType, ['company', 'contact', 'task'], true) && $scopeIdsRaw !== '') {
+    $scopeIds = array_values(array_filter(array_map('intval', explode(',', $scopeIdsRaw))));
+    if (!empty($scopeIds)) {
+        $scopeJson = json_encode([
+            'entity_type'  => $scopeType,
+            'entity_ids'   => $scopeIds,
+            'skip_prereqs' => !empty($_POST['scope_skip_prereqs']) && $_POST['scope_skip_prereqs'] !== '0',
+        ]);
+    }
+}
+
 // Reset state
 Option::set($moduleId, 'migration_status', 'running');
 Option::set($moduleId, 'migration_message', 'Запуск миграции...');
@@ -62,6 +77,20 @@ Option::set($moduleId, 'migration_phases', '{}');
 Option::set($moduleId, 'migration_progress', '{}');
 Option::set($moduleId, 'migration_stop', '0');
 Option::set($moduleId, 'migration_pid', '');
+
+// Reset respawn / batched-execution state from any previous run
+Option::set($moduleId, 'migration_respawn', '0');
+Option::set($moduleId, 'pipeline_map_cache', '');
+Option::set($moduleId, 'stage_map_cache', '');
+Option::set($moduleId, 'uf_field_schema', '');
+Option::set($moduleId, 'uf_enum_map', '');
+Option::set($moduleId, 'smart_process_map_cache', '');
+Option::set($moduleId, 'smart_items_by_type', '');
+// Test migration scope — either the explicit JSON or cleared for full run
+Option::set($moduleId, 'migration_scope', $scopeJson);
+foreach (['departments','users','crm_fields','pipelines','currencies','companies','contacts','leads','deals','invoices','requisites','smart_processes','workgroups','timeline','tasks'] as $ph) {
+    Option::set($moduleId, 'phase_cursor_' . $ph, '0');
+}
 
 // Path to CLI worker — resolve from module directory, not from ajax copy
 $documentRoot = $_SERVER['DOCUMENT_ROOT'];

@@ -29,6 +29,22 @@ class MigrationService
     private $smartProcessMapCache = [];  // cloud entityTypeId => box entityTypeId
     private $smartItemMapCache = [];     // cloud item ID => box item ID
     private $smartItemsByType = [];      // boxEntityTypeId => [cloudItemId => boxItemId, ...]
+    private $invoiceMapCache = [];       // cloud SmartInvoice ID => box SmartInvoice ID
+
+    // Scoped (test) migration support.
+    // $scopeMode: null — full migration; 'company' | 'contact' | 'task' — scoped.
+    // $scopeRootIds: user-selected cloud IDs (the entry point).
+    // $scopedIds: whitelist of cloud IDs per logical group, populated in initScope().
+    private $scopeMode = null;
+    private $scopeRootIds = [];
+    private $scopedIds = [
+        'company'  => [],   // int[] of cloud company IDs
+        'contact'  => [],
+        'lead'     => [],
+        'deal'     => [],
+        'invoice'  => [],
+        'task'     => [],
+    ];
 
     // UF field schemas + enum mappings, populated during migrateCrmFields()
     // Structure: $ufFieldSchema[entityType][fieldName] = ['type' => 'enumeration|file|date|...', 'multiple' => 'Y'|'N']
@@ -38,8 +54,218 @@ class MigrationService
 
     private $log = [];
     private $opCount = 0;
-    private $saveMapEnabled = false; // persist created IDs to MigratorMap HL block
+    private $saveMapEnabled = true;  // persist created IDs to MigratorMap HL block (always on — required for cross-run linking)
     private $migrationFolderId = 0;  // disk folder for file uploads
+    public $batchRespawnRequested = false; // set by any phase when batch size reached (public for closures via $self)
+
+    /**
+     * Per-process batch size. When a phase creates this many entities in the
+     * current PHP process, it signals respawn so the OS can reclaim memory
+     * held by Bitrix's eval'd ORM classes (unclearable mid-process).
+     */
+    private function getBatchSize(): int
+    {
+        return max(100, (int)($this->plan['settings']['batch_size'] ?? 2000));
+    }
+
+    /**
+     * Mark current phase for respawn. Phase method exits after saveStats,
+     * migrate() loop breaks out, install/cli/migrate.php respawns a fresh
+     * worker that skips done phases and resumes via phase_cursor_*.
+     */
+    public function requestBatchRespawn(string $phase, int $batchCreated): void
+    {
+        $this->batchRespawnRequested = true;
+        Option::set($this->moduleId, 'migration_respawn', '1');
+        $this->addLog("[$phase] обработан batch ($batchCreated). Респаун воркера...");
+    }
+
+    public function getPhaseResumeCursor(string $phase): int
+    {
+        return (int)Option::get($this->moduleId, 'phase_cursor_' . $phase, '0');
+    }
+
+    /** Public so closures using $self (a copy of $this) can call it. */
+    public function setPhaseResumeCursor(string $phase, $cursor): void
+    {
+        Option::set($this->moduleId, 'phase_cursor_' . $phase, (string)(int)$cursor);
+    }
+
+    /**
+     * Release memory accumulated by Bitrix CRM Add operations.
+     * Called inside per-item CRM creation loops every ~50 items.
+     * Public so closures via $self can call it.
+     */
+    public function freeMemory(): void
+    {
+        $this->saveLog();
+        // flushCrmCaches() already calls USER_FIELD_MANAGER->CleanCache()
+        // and ManagedCache::cleanAll(). Do NOT call clearByTag('*') —
+        // it wipes ServiceLocator bindings and triggers ORM class re-eval
+        // fatal "Cannot declare class MediatorFromNodeMemberToRoleViaRoleTable".
+        BoxD7Service::flushCrmCaches();
+        if (class_exists('\CCrmSearch', false) && method_exists('\CCrmSearch', 'ClearResultCache')) {
+            try { \CCrmSearch::ClearResultCache(); } catch (\Throwable $e) {}
+        }
+        gc_collect_cycles();
+    }
+
+    /**
+     * Scoped (test) migration — the user picks ONE company, contact, or task,
+     * and the migrator processes only that entity and its direct children.
+     * Called once from migrate() before the phase loop.
+     */
+    private function initScope(): void
+    {
+        $scope = $this->plan['scope'] ?? null;
+        if (empty($scope['entity_type']) || empty($scope['entity_ids'])) {
+            return;
+        }
+        $this->scopeMode = (string)$scope['entity_type'];
+        $this->scopeRootIds = array_values(array_filter(array_map('intval', (array)$scope['entity_ids'])));
+        if (empty($this->scopeRootIds)) {
+            $this->scopeMode = null;
+            return;
+        }
+
+        $this->addLog("=== Тестовый прогон: scope={$this->scopeMode}, ids=" . implode(',', $this->scopeRootIds) . " ===");
+
+        if ($this->scopeMode === 'task') {
+            // Task mode: only the selected tasks. No CRM phases.
+            $this->scopedIds['task'] = $this->scopeRootIds;
+            return;
+        }
+
+        if ($this->scopeMode === 'company') {
+            $this->scopedIds['company'] = $this->scopeRootIds;
+            foreach ($this->scopeRootIds as $companyId) {
+                // Contacts linked via crm.company.contact.items.get (M:N)
+                try {
+                    $items = $this->cloudAPI->request('crm.company.contact.items.get', ['id' => $companyId]);
+                    foreach (($items['result'] ?? []) as $it) {
+                        if (!empty($it['CONTACT_ID'])) {
+                            $this->scopedIds['contact'][] = (int)$it['CONTACT_ID'];
+                        }
+                    }
+                } catch (\Throwable $e) { /* no contacts */ }
+
+                // Deals with COMPANY_ID = root, plus M:N via crm.company.deal.items.get if supported
+                try {
+                    $deals = $this->cloudAPI->request('crm.deal.list', [
+                        'filter' => ['COMPANY_ID' => $companyId],
+                        'select' => ['ID'],
+                    ]);
+                    foreach (($deals['result'] ?? []) as $d) {
+                        $this->scopedIds['deal'][] = (int)$d['ID'];
+                    }
+                } catch (\Throwable $e) {}
+
+                // Leads
+                try {
+                    $leads = $this->cloudAPI->request('crm.lead.list', [
+                        'filter' => ['COMPANY_ID' => $companyId],
+                        'select' => ['ID'],
+                    ]);
+                    foreach (($leads['result'] ?? []) as $l) {
+                        $this->scopedIds['lead'][] = (int)$l['ID'];
+                    }
+                } catch (\Throwable $e) {}
+
+                // Invoices (SmartInvoice entityTypeId=31) — by companyId and parentId4
+                foreach (['companyId' => $companyId, 'parentId4' => $companyId] as $key => $val) {
+                    try {
+                        $invs = $this->cloudAPI->request('crm.item.list', [
+                            'entityTypeId' => 31,
+                            'filter' => [$key => $val],
+                            'select' => ['id'],
+                        ]);
+                        foreach (($invs['result']['items'] ?? []) as $i) {
+                            $this->scopedIds['invoice'][] = (int)$i['id'];
+                        }
+                    } catch (\Throwable $e) {}
+                }
+            }
+        } elseif ($this->scopeMode === 'contact') {
+            $this->scopedIds['contact'] = $this->scopeRootIds;
+            foreach ($this->scopeRootIds as $contactId) {
+                // Companies linked via crm.contact.company.items.get
+                try {
+                    $items = $this->cloudAPI->request('crm.contact.company.items.get', ['id' => $contactId]);
+                    foreach (($items['result'] ?? []) as $it) {
+                        if (!empty($it['COMPANY_ID'])) {
+                            $this->scopedIds['company'][] = (int)$it['COMPANY_ID'];
+                        }
+                    }
+                } catch (\Throwable $e) {}
+
+                // Deals with CONTACT_ID primary
+                try {
+                    $deals = $this->cloudAPI->request('crm.deal.list', [
+                        'filter' => ['CONTACT_ID' => $contactId],
+                        'select' => ['ID'],
+                    ]);
+                    foreach (($deals['result'] ?? []) as $d) {
+                        $this->scopedIds['deal'][] = (int)$d['ID'];
+                    }
+                } catch (\Throwable $e) {}
+
+                // Leads
+                try {
+                    $leads = $this->cloudAPI->request('crm.lead.list', [
+                        'filter' => ['CONTACT_ID' => $contactId],
+                        'select' => ['ID'],
+                    ]);
+                    foreach (($leads['result'] ?? []) as $l) {
+                        $this->scopedIds['lead'][] = (int)$l['ID'];
+                    }
+                } catch (\Throwable $e) {}
+
+                // Invoices by contactId and parentId3
+                foreach (['contactId' => $contactId, 'parentId3' => $contactId] as $key => $val) {
+                    try {
+                        $invs = $this->cloudAPI->request('crm.item.list', [
+                            'entityTypeId' => 31,
+                            'filter' => [$key => $val],
+                            'select' => ['id'],
+                        ]);
+                        foreach (($invs['result']['items'] ?? []) as $i) {
+                            $this->scopedIds['invoice'][] = (int)$i['id'];
+                        }
+                    } catch (\Throwable $e) {}
+                }
+            }
+        }
+
+        // Dedup all sets
+        foreach ($this->scopedIds as $k => $ids) {
+            $this->scopedIds[$k] = array_values(array_unique(array_map('intval', $ids)));
+        }
+
+        $this->addLog('  Собрано в scope: '
+            . 'companies=' . count($this->scopedIds['company'])
+            . ', contacts=' . count($this->scopedIds['contact'])
+            . ', leads=' . count($this->scopedIds['lead'])
+            . ', deals=' . count($this->scopedIds['deal'])
+            . ', invoices=' . count($this->scopedIds['invoice']));
+    }
+
+    public function isScopedMode(): bool
+    {
+        return $this->scopeMode !== null;
+    }
+
+    /**
+     * Check if a cloud entity is in scope for the given phase.
+     * Returns true in full-migration mode. Public so closures can call via $self.
+     *
+     * @param string $entityKey One of: company, contact, lead, deal, invoice, task
+     */
+    public function inScope(string $entityKey, int $cloudId): bool
+    {
+        if ($this->scopeMode === null) return true;
+        $allowed = $this->scopedIds[$entityKey] ?? [];
+        return in_array($cloudId, $allowed, true);
+    }
 
     // Migration phases in execution order
     const PHASES = [
@@ -52,6 +278,7 @@ class MigrationService
         'contacts',
         'leads',
         'deals',
+        'invoices',
         'requisites',
         'smart_processes',
         'workgroups',
@@ -69,6 +296,7 @@ class MigrationService
         'contacts'        => 'Контакты',
         'leads'           => 'Лиды',
         'deals'           => 'Сделки',
+        'invoices'        => 'Счета',
         'requisites'      => 'Реквизиты',
         'smart_processes' => 'Смарт-процессы',
         'workgroups'      => 'Рабочие группы',
@@ -81,7 +309,8 @@ class MigrationService
         $this->cloudAPI = $cloudAPI;
         $this->boxAPI = $boxAPI;
         $this->plan = $plan;
-        $this->saveMapEnabled = !empty($plan['settings']['save_migrated_ids']);
+        // HL-block persistence is always on — it's required for cross-run
+        // linking (see CLAUDE.md "Маппинг ID и работа через несколько запусков").
     }
 
     public function setLogFile($path)
@@ -102,16 +331,63 @@ class MigrationService
         }
 
         try {
-            // --- Step 0a: Delete previously migrated data via HL block (if enabled) ---
-            if (!empty($this->plan['settings']['delete_migrated_data'])) {
-                $this->runHlBlockCleanup();
+            // Detect respawn: if any phase is already done/running in Option,
+            // this is a batch-respawn continuation — skip cleanup (otherwise
+            // we'd delete the entities created in previous batches).
+            $existingPhases = json_decode(Option::get($this->moduleId, 'migration_phases', '{}'), true) ?: [];
+            $isRespawn = false;
+            foreach ($existingPhases as $st) {
+                if (in_array($st, ['done', 'running'], true)) { $isRespawn = true; break; }
             }
 
-            // --- Step 0b: Run all cleanups first, before any migration ---
-            $this->runAllCleanups();
+            if ($isRespawn) {
+                $this->addLog('=== Respawn continuation — пропуск фаз очистки ===');
+                // Restore in-memory maps built by earlier phases (persisted to Option).
+                $tmp = json_decode(Option::get($this->moduleId, 'pipeline_map_cache', ''), true);
+                if (is_array($tmp)) {
+                    $this->pipelineMapCache = array_map('intval', $tmp);
+                    $this->addLog('Восстановлен pipelineMapCache: ' . count($this->pipelineMapCache));
+                }
+                $tmp = json_decode(Option::get($this->moduleId, 'stage_map_cache', ''), true);
+                if (is_array($tmp)) {
+                    $this->stageMapCache = $tmp;
+                    $this->addLog('Восстановлен stageMapCache: ' . count($this->stageMapCache));
+                }
+                $tmp = json_decode(Option::get($this->moduleId, 'uf_field_schema', ''), true);
+                if (is_array($tmp)) {
+                    $this->ufFieldSchema = $tmp;
+                    $this->addLog('Восстановлена UF схема: ' . array_sum(array_map('count', $tmp)) . ' полей');
+                }
+                $tmp = json_decode(Option::get($this->moduleId, 'uf_enum_map', ''), true);
+                if (is_array($tmp)) $this->ufEnumMap = $tmp;
+
+                $tmp = json_decode(Option::get($this->moduleId, 'smart_process_map_cache', ''), true);
+                if (is_array($tmp)) {
+                    $this->smartProcessMapCache = array_map('intval', $tmp);
+                    $this->addLog('Восстановлен smartProcessMapCache: ' . count($this->smartProcessMapCache));
+                }
+                $tmp = json_decode(Option::get($this->moduleId, 'smart_items_by_type', ''), true);
+                if (is_array($tmp)) {
+                    $this->smartItemsByType = $tmp;
+                    $totalSmart = 0;
+                    foreach ($tmp as $m) $totalSmart += count($m);
+                    $this->addLog("Восстановлен smartItemsByType: $totalSmart элементов");
+                }
+            } else {
+                // --- Step 0a: Delete previously migrated data via HL block (if enabled) ---
+                if (!empty($this->plan['settings']['delete_migrated_data'])) {
+                    $this->runHlBlockCleanup();
+                }
+
+                // --- Step 0b: Run all cleanups first, before any migration ---
+                $this->runAllCleanups();
+            }
 
             // --- Step 0c: Build user map (cloud→box by email) — needed by all phases ---
             $this->buildUserMapCache();
+
+            // --- Step 0c-scope: resolve the scope set (test mode). No-op for full migration. ---
+            $this->initScope();
 
             // --- Step 0d: Create migration folder on shared disk for file uploads ---
             try {
@@ -121,8 +397,40 @@ class MigrationService
                 $this->addLog('ВНИМАНИЕ: не удалось создать папку миграции на диске: ' . $e->getMessage());
             }
 
+            // Scoped-run phase filter. In test mode some phases are
+            // globally skipped regardless of plan toggles.
+            $skipInScope = [];
+            if ($this->isScopedMode()) {
+                $skipPrereqs = !empty($this->plan['scope']['skip_prereqs']);
+                if ($skipPrereqs) {
+                    $skipInScope = array_merge($skipInScope, ['departments','users','crm_fields','pipelines','currencies','requisites']);
+                }
+                // Workgroups are never scoped to a single CRM entity.
+                $skipInScope[] = 'workgroups';
+                // Task scope = only the tasks phase runs.
+                if ($this->scopeMode === 'task') {
+                    $skipInScope = array_merge($skipInScope, ['departments','users','crm_fields','pipelines','currencies','companies','contacts','leads','deals','invoices','requisites','smart_processes','timeline']);
+                }
+            }
+
             foreach (self::PHASES as $phase) {
                 $this->checkStop();
+
+                // On respawn: skip phases already marked done in previous batch.
+                $phaseStatus = $existingPhases[$phase] ?? '';
+                if ($phaseStatus === 'done') {
+                    continue;
+                }
+                if ($phaseStatus === 'skipped') {
+                    continue;
+                }
+
+                // Scope skip
+                if (in_array($phase, $skipInScope, true)) {
+                    $this->addLog("[$phase] Пропущено (scope)");
+                    $this->savePhaseStatus($phase, 'skipped');
+                    continue;
+                }
 
                 if (!$this->isPhaseEnabled($phase)) {
                     $this->addLog("[$phase] Пропущено (отключено в плане)");
@@ -137,6 +445,14 @@ class MigrationService
                 $method = 'migrate' . str_replace('_', '', ucwords($phase, '_'));
                 $this->$method();
 
+                // Batched respawn: phase hit per-process limit, keep it "running"
+                // so next worker resumes via phase_cursor_*. Break loop → migrate.php
+                // sees migration_respawn=1 and spawns a fresh worker.
+                if ($this->batchRespawnRequested) {
+                    $this->addLog("[$phase] Выход для респауна (фаза остаётся в статусе 'running')");
+                    return;
+                }
+
                 $this->savePhaseStatus($phase, 'done');
                 $this->addLog("[$phase] Завершено");
 
@@ -146,7 +462,11 @@ class MigrationService
                 try {
                     $app = \Bitrix\Main\Application::getInstance();
                     $app->getManagedCache()->cleanAll();
-                    $app->getTaggedCache()->clearByTag('*');
+                    // NOTE: clearByTag('*') removed — wildcard clear invalidates
+            // ServiceLocator bindings for crm.service.container and triggers
+            // Entity::compileObjectClass re-declarations ("Cannot declare
+            // class MediatorFromNodeMemberToRoleViaRoleTable"). Managed cache
+            // cleanAll is enough to release per-entity cached data.
                 } catch (\Throwable $e) {}
                 $this->addLog('  Память: ' . round(memory_get_usage(true) / 1024 / 1024) . 'MB');
             }
@@ -204,7 +524,11 @@ class MigrationService
             try {
                 $app = \Bitrix\Main\Application::getInstance();
                 $app->getManagedCache()->cleanAll();
-                $app->getTaggedCache()->clearByTag('*');
+                // NOTE: clearByTag('*') removed — wildcard clear invalidates
+            // ServiceLocator bindings for crm.service.container and triggers
+            // Entity::compileObjectClass re-declarations ("Cannot declare
+            // class MediatorFromNodeMemberToRoleViaRoleTable"). Managed cache
+            // cleanAll is enough to release per-entity cached data.
             } catch (\Throwable $e) {}
         }
 
@@ -246,6 +570,7 @@ class MigrationService
             'contacts'        => 'contacts',
             'deals'           => 'deals',
             'leads'           => 'leads',
+            'invoices'        => 'invoices',
             'requisites'      => 'requisites',
             'timeline'        => 'timeline',
             'workgroups'      => 'workgroups',
@@ -778,45 +1103,38 @@ class MigrationService
 
     private function cleanupPipelines()
     {
-        $this->addLog("Очистка воронок на box...");
-        $boxCategories = $this->boxAPI->getDealCategories();
-        foreach ($boxCategories as $bc) {
-            $bcId = (int)($bc['ID'] ?? 0);
+        $this->addLog("Очистка воронок на box (D7)...");
+        // Delete non-default deal categories via D7 (CCrmDealCategory::Delete
+        // also removes associated stages). ID=0 is default, never delete it.
+        $catIds = BoxD7Service::listDealCategoryIds();
+        foreach ($catIds as $bcId) {
             if ($bcId === 0) continue;
-            $this->rateLimit();
-            try { $this->boxAPI->deleteDealCategory($bcId); } catch (\Throwable $e) {
-                $this->addLog("  Ошибка удаления воронки '{$bc['NAME']}': " . $e->getMessage());
+            try {
+                BoxD7Service::deleteDealCategory($bcId);
+            } catch (\Throwable $e) {
+                $this->addLog("  Ошибка удаления воронки #$bcId: " . $e->getMessage());
             }
         }
-        // Clean non-system stages of default pipeline
-        $boxStatuses = $this->boxAPI->getStatuses();
-        foreach ($boxStatuses as $s) {
-            $eid = $s['ENTITY_ID'] ?? '';
-            if (($eid === 'DEAL_STAGE' || strncmp($eid, 'DEAL_STAGE_', 11) === 0)
-                && ($s['SYSTEM'] ?? 'N') !== 'Y'
-            ) {
-                $this->rateLimit();
-                try { $this->boxAPI->deleteStatus((int)$s['ID']); } catch (\Throwable $e) {}
-            }
+        // Delete non-system stages of the default pipeline
+        $stageIds = BoxD7Service::listDealStageIds();
+        foreach ($stageIds as $sid) {
+            try { BoxD7Service::deleteCrmStatus($sid); } catch (\Throwable $e) {}
         }
-        $this->addLog("Очистка воронок выполнена");
+        $this->addLog("Очистка воронок выполнена (" . count($catIds) . " воронок, " . count($stageIds) . " стадий)");
     }
 
     private function cleanupTasks()
     {
-        $this->addLog("Очистка задач на box...");
-        $allTasks = $this->boxAPI->fetchAll('tasks.task.list', ['select' => ['ID']], 'tasks');
-        $total = count($allTasks);
+        $this->addLog("Очистка задач на box (D7, SQL listing)...");
+        $ids = BoxD7Service::listTaskIds();
+        $total = count($ids);
         $deleted = 0;
         $errors = 0;
 
-        foreach ($allTasks as $t) {
-            $taskId = (int)($t['id'] ?? $t['ID'] ?? 0);
-            if ($taskId <= 0) continue;
-            $this->rateLimit();
-            $this->checkStop();
+        foreach ($ids as $taskId) {
+            if ($deleted % 200 === 0) $this->checkStop();
             try {
-                $this->boxAPI->deleteTask($taskId);
+                BoxD7Service::deleteTask((int)$taskId);
                 $deleted++;
             } catch (\Throwable $e) {
                 $errors++;
@@ -848,24 +1166,47 @@ class MigrationService
 
     private function cleanupSmartProcesses()
     {
-        $this->addLog("Очистка смарт-процессов на box...");
-        $boxTypes = $this->boxAPI->getSmartProcessTypes();
-        foreach ($boxTypes as $t) {
-            $etId = (int)($t['entityTypeId'] ?? 0);
+        $this->addLog("Очистка смарт-процессов на box (D7)...");
+        $types = BoxD7Service::listSmartProcessTypes();
+        $itemsDeleted = 0;
+        $typesDeleted = 0;
+        $typesSkipped = 0;
+        foreach ($types as $t) {
+            $etId = $t['entity_type_id'];
             if (!$etId) continue;
+
+            // Always clean items — user may want to drop migrated SmartInvoice/
+            // SmartDocument records even though we keep the type itself.
             try {
-                $items = $this->boxAPI->getSmartProcessItems($etId, ['id']);
-                foreach ($items as $item) {
-                    $this->rateLimit();
-                    try { $this->boxAPI->deleteSmartProcessItem($etId, (int)$item['id']); } catch (\Throwable $e) {}
+                $itemIds = BoxD7Service::listSmartProcessItemIds($etId);
+                foreach ($itemIds as $itemId) {
+                    try {
+                        if (BoxD7Service::deleteSmartProcessItem($etId, $itemId)) {
+                            $itemsDeleted++;
+                        }
+                    } catch (\Throwable $e) { /* skip individual failures */ }
                 }
-            } catch (\Throwable $e) {}
-            $this->rateLimit();
-            try { $this->boxAPI->deleteSmartProcessType((int)$t['id']); } catch (\Throwable $e) {
+            } catch (\Throwable $e) {
+                $this->addLog("  Ошибка листинга SP #{$etId} '{$t['title']}': " . $e->getMessage());
+            }
+
+            // Delete the type itself ONLY for user-created types. System types
+            // (BX_SMART_INVOICE=31, BX_SMART_DOCUMENT=36, BX_SMART_B2E_DOC=39)
+            // are core Bitrix infrastructure — TypeTable::delete() has no
+            // guard and would drop their item tables, breaking the portal.
+            if ($t['is_system']) {
+                $typesSkipped++;
+                $this->addLog("  Системный SP '{$t['title']}' (code={$t['code']}, etId={$etId}) — тип сохранён, items очищены");
+                continue;
+            }
+            try {
+                BoxD7Service::deleteSmartProcessType($t['row_id']);
+                $typesDeleted++;
+            } catch (\Throwable $e) {
                 $this->addLog("  Не удалось удалить SP '{$t['title']}': " . $e->getMessage());
             }
         }
-        $this->addLog("Очистка смарт-процессов выполнена");
+        $this->addLog("Очистка смарт-процессов: типов удалено=$typesDeleted (системных пропущено=$typesSkipped), элементов=$itemsDeleted");
     }
 
     /**
@@ -874,32 +1215,31 @@ class MigrationService
     private function cleanupCrmEntity($entityType)
     {
         $d7Map = [
-            'companies' => ['list' => 'crm.company.list', 'd7' => 'deleteCompany'],
-            'contacts'  => ['list' => 'crm.contact.list', 'd7' => 'deleteContact'],
-            'deals'     => ['list' => 'crm.deal.list',    'd7' => 'deleteDeal'],
-            'leads'     => ['list' => 'crm.lead.list',    'd7' => 'deleteLead'],
+            'companies' => ['list' => 'listCompanyIds', 'del' => 'deleteCompany'],
+            'contacts'  => ['list' => 'listContactIds', 'del' => 'deleteContact'],
+            'deals'     => ['list' => 'listDealIds',    'del' => 'deleteDeal'],
+            'leads'     => ['list' => 'listLeadIds',    'del' => 'deleteLead'],
         ];
 
         $cfg = $d7Map[$entityType] ?? null;
         if (!$cfg) return;
 
-        $this->addLog("Очистка $entityType на box (D7)...");
-        // Fetch IDs via REST (reading), delete via D7 (fast, no rate limit)
-        $items = $this->boxAPI->fetchAll($cfg['list'], ['select' => ['ID']]);
-        $total = count($items);
+        $this->addLog("Очистка $entityType на box (D7, SQL listing)...");
+        // Direct SQL listing + D7 delete — no REST, no rate limit.
+        $ids = BoxD7Service::{$cfg['list']}();
+        $total = count($ids);
         $deleted = 0;
-
         $errors = 0;
         $firstError = '';
-        foreach ($items as $item) {
-            $this->checkStop();
+        foreach ($ids as $id) {
+            if ($deleted % 200 === 0) $this->checkStop();
             try {
-                BoxD7Service::{$cfg['d7']}((int)$item['ID']);
+                BoxD7Service::{$cfg['del']}((int)$id);
                 $deleted++;
             } catch (\Throwable $e) {
                 $errors++;
                 if ($errors <= 3) {
-                    $firstError .= "  ID={$item['ID']}: {$e->getMessage()}\n";
+                    $firstError .= "  ID={$id}: {$e->getMessage()}\n";
                 }
             }
         }
@@ -1148,6 +1488,11 @@ class MigrationService
         $totalEnumFields = 0;
         foreach ($this->ufEnumMap as $entityMap) $totalEnumFields += count($entityMap);
         $this->addLog("UF схема: " . array_sum(array_map('count', $this->ufFieldSchema)) . " полей, enum маппингов: $totalEnumFields");
+
+        // Persist UF schema + enum map so respawned workers restore them
+        // (they're built by scanning all CRM fields — expensive to rebuild).
+        Option::set($this->moduleId, 'uf_field_schema', json_encode($this->ufFieldSchema));
+        Option::set($this->moduleId, 'uf_enum_map', json_encode($this->ufEnumMap));
     }
 
     /**
@@ -1448,6 +1793,11 @@ class MigrationService
         // to silently reset CATEGORY_ID=0 and STAGE_ID=NEW. This is the root cause of
         // "deals sometimes all fly to default pipeline" on re-runs.
         $this->flushCrmStatusCaches();
+
+        // Persist pipeline/stage maps so respawned workers can restore them
+        // (these are NOT stored in HL-map; they live only in memory otherwise).
+        Option::set($this->moduleId, 'pipeline_map_cache', json_encode($this->pipelineMapCache));
+        Option::set($this->moduleId, 'stage_map_cache', json_encode($this->stageMapCache));
     }
 
     /**
@@ -1497,6 +1847,23 @@ class MigrationService
         $this->addLog("  CRM status caches invalidated");
     }
 
+    /**
+     * Bitrix limits STATUS_ID to 17 characters (b_crm_status.STATUS_ID varchar(17)).
+     * For DEAL_STAGE prefixed IDs ("C152:PREPAYMENT_INVOICE" = 23 chars), truncate
+     * only the suffix — the "C<catId>:" prefix must be preserved to keep the stage
+     * bound to the correct pipeline.
+     */
+    private static function truncateStatusId(string $statusId): string
+    {
+        if (strlen($statusId) <= 17) return $statusId;
+        if (preg_match('/^(C\d+:)(.+)$/', $statusId, $m)) {
+            $maxSuffix = 17 - strlen($m[1]);
+            if ($maxSuffix < 1) return substr($statusId, 0, 17);
+            return $m[1] . substr($m[2], 0, $maxSuffix);
+        }
+        return substr($statusId, 0, 17);
+    }
+
     private function syncPipelineStages($cloudEntityId, $boxEntityId, $cloudStages)
     {
         if (empty($cloudStages)) return;
@@ -1515,9 +1882,11 @@ class MigrationService
         $isDealPipeline = (strpos($boxEntityId, 'DEAL_STAGE') === 0);
         $remap = function ($cloudStatusId) use ($cloudEntityId, $boxEntityId, $boxCatId) {
             if ($cloudEntityId !== $boxEntityId && preg_match('/^C(\d+):(.+)$/', $cloudStatusId, $m)) {
-                return 'C' . $boxCatId . ':' . $m[2];
+                $result = 'C' . $boxCatId . ':' . $m[2];
+            } else {
+                $result = $cloudStatusId;
             }
-            return $cloudStatusId;
+            return self::truncateStatusId($result);
         };
 
         // STEP 1: Delete existing box stages that don't match any cloud stage
@@ -1696,17 +2065,20 @@ class MigrationService
 
     private function migrateCompanies()
     {
-        // In incremental mode, pre-load existing mappings for timeline/activities
-        if (!empty($this->plan['settings']['incremental'])) {
-            $this->loadExistingMappings('company');
-        }
+        // Always preload HL-map — needed for resume after respawn.
+        $this->loadExistingMappings('company');
+        $batchSize = $this->getBatchSize();
 
         $total = $this->cloudAPI->getCompaniesCount();
-        $created = 0;
-        $skipped = 0;
-        $updated = 0;
-        $errors = 0;
-        $processed = 0;
+        // Cumulative counters: restore from previously-saved stats so respawn
+        // continues counting from where the previous worker left off.
+        $prev = json_decode(Option::get($this->moduleId, 'migration_stats', '{}'), true) ?: [];
+        $ps = $prev['companies'] ?? [];
+        $created   = (int)($ps['created']   ?? 0);
+        $skipped   = (int)($ps['skipped']   ?? 0);
+        $updated   = (int)($ps['updated']   ?? 0);
+        $errors    = (int)($ps['errors']    ?? 0);
+        $processed = (int)($ps['processed'] ?? 0);
 
         $dupSettings = $this->plan['duplicate_settings']['companies'] ?? [];
         $matchBy = $dupSettings['match_by'] ?? ['TITLE'];
@@ -1727,13 +2099,28 @@ class MigrationService
         $params = ['select' => ['*', 'UF_*', 'PHONE', 'EMAIL']];
         $filter = $this->getIncrementalFilter();
         if (!empty($filter)) $params['filter'] = $filter;
+        // Scope: fetch only whitelisted IDs server-side (cloud supports ID filter).
+        if ($this->isScopedMode() && !empty($this->scopedIds['company'])) {
+            $params['filter'] = array_merge($params['filter'] ?? [], ['ID' => $this->scopedIds['company']]);
+        }
 
         $self = $this;
-        $this->cloudAPI->fetchBatched('crm.company.list', $params, function ($batch) use ($self, &$created, &$skipped, &$updated, &$errors, &$processed, $total, $dupSettings, $matchBy, $dupAction, &$boxCompaniesByTitle) {
+        $batchCreated = 0;
+        $batchReached = false;
+        $resumeCursor = $this->getPhaseResumeCursor('companies');
+        if ($resumeCursor > 0) $this->addLog("Компании: возобновление с cloud offset=$resumeCursor");
+        $this->cloudAPI->fetchBatched('crm.company.list', $params, function ($batch, $currentStart, $newNext) use ($self, &$created, &$skipped, &$updated, &$errors, &$processed, &$batchCreated, &$batchReached, $batchSize, $total, $dupSettings, $matchBy, $dupAction, &$boxCompaniesByTitle) {
         foreach ($batch as $company) {
+            if ($batchReached) {
+                $self->setPhaseResumeCursor('companies', $currentStart);
+                return false;
+            }
+            // Scope filter (secondary safety — server-side filter already narrows it)
+            if (!$self->inScope('company', (int)$company['ID'])) { continue; }
             $self->checkStop();
             $processed++;
             $self->savePhaseProgress('companies', $processed, $total);
+            if ($processed % 50 === 0) $self->freeMemory();
             $cloudId = (int)$company['ID'];
 
             // Skip if already migrated (HL-block check)
@@ -1789,6 +2176,8 @@ class MigrationService
                     $this->companyMapCache[$cloudId] = $newId;
                     $this->saveToMap('company', $cloudId, $newId);
                     $created++;
+                    $batchCreated++;
+                    if ($batchCreated >= $batchSize) $batchReached = true;
                     if (!empty($company['DATE_CREATE'])) {
                         try {
                             BoxD7Service::backdateEntity('b_crm_company', $newId, $company['DATE_CREATE'], $company['DATE_MODIFY'] ?? '');
@@ -1800,10 +2189,16 @@ class MigrationService
                 $self->addLog("  Ошибка создания компании #{$cloudId}: " . $e->getMessage());
             }
         }
-        }); // end fetchBatched callback
+        $self->setPhaseResumeCursor('companies', (int)$newNext);
+        }, null, $resumeCursor); // end fetchBatched callback
 
         $this->addLog("Компании: создано=$created, обновлено=$updated, пропущено=$skipped, ошибок=$errors из $total");
-        $this->saveStats(['companies' => ['total' => $total, 'created' => $created, 'updated' => $updated, 'skipped' => $skipped, 'errors' => $errors]]);
+        $this->saveStats(['companies' => ['total' => $total, 'created' => $created, 'updated' => $updated, 'skipped' => $skipped, 'errors' => $errors, 'processed' => $processed]]);
+        if ($batchReached) {
+            $this->requestBatchRespawn('companies', $batchCreated);
+        } else {
+            $this->setPhaseResumeCursor('companies', 0);
+        }
     }
 
     /**
@@ -1880,19 +2275,19 @@ class MigrationService
 
     private function migrateContacts()
     {
-        // In incremental mode, pre-load existing mappings for timeline/activities
-        // Also load company mappings so COMPANY_ID and M:N links resolve correctly
-        if (!empty($this->plan['settings']['incremental'])) {
-            $this->loadExistingMappings('contact');
-            $this->loadExistingMappings('company');
-        }
+        // Always preload HL-map — needed for resume after respawn.
+        $this->loadExistingMappings('contact');
+        $this->loadExistingMappings('company');
+        $batchSize = $this->getBatchSize();
 
         $total = $this->cloudAPI->getContactsCount();
-        $created = 0;
-        $skipped = 0;
-        $updated = 0;
-        $errors = 0;
-        $processed = 0;
+        $prev = json_decode(Option::get($this->moduleId, 'migration_stats', '{}'), true) ?: [];
+        $ps = $prev['contacts'] ?? [];
+        $created   = (int)($ps['created']   ?? 0);
+        $skipped   = (int)($ps['skipped']   ?? 0);
+        $updated   = (int)($ps['updated']   ?? 0);
+        $errors    = (int)($ps['errors']    ?? 0);
+        $processed = (int)($ps['processed'] ?? 0);
 
         $dupSettings = $this->plan['duplicate_settings']['contacts'] ?? [];
         $matchBy = $dupSettings['match_by'] ?? ['EMAIL'];
@@ -1901,13 +2296,26 @@ class MigrationService
         $params = ['select' => ['*', 'UF_*', 'PHONE', 'EMAIL']];
         $filter = $this->getIncrementalFilter();
         if (!empty($filter)) $params['filter'] = $filter;
+        if ($this->isScopedMode() && !empty($this->scopedIds['contact'])) {
+            $params['filter'] = array_merge($params['filter'] ?? [], ['ID' => $this->scopedIds['contact']]);
+        }
 
         $self = $this;
-        $this->cloudAPI->fetchBatched('crm.contact.list', $params, function ($batch) use ($self, &$created, &$skipped, &$updated, &$errors, &$processed, $total, $dupSettings, $matchBy, $dupAction) {
+        $batchCreated = 0;
+        $batchReached = false;
+        $resumeCursor = $this->getPhaseResumeCursor('contacts');
+        if ($resumeCursor > 0) $this->addLog("Контакты: возобновление с cloud offset=$resumeCursor");
+        $this->cloudAPI->fetchBatched('crm.contact.list', $params, function ($batch, $currentStart, $newNext) use ($self, &$created, &$skipped, &$updated, &$errors, &$processed, &$batchCreated, &$batchReached, $batchSize, $total, $dupSettings, $matchBy, $dupAction) {
         foreach ($batch as $contact) {
+            if ($batchReached) {
+                $self->setPhaseResumeCursor('contacts', $currentStart);
+                return false;
+            }
+            if (!$self->inScope('contact', (int)$contact['ID'])) { continue; }
             $self->checkStop();
             $processed++;
             $self->savePhaseProgress('contacts', $processed, $total);
+            if ($processed % 50 === 0) $self->freeMemory();
             $cloudId = (int)$contact['ID'];
 
             if ($self->isAlreadyMigrated('contact', $cloudId, 'contactMapCache')) {
@@ -1951,6 +2359,8 @@ class MigrationService
                     $self->contactMapCache[$cloudId] = $newId;
                     $self->saveToMap('contact', $cloudId, $newId);
                     $created++;
+                    $batchCreated++;
+                    if ($batchCreated >= $batchSize) $batchReached = true;
                     if (!empty($contact['DATE_CREATE'])) {
                         try {
                             BoxD7Service::backdateEntity('b_crm_contact', $newId, $contact['DATE_CREATE'], $contact['DATE_MODIFY'] ?? '');
@@ -1964,10 +2374,16 @@ class MigrationService
                 $self->addLog("  Ошибка создания контакта #{$cloudId}: " . $e->getMessage());
             }
         }
-        }); // end fetchBatched callback
+        $self->setPhaseResumeCursor('contacts', (int)$newNext);
+        }, null, $resumeCursor); // end fetchBatched callback
 
         $this->addLog("Контакты: создано=$created, обновлено=$updated, пропущено=$skipped, ошибок=$errors из $total");
-        $this->saveStats(['contacts' => ['total' => $total, 'created' => $created, 'updated' => $updated, 'skipped' => $skipped, 'errors' => $errors]]);
+        $this->saveStats(['contacts' => ['total' => $total, 'created' => $created, 'updated' => $updated, 'skipped' => $skipped, 'errors' => $errors, 'processed' => $processed]]);
+        if ($batchReached) {
+            $this->requestBatchRespawn('contacts', $batchCreated);
+        } else {
+            $this->setPhaseResumeCursor('contacts', 0);
+        }
     }
 
     private function buildContactFields($contact)
@@ -2037,25 +2453,27 @@ class MigrationService
 
     private function migrateDeals()
     {
-        // In incremental mode, pre-load existing mappings for timeline/activities
-        // Also load company/contact/lead mappings so foreign keys resolve correctly
-        if (!empty($this->plan['settings']['incremental'])) {
-            $this->loadExistingMappings('deal');
-            $this->loadExistingMappings('company');
-            $this->loadExistingMappings('contact');
-            $this->loadExistingMappings('lead');
-        }
+        // Always preload HL-map mappings — needed for resume and for foreign
+        // keys (company/contact/lead IDs referenced by deals).
+        $this->loadExistingMappings('deal');
+        $this->loadExistingMappings('company');
+        $this->loadExistingMappings('contact');
+        $this->loadExistingMappings('lead');
+        $batchSize = $this->getBatchSize();
 
         $total = $this->cloudAPI->getDealsCount();
-        $created = 0;
-        $skipped = 0;
-        $updated = 0;
-        $errors = 0;
-        $processed = 0;
+        $prev = json_decode(Option::get($this->moduleId, 'migration_stats', '{}'), true) ?: [];
+        $ps = $prev['deals'] ?? [];
+        $created   = (int)($ps['created']   ?? 0);
+        $skipped   = (int)($ps['skipped']   ?? 0);
+        $updated   = (int)($ps['updated']   ?? 0);
+        $errors    = (int)($ps['errors']    ?? 0);
+        $processed = (int)($ps['processed'] ?? 0);
 
-        $dupSettings = $this->plan['duplicate_settings']['deals'] ?? [];
-        $matchBy = $dupSettings['match_by'] ?? ['TITLE'];
-        $dupAction = $dupSettings['action'] ?? 'skip';
+        // Контроль дублей для сделок отключён в UI — см. buildPlanSection.
+        $dupSettings = [];
+        $matchBy = [];
+        $dupAction = 'create';
 
         // Pre-fetch box currencies to validate CURRENCY_ID before creation
         $boxCurrencies = [];
@@ -2081,13 +2499,30 @@ class MigrationService
         $params = ['select' => ['*', 'UF_*']];
         $filter = $this->getIncrementalFilter();
         if (!empty($filter)) $params['filter'] = $filter;
+        if ($this->isScopedMode() && !empty($this->scopedIds['deal'])) {
+            $params['filter'] = array_merge($params['filter'] ?? [], ['ID' => $this->scopedIds['deal']]);
+        }
 
         $self = $this;
-        $this->cloudAPI->fetchBatched('crm.deal.list', $params, function ($batch) use ($self, &$created, &$skipped, &$updated, &$errors, &$processed, $total, $dupSettings, $matchBy, $dupAction, &$boxDealsByTitle, $boxCurrencies) {
+        $batchCreated = 0;
+        $batchReached = false;
+        $resumeCursor = $this->getPhaseResumeCursor('deals');
+        if ($resumeCursor > 0) $this->addLog("Сделки: возобновление с cloud offset=$resumeCursor");
+        $this->cloudAPI->fetchBatched('crm.deal.list', $params, function ($batch, $currentStart, $newNext) use ($self, &$created, &$skipped, &$updated, &$errors, &$processed, &$batchCreated, &$batchReached, $batchSize, $total, $dupSettings, $matchBy, $dupAction, &$boxDealsByTitle, $boxCurrencies) {
         foreach ($batch as $deal) {
+            if ($batchReached) {
+                $self->setPhaseResumeCursor('deals', $currentStart);
+                return false;
+            }
+            if (!$self->inScope('deal', (int)$deal['ID'])) { continue; }
             $self->checkStop();
             $processed++;
             $self->savePhaseProgress('deals', $processed, $total);
+            if ($processed % 50 === 0) $self->freeMemory();
+            if ($processed % 200 === 0) {
+                $self->addLog('  Сделки ' . $processed . '/' . $total
+                    . ', память: ' . round(memory_get_usage(true) / 1024 / 1024) . 'MB');
+            }
             $cloudId = (int)$deal['ID'];
 
             if ($self->isAlreadyMigrated('deal', $cloudId, 'dealMapCache')) {
@@ -2166,6 +2601,8 @@ class MigrationService
                     $self->dealMapCache[$cloudId] = $newId;
                     $self->saveToMap('deal', $cloudId, $newId);
                     $created++;
+                    $batchCreated++;
+                    if ($batchCreated >= $batchSize) $batchReached = true;
 
                     // Verify: fetch the deal from DB and check what Bitrix actually stored
                     try {
@@ -2192,16 +2629,23 @@ class MigrationService
                     }
 
                     $self->linkDealContacts($cloudId, $newId);
+                    $self->linkDealCompanies($cloudId, $newId);
                 }
             } catch (\Throwable $e) {
                 $errors++;
                 $self->addLog("  Ошибка создания сделки #{$cloudId}: " . $e->getMessage());
             }
         }
-        }); // end fetchBatched callback
+        $self->setPhaseResumeCursor('deals', (int)$newNext);
+        }, null, $resumeCursor); // end fetchBatched callback
 
         $this->addLog("Сделки: создано=$created, обновлено=$updated, пропущено=$skipped, ошибок=$errors из $total");
-        $this->saveStats(['deals' => ['total' => $total, 'created' => $created, 'updated' => $updated, 'skipped' => $skipped, 'errors' => $errors]]);
+        $this->saveStats(['deals' => ['total' => $total, 'created' => $created, 'updated' => $updated, 'skipped' => $skipped, 'errors' => $errors, 'processed' => $processed]]);
+        if ($batchReached) {
+            $this->requestBatchRespawn('deals', $batchCreated);
+        } else {
+            $this->setPhaseResumeCursor('deals', 0);
+        }
     }
 
     private function buildDealFields($deal)
@@ -2282,30 +2726,59 @@ class MigrationService
         }
     }
 
+    /**
+     * Set the primary company on a deal. Bitrix's `crm.deal.list` often omits
+     * COMPANY_ID from the default '*' select, so buildDealFields can't rely
+     * on it. We fetch the deal→company binding via crm.deal.company.items.get
+     * and write the first linked company as the primary COMPANY_ID.
+     */
+    private function linkDealCompanies($cloudDealId, $boxDealId)
+    {
+        try {
+            $cloudCompanies = $this->cloudAPI->getDealCompanyItems($cloudDealId);
+            if (empty($cloudCompanies)) return;
+
+            $primaryBoxCompanyId = 0;
+            foreach ($cloudCompanies as $item) {
+                $cid = (int)($item['COMPANY_ID'] ?? 0);
+                if ($cid && isset($this->companyMapCache[$cid])) {
+                    $primaryBoxCompanyId = (int)$this->companyMapCache[$cid];
+                    break;
+                }
+            }
+
+            if ($primaryBoxCompanyId > 0) {
+                BoxD7Service::updateDeal($boxDealId, ['COMPANY_ID' => $primaryBoxCompanyId]);
+            }
+        } catch (\Throwable $e) {
+            // Non-critical
+        }
+    }
+
     // =========================================================================
     // Phase 8: Leads
     // =========================================================================
 
     private function migrateLeads()
     {
-        // In incremental mode, pre-load existing mappings for timeline/activities
-        // Also load company/contact mappings so foreign keys resolve correctly
-        if (!empty($this->plan['settings']['incremental'])) {
-            $this->loadExistingMappings('lead');
-            $this->loadExistingMappings('company');
-            $this->loadExistingMappings('contact');
-        }
+        $this->loadExistingMappings('lead');
+        $this->loadExistingMappings('company');
+        $this->loadExistingMappings('contact');
+        $batchSize = $this->getBatchSize();
 
         $total = $this->cloudAPI->getLeadsCount();
-        $created = 0;
-        $skipped = 0;
-        $updated = 0;
-        $errors = 0;
-        $processed = 0;
+        $prev = json_decode(Option::get($this->moduleId, 'migration_stats', '{}'), true) ?: [];
+        $ps = $prev['leads'] ?? [];
+        $created   = (int)($ps['created']   ?? 0);
+        $skipped   = (int)($ps['skipped']   ?? 0);
+        $updated   = (int)($ps['updated']   ?? 0);
+        $errors    = (int)($ps['errors']    ?? 0);
+        $processed = (int)($ps['processed'] ?? 0);
 
-        $dupSettings = $this->plan['duplicate_settings']['leads'] ?? [];
-        $matchBy = $dupSettings['match_by'] ?? ['TITLE'];
-        $dupAction = $dupSettings['action'] ?? 'skip';
+        // Контроль дублей для лидов отключён в UI.
+        $dupSettings = [];
+        $matchBy = [];
+        $dupAction = 'create';
 
         // Reuse box currencies already fetched during deals phase (or fetch now)
         $boxCurrencies = [];
@@ -2316,13 +2789,26 @@ class MigrationService
         $params = ['select' => ['*', 'UF_*', 'PHONE', 'EMAIL']];
         $filter = $this->getIncrementalFilter();
         if (!empty($filter)) $params['filter'] = $filter;
+        if ($this->isScopedMode() && !empty($this->scopedIds['lead'])) {
+            $params['filter'] = array_merge($params['filter'] ?? [], ['ID' => $this->scopedIds['lead']]);
+        }
 
         $self = $this;
-        $this->cloudAPI->fetchBatched('crm.lead.list', $params, function ($batch) use ($self, &$created, &$skipped, &$updated, &$errors, &$processed, $total, $dupSettings, $matchBy, $dupAction, $boxCurrencies) {
+        $batchCreated = 0;
+        $batchReached = false;
+        $resumeCursor = $this->getPhaseResumeCursor('leads');
+        if ($resumeCursor > 0) $this->addLog("Лиды: возобновление с cloud offset=$resumeCursor");
+        $this->cloudAPI->fetchBatched('crm.lead.list', $params, function ($batch, $currentStart, $newNext) use ($self, &$created, &$skipped, &$updated, &$errors, &$processed, &$batchCreated, &$batchReached, $batchSize, $total, $dupSettings, $matchBy, $dupAction, $boxCurrencies) {
         foreach ($batch as $lead) {
+            if ($batchReached) {
+                $self->setPhaseResumeCursor('leads', $currentStart);
+                return false;
+            }
+            if (!$self->inScope('lead', (int)$lead['ID'])) { continue; }
             $self->checkStop();
             $processed++;
             $self->savePhaseProgress('leads', $processed, $total);
+            if ($processed % 50 === 0) $self->freeMemory();
             $cloudId = (int)$lead['ID'];
 
             if ($self->isAlreadyMigrated('lead', $cloudId, 'leadMapCache')) {
@@ -2370,6 +2856,8 @@ class MigrationService
                     $self->leadMapCache[$cloudId] = $newId;
                     $self->saveToMap('lead', $cloudId, $newId);
                     $created++;
+                    $batchCreated++;
+                    if ($batchCreated >= $batchSize) $batchReached = true;
                     if (!empty($lead['DATE_CREATE'])) {
                         try {
                             BoxD7Service::backdateEntity('b_crm_lead', $newId, $lead['DATE_CREATE'], $lead['DATE_MODIFY'] ?? '');
@@ -2381,10 +2869,16 @@ class MigrationService
                 $self->addLog("  Ошибка создания лида #{$cloudId}: " . $e->getMessage());
             }
         }
-        }); // end fetchBatched callback
+        $self->setPhaseResumeCursor('leads', (int)$newNext);
+        }, null, $resumeCursor); // end fetchBatched callback
 
         $this->addLog("Лиды: создано=$created, обновлено=$updated, пропущено=$skipped, ошибок=$errors из $total");
-        $this->saveStats(['leads' => ['total' => $total, 'created' => $created, 'updated' => $updated, 'skipped' => $skipped, 'errors' => $errors]]);
+        $this->saveStats(['leads' => ['total' => $total, 'created' => $created, 'updated' => $updated, 'skipped' => $skipped, 'errors' => $errors, 'processed' => $processed]]);
+        if ($batchReached) {
+            $this->requestBatchRespawn('leads', $batchCreated);
+        } else {
+            $this->setPhaseResumeCursor('leads', 0);
+        }
     }
 
     private function buildLeadFields($lead)
@@ -2416,6 +2910,186 @@ class MigrationService
         if (!empty($fm)) $fields['FM'] = $fm;
 
         $this->copyUfFields('lead', $lead, $fields);
+
+        return $fields;
+    }
+
+    // =========================================================================
+    // Phase 10: Invoices (SmartInvoice — smart process with entityTypeId=31)
+    // =========================================================================
+
+    /**
+     * SmartInvoice is a smart process with a fixed entityTypeId=31, accessed
+     * via crm.item.list / crm.item.add (same endpoint as other smart items).
+     * Bindings:
+     *   companyId, contactId  — direct fields
+     *   parentId2 (Deal=2)    — parent deal
+     *   ufCrm_SMART_INVOICE_* — user fields
+     */
+    private function migrateInvoices()
+    {
+        $entityTypeId = defined('\\CCrmOwnerType::SmartInvoice') ? \CCrmOwnerType::SmartInvoice : 31;
+
+        // Preload all CRM maps — invoices reference companies, contacts, deals, leads.
+        $this->loadExistingMappings('invoice');
+        $this->loadExistingMappings('company');
+        $this->loadExistingMappings('contact');
+        $this->loadExistingMappings('deal');
+        $this->loadExistingMappings('lead');
+
+        $batchSize = $this->getBatchSize();
+        $prev = json_decode(Option::get($this->moduleId, 'migration_stats', '{}'), true) ?: [];
+        $ps = $prev['invoices'] ?? [];
+        $created   = (int)($ps['created']   ?? 0);
+        $skipped   = (int)($ps['skipped']   ?? 0);
+        $errors    = (int)($ps['errors']    ?? 0);
+        $processed = (int)($ps['processed'] ?? 0);
+
+        try {
+            $filter = $this->getIncrementalFilter();
+            // SmartInvoice uses lowercase createdTime, not DATE_CREATE
+            if (!empty($filter['>DATE_CREATE'])) {
+                $filter['>createdTime'] = $filter['>DATE_CREATE'];
+                unset($filter['>DATE_CREATE']);
+            }
+            $cloudInvoices = $this->cloudAPI->getSmartProcessItems($entityTypeId, ['*', 'uf_*'], $filter);
+        } catch (\Throwable $e) {
+            $this->addLog('  Не удалось получить счета из облака: ' . $e->getMessage());
+            return;
+        }
+
+        $total = count($cloudInvoices);
+        $this->addLog("Счета (SmartInvoice): найдено в облаке=$total");
+
+        $batchCreated = 0;
+        $batchReached = false;
+        $resumeCursor = $this->getPhaseResumeCursor('invoices');
+        if ($resumeCursor > 0) $this->addLog("Счета: возобновление, пропуск первых $resumeCursor");
+
+        $globalIdx = 0;
+        foreach ($cloudInvoices as $invoice) {
+            if ($batchReached) break;
+            if ($globalIdx < $resumeCursor) { $globalIdx++; continue; }
+            $cloudId = (int)($invoice['id'] ?? 0);
+            if (!$cloudId) { $globalIdx++; continue; }
+            if (!$this->inScope('invoice', $cloudId)) { $globalIdx++; continue; }
+            $this->checkStop();
+            $processed++;
+            $this->savePhaseProgress('invoices', $processed, $total);
+            if ($processed % 50 === 0) $this->freeMemory();
+
+            if (isset($this->invoiceMapCache[$cloudId])) {
+                $skipped++;
+                $globalIdx++;
+                continue;
+            }
+
+            try {
+                $fields = $this->buildInvoiceFields($invoice);
+                $newId = BoxD7Service::addSmartItem($entityTypeId, $fields);
+                if ($newId > 0) {
+                    $this->invoiceMapCache[$cloudId] = $newId;
+                    $this->saveToMap('invoice', $cloudId, $newId);
+                    $created++;
+                    $batchCreated++;
+                    if ($batchCreated >= $batchSize) $batchReached = true;
+
+                    if (!empty($invoice['createdTime'])) {
+                        try {
+                            $table = 'b_crm_dynamic_items_' . $entityTypeId;
+                            BoxD7Service::backdateEntity($table, $newId, $invoice['createdTime'], $invoice['updatedTime'] ?? '');
+                        } catch (\Throwable $e) { /* non-critical */ }
+                    }
+                }
+            } catch (\Throwable $e) {
+                $errors++;
+                $this->addLog("  Ошибка создания счёта #{$cloudId}: " . $e->getMessage());
+            }
+            $globalIdx++;
+        }
+        unset($cloudInvoices);
+
+        $this->addLog("Счета: создано=$created, пропущено=$skipped, ошибок=$errors из $total");
+        $this->saveStats(['invoices' => ['total' => $total, 'created' => $created, 'skipped' => $skipped, 'errors' => $errors, 'processed' => $processed]]);
+
+        if ($batchReached) {
+            $this->setPhaseResumeCursor('invoices', $globalIdx);
+            $this->requestBatchRespawn('invoices', $batchCreated);
+        } else {
+            $this->setPhaseResumeCursor('invoices', 0);
+        }
+    }
+
+    /**
+     * Build SmartInvoice fields for BoxD7Service::addSmartItem (camelCase, like other smart items).
+     */
+    private function buildInvoiceFields(array $invoice): array
+    {
+        $fields = [];
+        $copy = ['title', 'accountNumber', 'opportunity', 'taxValue', 'currencyId',
+                 'stageId', 'categoryId', 'opened', 'begindate', 'closedate',
+                 'sourceId', 'sourceDescription', 'comments',
+                 'utmSource', 'utmMedium', 'utmCampaign', 'utmContent', 'utmTerm'];
+        foreach ($copy as $k) {
+            if (isset($invoice[$k]) && $invoice[$k] !== '' && $invoice[$k] !== null) {
+                $fields[$k] = $invoice[$k];
+            }
+        }
+
+        if (!empty($invoice['assignedById'])) {
+            $boxUser = $this->mapUser($invoice['assignedById']);
+            if ($boxUser) $fields['assignedById'] = $boxUser;
+        }
+        if (!empty($invoice['createdBy'])) {
+            $boxUser = $this->mapUser($invoice['createdBy']);
+            if ($boxUser) $fields['createdBy'] = $boxUser;
+        }
+
+        // Direct bindings
+        if (!empty($invoice['companyId']) && isset($this->companyMapCache[(int)$invoice['companyId']])) {
+            $fields['companyId'] = $this->companyMapCache[(int)$invoice['companyId']];
+        }
+        if (!empty($invoice['contactId']) && isset($this->contactMapCache[(int)$invoice['contactId']])) {
+            $fields['contactId'] = $this->contactMapCache[(int)$invoice['contactId']];
+        }
+        if (!empty($invoice['mycompanyId']) && isset($this->companyMapCache[(int)$invoice['mycompanyId']])) {
+            $fields['mycompanyId'] = $this->companyMapCache[(int)$invoice['mycompanyId']];
+        }
+
+        // Parent bindings: parentId1=Lead, parentId2=Deal, parentId3=Contact, parentId4=Company
+        if (!empty($invoice['parentId1']) && isset($this->leadMapCache[(int)$invoice['parentId1']])) {
+            $fields['parentId1'] = $this->leadMapCache[(int)$invoice['parentId1']];
+        }
+        if (!empty($invoice['parentId2']) && isset($this->dealMapCache[(int)$invoice['parentId2']])) {
+            $fields['parentId2'] = $this->dealMapCache[(int)$invoice['parentId2']];
+        }
+        if (!empty($invoice['parentId3']) && isset($this->contactMapCache[(int)$invoice['parentId3']])) {
+            $fields['parentId3'] = $this->contactMapCache[(int)$invoice['parentId3']];
+        }
+        if (!empty($invoice['parentId4']) && isset($this->companyMapCache[(int)$invoice['parentId4']])) {
+            $fields['parentId4'] = $this->companyMapCache[(int)$invoice['parentId4']];
+        }
+
+        // Multi-contact binding (crm.item returns contactIds array)
+        if (!empty($invoice['contactIds']) && is_array($invoice['contactIds'])) {
+            $boxContactIds = [];
+            foreach ($invoice['contactIds'] as $cid) {
+                if (isset($this->contactMapCache[(int)$cid])) {
+                    $boxContactIds[] = $this->contactMapCache[(int)$cid];
+                }
+            }
+            if ($boxContactIds) $fields['contactIds'] = $boxContactIds;
+        }
+
+        // UF fields — copy as-is (camelCase → UPPER_SNAKE_CASE).
+        // Enum/file/date transformations for smart processes are TODO (see CLAUDE.md).
+        foreach ($invoice as $k => $v) {
+            if ($v === '' || $v === null) continue;
+            if (strncmp($k, 'uf', 2) === 0 || strncmp($k, 'UF', 2) === 0) {
+                $upperKey = $this->ufFieldToUpperCase($k);
+                $fields[$upperKey] = $v;
+            }
+        }
 
         return $fields;
     }
@@ -2656,6 +3330,18 @@ class MigrationService
             \Bitrix\Disk\Uf\FileUserType::setValueForAllowEdit('CRM_TIMELINE', true);
         }
 
+        // CRITICAL: preload HL-map caches. Timeline runs AFTER all CRM phases,
+        // and on respawn (fresh PHP process) these caches start EMPTY — the
+        // phase would then iterate zero entities and silently finish.
+        $this->loadExistingMappings('company');
+        $this->loadExistingMappings('contact');
+        $this->loadExistingMappings('deal');
+        $this->loadExistingMappings('lead');
+        $this->addLog('Таймлайн: загружено маппингов — компаний=' . count($this->companyMapCache)
+            . ', контактов=' . count($this->contactMapCache)
+            . ', сделок=' . count($this->dealMapCache)
+            . ', лидов=' . count($this->leadMapCache));
+
         // CRM entity type IDs: Lead=1, Deal=2, Contact=3, Company=4
         $entityTypes = [
             'company' => ['typeId' => 4, 'cache' => &$this->companyMapCache],
@@ -2664,9 +3350,20 @@ class MigrationService
             'lead'    => ['typeId' => 1, 'cache' => &$this->leadMapCache],
         ];
 
-        $totalActivities = 0;
-        $totalComments = 0;
-        $errors = 0;
+        $prev = json_decode(Option::get($this->moduleId, 'migration_stats', '{}'), true) ?: [];
+        $ps = $prev['timeline'] ?? [];
+        $totalActivities = (int)($ps['activities'] ?? 0);
+        $totalComments   = (int)($ps['comments']   ?? 0);
+        $errors          = (int)($ps['errors']     ?? 0);
+
+        // Timeline batch limit: per-entity work is much heavier than CRM Add
+        // (multiple activities + comments + file downloads each), so use a
+        // smaller bucket — 1/4 of normal batchSize.
+        $batchSize = max(50, (int)($this->getBatchSize() / 4));
+        $resumeCursor = $this->getPhaseResumeCursor('timeline');
+        $batchProcessed = 0;
+        $batchReached = false;
+        if ($resumeCursor > 0) $this->addLog("Таймлайн: возобновление, пропуск первых $resumeCursor сущностей");
 
         // For deduplication in main log: track first 3 unique error messages per phase
         $seenActivityErrors = [];
@@ -2689,15 +3386,23 @@ class MigrationService
         $processedEntities = 0;
 
         foreach ($entityTypes as $entityName => $config) {
+            if ($batchReached) break;
             $typeId = $config['typeId'];
             $cache = $config['cache'];
 
             $this->addLog("Таймлайн: обработка {$entityName} (" . count($cache) . " шт)...");
 
             foreach ($cache as $cloudId => $boxId) {
+                if ($batchReached) break;
+                // Skip until cursor — only counted, no work done
+                if ($processedEntities < $resumeCursor) {
+                    $processedEntities++;
+                    continue;
+                }
                 $this->rateLimit();
                 $processedEntities++;
                 $this->savePhaseProgress('timeline', $processedEntities, $totalEntities);
+                if ($batchProcessed > 0 && $batchProcessed % 50 === 0) $this->freeMemory();
 
                 // Migrate activities via D7
                 try {
@@ -2865,20 +3570,29 @@ class MigrationService
                 } catch (\Throwable $e) {
                     // Non-critical
                 }
+                $batchProcessed++;
+                if ($batchProcessed >= $batchSize) $batchReached = true;
             }
         }
 
         // Timeline for smart process items
         foreach ($this->smartItemsByType as $boxEntityTypeId => $itemMap) {
+            if ($batchReached) break;
             $cloudEntityTypeId = array_search($boxEntityTypeId, $this->smartProcessMapCache);
             if ($cloudEntityTypeId === false) continue;
 
             $this->addLog("Таймлайн: обработка smart_{$boxEntityTypeId} (" . count($itemMap) . " шт)...");
 
             foreach ($itemMap as $cloudItemId => $boxItemId) {
+                if ($batchReached) break;
+                if ($processedEntities < $resumeCursor) {
+                    $processedEntities++;
+                    continue;
+                }
                 $this->rateLimit();
                 $processedEntities++;
                 $this->savePhaseProgress('timeline', $processedEntities, $totalEntities);
+                if ($batchProcessed > 0 && $batchProcessed % 50 === 0) $this->freeMemory();
 
                 // Migrate activities
                 try {
@@ -2942,6 +3656,8 @@ class MigrationService
                 } catch (\Throwable $e) {
                     $this->addLog('  Ошибка получения активностей (smart_' . $boxEntityTypeId . ' #' . $cloudItemId . '): ' . $e->getMessage());
                 }
+                $batchProcessed++;
+                if ($batchProcessed >= $batchSize) $batchReached = true;
             }
         }
 
@@ -2956,6 +3672,13 @@ class MigrationService
 
         $this->addLog("Таймлайн: активностей=$totalActivities, комментариев=$totalComments, ошибок=$errors");
         $this->saveStats(['timeline' => ['activities' => $totalActivities, 'comments' => $totalComments, 'errors' => $errors]]);
+
+        if ($batchReached) {
+            $this->setPhaseResumeCursor('timeline', $processedEntities);
+            $this->requestBatchRespawn('timeline', $batchProcessed);
+        } else {
+            $this->setPhaseResumeCursor('timeline', 0);
+        }
     }
 
     private function buildActivityFields($activity, $ownerTypeId, $boxOwnerId)
@@ -3179,10 +3902,23 @@ class MigrationService
             $boxTypeByTitle[mb_strtolower(trim($t['title'] ?? ''))] = $t;
         }
 
-        $totalTypes = 0;
-        $totalItems = 0;
+        $batchSize = $this->getBatchSize();
+        // Flat resume cursor: total items already created across ALL types in
+        // previous workers. New worker skips that many items in deterministic
+        // type order, then processes from there.
+        $resumeCursor = $this->getPhaseResumeCursor('smart_processes');
+        $globalIdx = 0;          // counts every item we IT THROUGH (skipped or created)
+        $batchCreated = 0;       // items CREATED in this process
+        $batchReached = false;
+        if ($resumeCursor > 0) $this->addLog("Смарт-процессы: возобновление, пропуск первых $resumeCursor элементов");
+
+        $prev = json_decode(Option::get($this->moduleId, 'migration_stats', '{}'), true) ?: [];
+        $ps = $prev['smart_processes'] ?? [];
+        $totalTypes = (int)($ps['types']  ?? 0);
+        $totalItems = (int)($ps['items']  ?? 0);
 
         foreach ($cloudTypes as $type) {
+            if ($batchReached) break;
             $this->rateLimit();
             $cloudEntityTypeId = (int)($type['entityTypeId'] ?? 0);
             $spId = (string)$cloudEntityTypeId;
@@ -3215,12 +3951,14 @@ class MigrationService
 
             $this->smartProcessMapCache[$cloudEntityTypeId] = $boxEntityTypeId;
 
-            // Delete existing userfields on box SP if enabled
+            // Delete existing userfields on box SP if enabled (only on first
+            // visit to this type — don't re-delete after respawn).
             $deleteUfSettings = $this->plan['delete_userfields'] ?? [];
             $deleteUfEnabled = ($deleteUfSettings['enabled'] ?? true) === true;
             $skipEntities = $deleteUfSettings['skip_entities'] ?? [];
+            $skipDelUfDueToResume = ($globalIdx < $resumeCursor);
 
-            if ($deleteUfEnabled && !in_array('smart_' . $spId, $skipEntities)) {
+            if ($deleteUfEnabled && !$skipDelUfDueToResume && !in_array('smart_' . $spId, $skipEntities)) {
                 try {
                     $boxEntityId = 'CRM_' . $boxEntityTypeId;
                     $boxUfFields = $this->boxAPI->getSmartProcessUserfields($boxEntityId);
@@ -3250,8 +3988,27 @@ class MigrationService
                     $spFilter['>createdTime'] = $spFilter['>DATE_CREATE'];
                     unset($spFilter['>DATE_CREATE']);
                 }
+                // Scope filter: narrow smart process items to those bound to
+                // the selected company/contact via parentId<N>.
+                if ($this->isScopedMode()) {
+                    if ($this->scopeMode === 'company' && !empty($this->scopedIds['company'])) {
+                        $spFilter['parentId4'] = $this->scopedIds['company'];
+                    } elseif ($this->scopeMode === 'contact' && !empty($this->scopedIds['contact'])) {
+                        $spFilter['parentId3'] = $this->scopedIds['contact'];
+                    } else {
+                        // Scope doesn't apply to smart processes in task mode.
+                        continue;
+                    }
+                }
                 $cloudItems = $this->cloudAPI->getSmartProcessItems($cloudEntityTypeId, ['*', 'uf_*'], $spFilter);
                 foreach ($cloudItems as $item) {
+                    // Skip until we reach saved cursor position
+                    if ($globalIdx < $resumeCursor) {
+                        $globalIdx++;
+                        continue;
+                    }
+                    if ($batchReached) break;
+
                     $this->rateLimit();
                     $fields = $this->buildSmartProcessItemFields($item, $spId);
 
@@ -3270,17 +4027,36 @@ class MigrationService
                                     BoxD7Service::backdateEntity($table, $newItemId, $item['createdTime'], $item['updatedTime'] ?? '');
                                 } catch (\Throwable $e) { /* date preservation is non-critical */ }
                             }
+                            $batchCreated++;
+                            if ($batchCreated % 50 === 0) $this->freeMemory();
+                            if ($batchCreated >= $batchSize) {
+                                $batchReached = true;
+                            }
                         }
                     } catch (\Throwable $e) {
                         $this->addLog("  Ошибка создания записи SP #{$item['id']}: " . $e->getMessage());
                     }
+                    $globalIdx++;
                 }
+                unset($cloudItems);
             } catch (\Throwable $e) {
                 $this->addLog("  Ошибка получения записей SP '{$title}': " . $e->getMessage());
             }
         }
 
         $this->addLog("Смарт-процессы: типов создано=$totalTypes, записей=$totalItems");
+        $this->saveStats(['smart_processes' => ['types' => $totalTypes, 'items' => $totalItems]]);
+
+        // Persist smart caches so respawned worker AND timeline phase can use them.
+        Option::set($this->moduleId, 'smart_process_map_cache', json_encode($this->smartProcessMapCache));
+        Option::set($this->moduleId, 'smart_items_by_type', json_encode($this->smartItemsByType));
+
+        if ($batchReached) {
+            $this->setPhaseResumeCursor('smart_processes', $globalIdx);
+            $this->requestBatchRespawn('smart_processes', $batchCreated);
+        } else {
+            $this->setPhaseResumeCursor('smart_processes', 0);
+        }
     }
 
     private function buildSmartProcessItemFields($item, $spId)
@@ -3339,14 +4115,14 @@ class MigrationService
             return $this->stageMapCache[$stageId];
         }
         if ($cloudCatId === 0 || $cloudCatId === $boxCatId) {
-            return $stageId;
+            return self::truncateStatusId($stageId);
         }
         // Fallback: remap prefix C{cloudCatId}:CODE → C{boxCatId}:CODE
         $prefix = 'C' . $cloudCatId . ':';
         if (strncmp($stageId, $prefix, strlen($prefix)) === 0) {
-            return 'C' . $boxCatId . ':' . substr($stageId, strlen($prefix));
+            return self::truncateStatusId('C' . $boxCatId . ':' . substr($stageId, strlen($prefix)));
         }
-        return $stageId;
+        return self::truncateStatusId($stageId);
     }
 
     private function ufFieldToUpperCase($fieldName)
@@ -3367,6 +4143,13 @@ class MigrationService
 
     private function migrateTasks()
     {
+        // On respawn the CRM map caches can be empty — tasks rely on them
+        // to resolve UF_CRM_TASK references (CO_<id> → box company ID, etc.).
+        $this->loadExistingMappings('company');
+        $this->loadExistingMappings('contact');
+        $this->loadExistingMappings('deal');
+        $this->loadExistingMappings('lead');
+
         $taskService = new TaskMigrationService($this->cloudAPI, $this->boxAPI, $this->plan);
         $taskService->setUserMapCache($this->userMapCache);
         $taskService->setGroupMapCache($this->groupMapCache);
@@ -3382,6 +4165,29 @@ class MigrationService
         if ($this->migrationFolderId > 0) {
             $taskService->setMigrationFolderId($this->migrationFolderId);
         }
+
+        // Scope injection
+        if ($this->isScopedMode()) {
+            if ($this->scopeMode === 'task') {
+                // Direct ID list — migrate only the selected task(s).
+                $taskService->setTaskIdsOverride($this->scopedIds['task']);
+            } else {
+                // company/contact scope — narrow by UF_CRM_TASK filter.
+                // Values use cloud-side entity IDs because we're filtering on cloud.
+                $filter = [];
+                foreach ($this->scopedIds['company'] as $id) $filter[] = 'CO_' . $id;
+                foreach ($this->scopedIds['contact'] as $id) $filter[] = 'C_'  . $id;
+                foreach ($this->scopedIds['deal']    as $id) $filter[] = 'D_'  . $id;
+                foreach ($this->scopedIds['lead']    as $id) $filter[] = 'L_'  . $id;
+                if (!empty($filter)) {
+                    $taskService->setTaskCrmFilter($filter);
+                } else {
+                    // Scope produced zero CRM entities — nothing to do in tasks phase.
+                    $taskService->setTaskIdsOverride([]);
+                }
+            }
+        }
+
         $taskService->migrate();
     }
 
@@ -3635,7 +4441,11 @@ class MigrationService
             try {
                 $app = \Bitrix\Main\Application::getInstance();
                 $app->getManagedCache()->cleanAll();
-                $app->getTaggedCache()->clearByTag('*');
+                // NOTE: clearByTag('*') removed — wildcard clear invalidates
+            // ServiceLocator bindings for crm.service.container and triggers
+            // Entity::compileObjectClass re-declarations ("Cannot declare
+            // class MediatorFromNodeMemberToRoleViaRoleTable"). Managed cache
+            // cleanAll is enough to release per-entity cached data.
             } catch (\Throwable $e) {}
         }
         $this->checkStop();

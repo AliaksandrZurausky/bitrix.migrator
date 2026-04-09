@@ -41,7 +41,7 @@ class CloudAPI
     /**
      * Make API request with JSON body, retries on HTTP 429
      */
-    private function request($method, $params = [], $attempt = 0)
+    public function request($method, $params = [], $attempt = 0)
     {
         $url = $this->webhookUrl . '/' . $method . '.json';
 
@@ -166,12 +166,21 @@ class CloudAPI
     }
 
     /**
-     * Paginated fetch with callback per batch — avoids loading everything into memory.
-     * Callback receives array of items for each page (typically 50 items).
+     * Paginated fetch with callback per batch.
+     *
+     * Callback signature: function($batch, $currentStart, $newNext)
+     *   - $batch        — current page of items
+     *   - $currentStart — the `start` offset that fetched THIS page (for resume)
+     *   - $newNext      — the `next` offset for the FOLLOWING page (null if last)
+     *
+     * Callback may return `false` to abort pagination early (used for
+     * batched execution / respawn — caller saves $currentStart as resume cursor).
+     *
+     * @param int $startOffset Resume from this offset instead of 0.
      */
-    public function fetchBatched($method, $params, callable $callback, $resultKey = null): int
+    public function fetchBatched($method, $params, callable $callback, $resultKey = null, int $startOffset = 0): int
     {
-        $next = 0;
+        $next = $startOffset;
         $page = 0;
         $total = 0;
         $maxPages = 10000;
@@ -182,23 +191,26 @@ class CloudAPI
                 throw new \Exception("fetchBatched exceeded {$maxPages} pages for {$method}");
             }
 
+            $currentStart = $next;
             $params['start'] = $next;
             $result = $this->request($method, $params);
+
+            $newNext = $result['next'] ?? null;
 
             if (isset($result['result']) && is_array($result['result'])) {
                 $data = $resultKey ? ($result['result'][$resultKey] ?? []) : $result['result'];
                 if (is_array($data) && !empty($data)) {
-                    $callback($data);
+                    $shouldContinue = $callback($data, $currentStart, $newNext);
                     $total += count($data);
+                    if ($shouldContinue === false) return $total;
                 }
             }
 
-            $newNext = $result['next'] ?? null;
             if ($newNext !== null && $newNext === $next) break;
             $next = $newNext;
 
             if ($next !== null) {
-                usleep(500000);
+                usleep(330000);
             }
         } while ($next !== null);
 
@@ -524,11 +536,33 @@ class CloudAPI
     }
 
     /**
-     * Add task comment (legacy, pre-25.700.0)
+     * Add task comment (legacy — task.commentitem.add with FIELDS).
+     * WARNING: on modern Bitrix boxes this endpoint silently returns a
+     * random integer and DOES NOT actually insert anything into b_forum_message.
+     * Use addTaskCommentText() below for writes.
      */
     public function addTaskComment($taskId, $fields)
     {
         return $this->request('task.commentitem.add', ['TASKID' => (int)$taskId, 'FIELDS' => $fields]);
+    }
+
+    /**
+     * Add a task comment via the WORKING endpoint `task.comment.add`.
+     * It accepts a plain string (commentText), creates the forum topic if
+     * the task doesn't have one, and returns the new forum_message ID.
+     * Does NOT support AUTHOR_ID override — the comment is always authored
+     * by the webhook user. Caller should post-update AUTHOR_ID via D7 if
+     * original author preservation is required.
+     *
+     * @return int Created b_forum_message.ID, or 0 on failure.
+     */
+    public function addTaskCommentText(int $taskId, string $text): int
+    {
+        $result = $this->request('task.comment.add', [
+            'taskId'      => $taskId,
+            'commentText' => $text,
+        ]);
+        return (int)($result['result'] ?? 0);
     }
 
     /**
@@ -567,15 +601,50 @@ class CloudAPI
 
     /**
      * Get chat messages for a task chat (im.dialog.messages.get).
-     * Returns messages that may contain FILE_ID params (files sent directly to chat).
+     *
+     * Returns ['messages' => [...], 'files' => [fileId => {...}], 'users' => [...]].
+     * - messages[].params.FILE_ID = [fileId1, ...] (references files dict)
+     * - files[fileId] has urlDownload/name/size
+     *
+     * Handles pagination via LAST_ID — fetches all messages in the chat,
+     * not just the first batch. Messages arrive NEWEST-FIRST; caller should
+     * array_reverse() to get chronological order.
      */
-    public function getChatMessages(int $chatId, int $limit = 50): array
+    public function getChatMessages(int $chatId, int $pageSize = 50): array
     {
-        $result = $this->request('im.dialog.messages.get', [
-            'DIALOG_ID' => 'chat' . $chatId,
-            'LIMIT' => $limit,
-        ]);
-        return $result['result']['messages'] ?? [];
+        $allMessages = [];
+        $allFiles = [];
+        $allUsers = [];
+        $lastId = 0;
+        $maxPages = 200; // safety cap: 200 × 50 = 10000 messages
+
+        for ($page = 0; $page < $maxPages; $page++) {
+            $params = [
+                'DIALOG_ID' => 'chat' . $chatId,
+                'LIMIT' => $pageSize,
+            ];
+            if ($lastId > 0) $params['LAST_ID'] = $lastId;
+
+            $result = $this->request('im.dialog.messages.get', $params);
+            $body = $result['result'] ?? [];
+            $batch = $body['messages'] ?? [];
+            if (empty($batch)) break;
+
+            foreach ($batch as $m) $allMessages[] = $m;
+            foreach (($body['files'] ?? []) as $fid => $f) $allFiles[$fid] = $f;
+            foreach (($body['users'] ?? []) as $uid => $u) $allUsers[$uid] = $u;
+
+            // Next page: older messages. LAST_ID = smallest id in current batch.
+            $ids = array_map(fn($m) => (int)($m['id'] ?? 0), $batch);
+            $minId = min($ids);
+            if ($minId <= 0 || $minId === $lastId) break;
+            $lastId = $minId;
+
+            if (count($batch) < $pageSize) break; // no more pages
+            usleep(330000);
+        }
+
+        return ['messages' => $allMessages, 'files' => $allFiles, 'users' => $allUsers];
     }
 
     /**
@@ -1257,6 +1326,18 @@ class CloudAPI
             'id' => (int)$dealId,
             'items' => $items,
         ]);
+    }
+
+    /**
+     * Fetch the companies linked to a deal. In Bitrix a deal has a single
+     * primary COMPANY_ID (column on b_crm_deal) — crm.deal.company.items.get
+     * returns it. crm.deal.list often omits COMPANY_ID from the default '*'
+     * select, so we fetch it separately.
+     */
+    public function getDealCompanyItems($dealId)
+    {
+        $result = $this->request('crm.deal.company.items.get', ['id' => (int)$dealId]);
+        return $result['result'] ?? [];
     }
 
     // =========================================================================

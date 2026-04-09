@@ -100,6 +100,16 @@ $boxAPI   = new CloudAPI($boxWebhookUrl);
 $planJson = Option::get($moduleId, 'migration_plan', '');
 $plan     = $planJson ? json_decode($planJson, true) : [];
 
+// Inject test-run scope (if set by ajax/start_migration.php)
+$scopeJson = Option::get($moduleId, 'migration_scope', '');
+if (!empty($scopeJson)) {
+    $scope = json_decode($scopeJson, true);
+    if (is_array($scope) && !empty($scope['entity_type']) && !empty($scope['entity_ids'])) {
+        $plan['scope'] = $scope;
+        cliLog("Scoped run: type={$scope['entity_type']} ids=" . implode(',', (array)$scope['entity_ids']), $logFile);
+    }
+}
+
 // Catch fatal PHP errors (out of memory, class not found, etc.) that bypass try/catch
 register_shutdown_function(function () use ($moduleId, $logFile) {
     $err = error_get_last();
@@ -138,3 +148,29 @@ try {
 // Cleanup PID
 Option::set($moduleId, 'migration_pid', '');
 cliLog("Migration worker finished", $logFile);
+
+// Batched execution respawn: a phase signalled it has hit per-process batch
+// limit. Spawn a fresh worker so the OS reclaims memory held by Bitrix's
+// eval'd ORM classes (unclearable mid-process). The new worker skips
+// already-completed phases and resumes via phase_cursor_*.
+if (Option::get($moduleId, 'migration_respawn', '0') === '1') {
+    $respawnStdout = $logDir . '/migrator_stdout_' . date('Y-m-d_H-i-s') . '_respawn.log';
+    $respawnCmd = 'nohup ' . escapeshellarg(PHP_BINARY)
+        . ' -d memory_limit=2G'
+        . ' ' . escapeshellarg(__FILE__)
+        . ' ' . escapeshellarg($documentRoot)
+        . ' ' . escapeshellarg($migrateType)
+        . ' > ' . escapeshellarg($respawnStdout) . ' 2>&1 & echo $!';
+    $newPid = trim((string)shell_exec($respawnCmd));
+
+    if ($newPid && is_numeric($newPid)) {
+        Option::set($moduleId, 'migration_respawn', '0');
+        Option::set($moduleId, 'migration_pid', $newPid);
+        cliLog("Respawned worker with PID=$newPid", $logFile);
+    } else {
+        Option::set($moduleId, 'migration_status', 'error');
+        Option::set($moduleId, 'migration_message', 'Respawn failed: could not spawn new worker');
+        cliLog("FATAL: failed to respawn worker (shell_exec returned '$newPid')", $logFile);
+    }
+    exit(0);
+}

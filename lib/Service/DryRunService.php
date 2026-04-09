@@ -131,6 +131,13 @@ class DryRunService
             $companiesTotal   = $cloudAPI->getCount('crm.company.list');
             // "My Company" system entries are included in the total; subtract them.
             $myCompaniesCount = $cloudAPI->getCount('crm.company.list', ['filter' => ['IS_MY_COMPANY' => 'Y']]);
+            // SmartInvoice uses the generic crm.item.list endpoint with entityTypeId=31.
+            $invoicesCount = 0;
+            try {
+                $invoicesCount = $cloudAPI->getCount('crm.item.list', ['entityTypeId' => 31]);
+            } catch (\Throwable $e) {
+                // Non-critical — some portals have SmartInvoice disabled.
+            }
             $data['crm'] = [
                 'companies'          => $companiesTotal,
                 'companies_my'       => $myCompaniesCount,
@@ -138,6 +145,7 @@ class DryRunService
                 'contacts'           => $cloudAPI->getCount('crm.contact.list'),
                 'deals'              => $cloudAPI->getCount('crm.deal.list'),
                 'leads'              => $cloudAPI->getCount('crm.lead.list'),
+                'invoices'           => $invoicesCount,
             ];
         } catch (\Exception $e) {
             $data['crm'] = ['error' => $e->getMessage()];

@@ -61,6 +61,30 @@ class TaskMigrationService
         $this->leadMapCache = $leadMap;
     }
 
+    /**
+     * Force the task list to a specific set of cloud IDs (scoped/test migration).
+     * Bypasses fetchAllTaskIds().
+     * @var int[]|null
+     */
+    private $taskIdsOverride = null;
+
+    public function setTaskIdsOverride(array $cloudTaskIds): void
+    {
+        $this->taskIdsOverride = array_values(array_unique(array_map('intval', $cloudTaskIds)));
+    }
+
+    /**
+     * Add UF_CRM_TASK filter values (e.g. ['CO_123','C_456']) — tasks must
+     * reference at least one of these cloud CRM entities to be included.
+     * @var string[]|null
+     */
+    private $taskCrmFilter = null;
+
+    public function setTaskCrmFilter(array $ufCrmTaskValues): void
+    {
+        $this->taskCrmFilter = array_values(array_unique($ufCrmTaskValues));
+    }
+
     public function setLogFile($path)
     {
         $this->logFile = $path;
@@ -575,6 +599,26 @@ class TaskMigrationService
     // Comments
     // =========================================================================
 
+    /**
+     * Migrate cloud task comments into the box task's IM CHAT (not forum).
+     *
+     * Modern Bitrix UI (25.x+) shows task conversation via the IM chat bound
+     * to the task (ENTITY_TYPE=TASKS_TASK, ENTITY_ID=<boxTaskId>). Forum
+     * comments (b_forum_message) are invisible in the new UI. Therefore
+     * every cloud comment — text and/or files from ATTACHED_OBJECTS — must
+     * land in the chat.
+     *
+     * Implementation notes:
+     *  - Legacy REST `task.commentitem.add` is broken on new boxes (returns
+     *    garbage IDs without insert). Do not use.
+     *  - All messages are posted from admin (user=1). Original authors are
+     *    preserved in the message body via a `[USER={id}][/USER]: ` prefix
+     *    when a mapping exists.
+     *  - Files use the working D7 path: download via ATTACHED_OBJECTS.DOWNLOAD_URL
+     *    → upload to admin's personal Disk → `CIMDisk::UploadFileFromDisk`
+     *    with `SKIP_USER_CHECK=true, SYMLINK=true`.
+     *  - Text-only messages use `CIMMessenger::Add`.
+     */
     private function migrateComments($cloudTaskId, $boxTaskId)
     {
         try {
@@ -586,70 +630,89 @@ class TaskMigrationService
 
             $this->addLog('  Комментарии: ' . count($comments));
 
-            // Get chat ID for file attachments via im.disk.file.commit
-            $chatId = 0;
-            try {
-                // Add webhook user (admin ID=1) as auditor to gain chat access
-                $this->boxAPI->updateTask($boxTaskId, [
-                    'AUDITORS' => [1],
-                ]);
-                sleep(1);
-                $chatId = $this->boxAPI->getTaskChatId($boxTaskId);
-            } catch (\Throwable $e) {
-                // Can't get chatId — will use REST without files
+            // Re-authorize admin (required by Disk for file uploads)
+            global $USER;
+            if (!is_object($USER)) $USER = new \CUser();
+            if (!$USER->IsAuthorized()) $USER->Authorize(1);
+
+            if (!\Bitrix\Main\Loader::includeModule('im')) {
+                $this->addLog('  Комментарии: модуль im недоступен');
+                return;
             }
 
-            foreach ($comments as $idx => $commentInfo) {
+            // Ensure a box IM chat exists for this task
+            $chatId = BoxD7Service::createTaskChat($boxTaskId, 'Task #' . $boxTaskId, [1]);
+            if ($chatId <= 0) {
+                $this->addLog('  Комментарии: не удалось получить/создать IM чат задачи');
+                return;
+            }
+
+            foreach ($comments as $commentInfo) {
                 $commentId = (int)($commentInfo['ID'] ?? $commentInfo['id'] ?? (is_numeric($commentInfo) ? $commentInfo : 0));
-                if ($commentId <= 0) {
-                    continue;
-                }
+                if ($commentId <= 0) continue;
 
                 try {
                     $comment = $this->cloudAPI->getTaskComment($cloudTaskId, $commentId);
-                    $text = $comment['POST_MESSAGE'] ?? $comment['postMessage'] ?? '';
+                    $text = (string)($comment['POST_MESSAGE'] ?? $comment['postMessage'] ?? '');
 
-                    // Map cloud author to box user
+                    // Map cloud author to box user (for [USER=X] prefix only)
                     $cloudAuthorId = (int)($comment['AUTHOR_ID'] ?? $comment['authorId'] ?? 0);
-                    $boxAuthorId = $this->userMapCache[$cloudAuthorId] ?? 0;
-                    if ($boxAuthorId <= 0) {
-                        $boxAuthorId = 1; // fallback to admin
-                    }
+                    $boxAuthorId = (int)($this->userMapCache[$cloudAuthorId] ?? 0);
 
                     // Process explicit file attachments (ATTACHED_OBJECTS)
                     $attachedObjects = $comment['ATTACHED_OBJECTS'] ?? $comment['attachedObjects'] ?? [];
-                    $boxFileIds = [];
-                    if (!empty($attachedObjects) && is_array($attachedObjects)) {
-                        $boxFileIds = $this->migrateCommentFiles($attachedObjects);
-                    }
+                    if (!is_array($attachedObjects)) $attachedObjects = [];
 
-                    if (empty($text) && empty($boxFileIds)) continue;
+                    if (trim($text) === '' && empty($attachedObjects)) continue;
 
-                    // Replace inline [DISK FILE ID=nXXX] tags and base64 images in text
+                    // Inline disk file tags + base64 images → inline markup
                     $text = $this->migrateInlineDiskFiles($text);
                     $text = $this->migrateBase64Images($text);
 
-                    // Send comment via REST
-                    if ($chatId > 0 && !empty($boxFileIds)) {
-                        // Files + chat → im.disk.file.commit (author = webhook user, but files attach)
-                        try {
-                            $cleanText = trim(preg_replace('/\[DISK FILE ID=n?\d+[^\]]*\]/i', '', $text));
-                            $this->boxAPI->commitFilesToChat($chatId, $boxFileIds, $cleanText ?: '.');
-                            $this->addLog('  Комментарий #' . $commentId . ' → im.disk.file.commit (' . count($boxFileIds) . ' файлов)');
-                        } catch (\Throwable $e) {
-                            $this->addLog('  Комментарий #' . $commentId . ' файлы не прикреплены: ' . $e->getMessage());
-                            $fields = ['POST_MESSAGE' => $text ?: '.', 'AUTHOR_ID' => $boxAuthorId];
-                            $this->boxAPI->addTaskComment($boxTaskId, $fields);
-                            $this->addLog('  Комментарий #' . $commentId . ' → task.commentitem.add (автор=' . $boxAuthorId . ', без файлов)');
+                    // Download files from cloud → admin's personal Disk storage
+                    $boxDiskIds = !empty($attachedObjects)
+                        ? $this->migrateCommentFiles($attachedObjects)
+                        : [];
+
+                    // Post to chat
+                    if (!empty($boxDiskIds)) {
+                        // Files require admin (USER_ID=1) — preserve author identity via [USER=] prefix
+                        $displayText = trim($text);
+                        if ($boxAuthorId > 1 && $displayText !== '') {
+                            $displayText = "[USER={$boxAuthorId}][/USER]: " . $displayText;
+                        } elseif ($boxAuthorId > 1) {
+                            $displayText = "[USER={$boxAuthorId}][/USER]";
                         }
-                    } else {
-                        // Text only or no chat → task.commentitem.add with correct AUTHOR_ID
-                        $fields = ['POST_MESSAGE' => $text ?: '.', 'AUTHOR_ID' => $boxAuthorId];
-                        $this->boxAPI->addTaskComment($boxTaskId, $fields);
-                        $this->addLog('  Комментарий #' . $commentId . ' → task.commentitem.add (автор=' . $boxAuthorId . ')');
+                        $diskPrefixed = array_map(fn($id) => 'disk' . (int)$id, $boxDiskIds);
+                        $result = \CIMDisk::UploadFileFromDisk($chatId, $diskPrefixed, $displayText, [
+                            'USER_ID' => 1,
+                            'SKIP_USER_CHECK' => true,
+                            'SYMLINK' => true,
+                        ]);
+                        $msgId = (int)($result['MESSAGE_ID'] ?? 0);
+                        if ($msgId > 0) {
+                            $this->addLog('  Комментарий #' . $commentId . ' → chat msg #' . $msgId . ' (файлов=' . count($boxDiskIds) . ', автор=' . $boxAuthorId . ')');
+                        } else {
+                            $this->addLog('  Комментарий #' . $commentId . ': UploadFileFromDisk вернул 0');
+                        }
+                    } elseif (trim($text) !== '') {
+                        // Text-only: send from the real (mapped) author, no [USER=] prefix
+                        $fromUserId = $boxAuthorId > 1 ? $boxAuthorId : 1;
+                        $msgId = \CIMMessenger::Add([
+                            'TO_CHAT_ID' => $chatId,
+                            'FROM_USER_ID' => $fromUserId,
+                            'MESSAGE' => trim($text),
+                            'SYSTEM' => 'N',
+                            'SKIP_USER_CHECK' => 'Y',
+                        ]);
+                        if ($msgId) {
+                            $this->addLog('  Комментарий #' . $commentId . ' → chat msg #' . $msgId . ' (text, автор=' . $boxAuthorId . ')');
+                        } else {
+                            $this->addLog('  Комментарий #' . $commentId . ': CIMMessenger::Add вернул 0');
+                        }
                     }
 
-                    usleep(333000);
+                    usleep(150000);
                 } catch (\Throwable $e) {
                     $this->addLog('  Комментарий #' . $commentId . ': ' . $e->getMessage());
                 }
@@ -677,7 +740,9 @@ class TaskMigrationService
             $cloudChatId = $this->cloudAPI->getTaskChatId($cloudTaskId);
             if ($cloudChatId <= 0) return;
 
-            $messages = $this->cloudAPI->getChatMessages($cloudChatId);
+            $chatData = $this->cloudAPI->getChatMessages($cloudChatId);
+            $messages = $chatData['messages'] ?? [];
+            $chatFiles = $chatData['files'] ?? []; // fileId => {urlDownload, name, ...}
             if (empty($messages)) return;
 
             // Cloud returns messages newest-first → reverse to chronological order
@@ -694,36 +759,18 @@ class TaskMigrationService
 
             if (empty($contentMessages)) return;
 
-            $this->addLog('  Сообщений в чате: ' . count($contentMessages));
+            $this->addLog('  Сообщений в чате: ' . count($contentMessages) . ', файлов: ' . count($chatFiles));
 
-            // Collect task members for chat creation
-            $memberCloudIds = [];
-            foreach (['createdBy', 'CREATED_BY', 'responsibleId', 'RESPONSIBLE_ID'] as $key) {
-                $val = $cloudTask[$key] ?? null;
-                if ($val) $memberCloudIds[] = (int)$val;
-            }
-            foreach (['accomplices', 'ACCOMPLICES', 'auditors', 'AUDITORS'] as $key) {
-                $vals = $cloudTask[$key] ?? [];
-                if (is_array($vals)) {
-                    foreach ($vals as $v) $memberCloudIds[] = (int)$v;
-                }
-            }
-            // Also add all message authors
-            foreach ($contentMessages as $m) {
-                $aid = (int)($m['author_id'] ?? $m['senderId'] ?? 0);
-                if ($aid) $memberCloudIds[] = $aid;
-            }
-            $memberCloudIds = array_unique(array_filter($memberCloudIds));
-
-            $boxUserIds = [];
-            foreach ($memberCloudIds as $cloudUid) {
-                $boxUid = $this->userMapCache[$cloudUid] ?? null;
-                if ($boxUid) $boxUserIds[] = (int)$boxUid;
-            }
-            $boxUserIds = array_unique(array_filter($boxUserIds));
-            if (empty($boxUserIds)) $boxUserIds = [1];
-
-            $boxChatId = BoxD7Service::createTaskChat($boxTaskId, 'Task #' . $boxTaskId, $boxUserIds);
+            // Simplification: always create box chat with admin only (user 1).
+            // Rationale: sending files as the original author requires the author
+            // to have a personal Disk storage (getStorageByUserId($uid) returns null
+            // otherwise), and the author mapping may be incomplete. Using USER_ID=1
+            // everywhere bypasses all edge cases — the file lands in the chat,
+            // attributed to admin. Original author is preserved via [USER=X] text
+            // prefix on the message so history isn't lost.
+            // Text-only messages still go through the original author via
+            // CIMMessenger::Add below (no Disk storage involved there).
+            $boxChatId = BoxD7Service::createTaskChat($boxTaskId, 'Task #' . $boxTaskId, [1]);
             if ($boxChatId <= 0) {
                 $this->addLog('  Не удалось создать чат задачи');
                 return;
@@ -734,6 +781,15 @@ class TaskMigrationService
                 $cloudAuthorId = (int)($msg['author_id'] ?? $msg['senderId'] ?? 0);
                 $boxAuthorId = $this->userMapCache[$cloudAuthorId] ?? 1;
                 $text = (string)($msg['text'] ?? '');
+                // When the file will be sent from admin (USER_ID=1), prefix the
+                // message with the original author reference so the history
+                // still shows who actually attached the file.
+                $textWithAuthor = $text;
+                if ($boxAuthorId > 1 && trim($text) !== '') {
+                    $textWithAuthor = "[USER={$boxAuthorId}][/USER]: " . $text;
+                } elseif ($boxAuthorId > 1) {
+                    $textWithAuthor = "[USER={$boxAuthorId}][/USER]";
+                }
                 $fileIds = $msg['params']['FILE_ID'] ?? [];
 
                 if (!empty($fileIds)) {
@@ -742,10 +798,27 @@ class TaskMigrationService
 
                     foreach ((array)$fileIds as $cloudFileId) {
                         try {
-                            $fileInfo = $this->cloudAPI->getDiskFile($cloudFileId);
-                            $downloadUrl = $fileInfo['DOWNLOAD_URL'] ?? '';
-                            $fileName = $fileInfo['NAME'] ?? ('file_' . $cloudFileId);
-                            if (empty($downloadUrl)) continue;
+                            // Prefer urlDownload from the chat response's files dict
+                            // (im.dialog.messages.get includes a files[] map). If
+                            // absent (older chats / deleted files), fall back to
+                            // disk.file.get which re-resolves the file.
+                            $downloadUrl = '';
+                            $fileName = '';
+                            if (isset($chatFiles[$cloudFileId])) {
+                                $cf = $chatFiles[$cloudFileId];
+                                $downloadUrl = $cf['urlDownload'] ?? $cf['urlPreview'] ?? '';
+                                $fileName = $cf['name'] ?? '';
+                            }
+                            if (empty($downloadUrl)) {
+                                $fileInfo = $this->cloudAPI->getDiskFile($cloudFileId);
+                                $downloadUrl = $fileInfo['DOWNLOAD_URL'] ?? '';
+                                $fileName = $fileInfo['NAME'] ?? $fileName;
+                            }
+                            if (empty($fileName)) $fileName = 'file_' . $cloudFileId;
+                            if (empty($downloadUrl)) {
+                                $this->addLog('  Файл чата #' . $cloudFileId . ': нет DOWNLOAD_URL');
+                                continue;
+                            }
 
                             $tmpPath = tempnam(sys_get_temp_dir(), 'bx_mig_');
                             $ch = curl_init($downloadUrl);
@@ -770,7 +843,9 @@ class TaskMigrationService
                             $uniqueName = $pathinfo['filename'] . '_' . time() . '_' . mt_rand(1000, 9999);
                             if (!empty($pathinfo['extension'])) $uniqueName .= '.' . $pathinfo['extension'];
 
-                            $msgId = BoxD7Service::sendFileToChatD7($boxChatId, $tmpPath, $uniqueName, $text, (int)$boxAuthorId);
+                            // Always send as admin (user 1) — see rationale in
+                            // comment before createTaskChat() above.
+                            $msgId = BoxD7Service::sendFileToChatD7($boxChatId, $tmpPath, $uniqueName, $textWithAuthor, 1);
                             @unlink($tmpPath);
 
                             if ($msgId > 0) {
@@ -779,7 +854,7 @@ class TaskMigrationService
                             } else {
                                 $this->addLog('  Файл чата "' . $fileName . '" -> не удалось');
                             }
-                            $text = ''; // attach text only to first file
+                            $textWithAuthor = ''; // attach text only to first file
                             usleep(200000);
                         } catch (\Throwable $e) {
                             $this->addLog('  Файл чата #' . $cloudFileId . ': ' . $e->getMessage());
@@ -1078,14 +1153,30 @@ class TaskMigrationService
 
     private function fetchAllTaskIds()
     {
+        // Scope override: explicit ID list (scope=task).
+        if (is_array($this->taskIdsOverride)) {
+            return $this->taskIdsOverride;
+        }
+
         $params = ['select' => ['ID']];
+        $filter = [];
 
         // Incremental mode: filter by CREATED_DATE > last migration timestamp
         if (!empty($this->plan['settings']['incremental'])) {
             $lastTs = Option::get(self::MODULE_ID, 'last_migration_timestamp', '');
             if (!empty($lastTs)) {
-                $params['filter'] = ['>CREATED_DATE' => $lastTs];
+                $filter['>CREATED_DATE'] = $lastTs;
             }
+        }
+
+        // Scope: filter tasks to only those referencing given CRM entities
+        // via UF_CRM_TASK. Bitrix REST filter accepts an array of values.
+        if (is_array($this->taskCrmFilter) && !empty($this->taskCrmFilter)) {
+            $filter['UF_CRM_TASK'] = $this->taskCrmFilter;
+        }
+
+        if (!empty($filter)) {
+            $params['filter'] = $filter;
         }
 
         // tasks.task.list returns result.tasks (nested array), not result directly

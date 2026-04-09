@@ -14,13 +14,14 @@
         contacts: 'Контакты',
         deals: 'Сделки',
         leads: 'Лиды',
+        invoices: 'Счета',
         timeline: 'Таймлайн и активности',
         workgroups: 'Рабочие группы',
         smart_processes: 'Смарт-процессы',
         tasks: 'Задачи'
     };
 
-    var PHASE_ORDER = ['departments', 'users', 'crm_fields', 'pipelines', 'companies', 'contacts', 'leads', 'deals', 'timeline', 'workgroups', 'smart_processes', 'tasks'];
+    var PHASE_ORDER = ['departments', 'users', 'crm_fields', 'pipelines', 'companies', 'contacts', 'leads', 'deals', 'invoices', 'timeline', 'workgroups', 'smart_processes', 'tasks'];
 
     var logsAutoRefreshTimer = null;
 
@@ -367,8 +368,6 @@
             if (plan.settings.user_match_strategy) document.getElementById('plan-user-strategy').value = plan.settings.user_match_strategy;
             if (plan.settings.conflict_resolution) document.getElementById('plan-conflict-resolution').value = plan.settings.conflict_resolution;
             if (plan.settings.send_invite) document.getElementById('plan-send-invite').value = plan.settings.send_invite;
-            var saveIdsEl = document.getElementById('plan-save-migrated-ids');
-            if (saveIdsEl) saveIdsEl.checked = !!plan.settings.save_migrated_ids;
             var delMigratedEl = document.getElementById('plan-delete-migrated-data');
             if (delMigratedEl) delMigratedEl.checked = !!plan.settings.delete_migrated_data;
         }
@@ -475,14 +474,13 @@
         }));
 
         // 6. Leads
-        sections.push(buildPlanSection('leads', 'Лиды', crm.leads || 0, plan.leads, function(body) {
-            buildDuplicateSettings(body, 'leads', plan, DUPLICATE_CRITERIA, DUPLICATE_ACTIONS);
-        }));
+        sections.push(buildPlanSection('leads', 'Лиды', crm.leads || 0, plan.leads, null));
 
         // 7. Deals
-        sections.push(buildPlanSection('deals', 'Сделки', crm.deals || 0, plan.deals, function(body) {
-            buildDuplicateSettings(body, 'deals', plan, DUPLICATE_CRITERIA, DUPLICATE_ACTIONS);
-        }));
+        sections.push(buildPlanSection('deals', 'Сделки', crm.deals || 0, plan.deals, null));
+
+        // 7.5 Invoices (SmartInvoice entityTypeId=31)
+        sections.push(buildPlanSection('invoices', 'Счета', crm.invoices || 0, plan.invoices, null));
 
         // 8. Timeline
         sections.push(buildPlanSection('timeline', 'Таймлайн и активности', null, plan.timeline, null));
@@ -809,7 +807,6 @@
             user_match_strategy: document.getElementById('plan-user-strategy').value,
             conflict_resolution: document.getElementById('plan-conflict-resolution').value,
             send_invite: document.getElementById('plan-send-invite').value,
-            save_migrated_ids: !!(document.getElementById('plan-save-migrated-ids') || {}).checked,
             delete_migrated_data: !!(document.getElementById('plan-delete-migrated-data') || {}).checked
         };
 
@@ -895,6 +892,7 @@
     function initMigrationHandlers() {
         document.getElementById('btn-start-migration')?.addEventListener('click', startMigration);
         document.getElementById('btn-start-incremental')?.addEventListener('click', startIncrementalMigration);
+        document.getElementById('btn-start-test-migration')?.addEventListener('click', startTestMigration);
         document.getElementById('btn-stop-migration')?.addEventListener('click', stopMigration);
         document.getElementById('btn-pause-migration')?.addEventListener('click', pauseMigration);
         document.getElementById('btn-resume-migration')?.addEventListener('click', resumeMigration);
@@ -926,6 +924,48 @@
             .catch(function() {
                 alert('Ошибка запуска миграции');
                 btn.disabled = false; btn.textContent = 'Запустить миграцию';
+            });
+    }
+
+    function startTestMigration() {
+        var typeEl = document.querySelector('input[name="test-scope-type"]:checked');
+        var scopeType = typeEl ? typeEl.value : 'company';
+        var idInput = document.getElementById('test-scope-id');
+        var scopeId = parseInt(idInput.value, 10);
+        if (!scopeId || scopeId <= 0) {
+            alert('Укажите ID сущности в облаке');
+            idInput.focus();
+            return;
+        }
+        var skipPrereqs = document.getElementById('test-skip-prereqs').checked;
+        var typeLabel = scopeType === 'company' ? 'компания' : (scopeType === 'contact' ? 'контакт' : 'задача');
+        if (!confirm('Запустить тестовый прогон для: ' + typeLabel + ' #' + scopeId + '?')) return;
+
+        var btn = document.getElementById('btn-start-test-migration');
+        btn.disabled = true; btn.textContent = 'Запуск...';
+
+        var fd = new FormData();
+        fd.append('sessid', window.BITRIX_MIGRATOR.sessid);
+        fd.append('type', 'full');
+        fd.append('scope_type', scopeType);
+        fd.append('scope_ids', String(scopeId));
+        fd.append('scope_skip_prereqs', skipPrereqs ? '1' : '0');
+
+        fetch('/local/ajax/bitrix_migrator/start_migration.php', { method: 'POST', body: fd })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.success) {
+                    showMigrationProgress();
+                    showMigrationRunningUI();
+                    startMigrationPolling();
+                } else {
+                    alert('Ошибка: ' + (data.error || ''));
+                    btn.disabled = false; btn.textContent = 'Запустить тестовый прогон';
+                }
+            })
+            .catch(function() {
+                alert('Ошибка запуска тестового прогона');
+                btn.disabled = false; btn.textContent = 'Запустить тестовый прогон';
             });
     }
 
