@@ -374,13 +374,20 @@ class MigrationService
                     $this->addLog("Восстановлен smartItemsByType: $totalSmart элементов");
                 }
             } else {
-                // --- Step 0a: Delete previously migrated data via HL block (if enabled) ---
-                if (!empty($this->plan['settings']['delete_migrated_data'])) {
-                    $this->runHlBlockCleanup();
-                }
+                // Тестовый (scoped) прогон: не чистим существующие данные на коробке,
+                // просто создаём выбранные элементы поверх имеющихся. Очистка опасна —
+                // снесёт реальные сделки/контакты, которые не имеют отношения к тесту.
+                if (!empty($this->plan['scope']['entity_type'])) {
+                    $this->addLog('[scope] Тестовый прогон — cleanup пропущен');
+                } else {
+                    // --- Step 0a: Delete previously migrated data via HL block (if enabled) ---
+                    if (!empty($this->plan['settings']['delete_migrated_data'])) {
+                        $this->runHlBlockCleanup();
+                    }
 
-                // --- Step 0b: Run all cleanups first, before any migration ---
-                $this->runAllCleanups();
+                    // --- Step 0b: Run all cleanups first, before any migration ---
+                    $this->runAllCleanups();
+                }
             }
 
             // --- Step 0c: Build user map (cloud→box by email) — needed by all phases ---
