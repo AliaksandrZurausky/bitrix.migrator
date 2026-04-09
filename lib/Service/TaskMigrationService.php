@@ -288,6 +288,15 @@ class TaskMigrationService
         // Store mapping
         $this->taskIdMap[$cloudTaskId] = $boxTaskId;
 
+        // Backdate task to preserve original creation/modification timestamps
+        $createdDate = $task['createdDate'] ?? $task['CREATED_DATE'] ?? '';
+        if ($createdDate) {
+            try {
+                $changedDate = $task['changedDate'] ?? $task['CHANGED_DATE'] ?? '';
+                BoxD7Service::backdateEntity('b_tasks', $boxTaskId, $createdDate, $changedDate);
+            } catch (\Throwable $e) { /* non-critical */ }
+        }
+
         // Store parent ID for second pass
         $parentId = (int)($task['parentId'] ?? $task['PARENT_ID'] ?? 0);
         if ($parentId > 0) {

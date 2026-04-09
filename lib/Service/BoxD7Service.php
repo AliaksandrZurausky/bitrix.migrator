@@ -1344,7 +1344,7 @@ class BoxD7Service
      */
     private static $allowedBackdateTables = [
         'b_crm_company', 'b_crm_contact', 'b_crm_deal', 'b_crm_lead',
-        'b_crm_act', 'b_crm_timeline',
+        'b_crm_act', 'b_crm_timeline', 'b_tasks',
     ];
 
     public static function backdateEntity(string $table, int $id, string $dateCreate, string $dateModify = ''): void
@@ -1385,6 +1385,10 @@ class BoxD7Service
             $conn->queryExecute(
                 "UPDATE {$table} SET CREATED = '{$safeCreate}' WHERE ID = {$safeId}"
             );
+        } elseif ($table === 'b_tasks') {
+            $conn->queryExecute(
+                "UPDATE {$table} SET CREATED_DATE = '{$safeCreate}', CHANGED_DATE = '{$safeModify}' WHERE ID = {$safeId}"
+            );
         } elseif (strpos($table, 'b_crm_dynamic_items_') === 0) {
             $conn->queryExecute(
                 "UPDATE {$table} SET CREATED_TIME = '{$safeCreate}', UPDATED_TIME = '{$safeModify}' WHERE ID = {$safeId}"
@@ -1394,5 +1398,24 @@ class BoxD7Service
                 "UPDATE {$table} SET DATE_CREATE = '{$safeCreate}', DATE_MODIFY = '{$safeModify}' WHERE ID = {$safeId}"
             );
         }
+    }
+
+    /**
+     * Backdate all b_crm_timeline stream entries that were auto-created
+     * for a given activity. CCrmActivity::Add() inserts rows in b_crm_timeline
+     * with CREATED=NOW regardless of the activity's CREATED field, so we fix
+     * them explicitly to match the original cloud date.
+     */
+    public static function backdateTimelineForActivity(int $activityId, string $dateCreate): void
+    {
+        if ($activityId <= 0) return;
+        $ts = strtotime($dateCreate);
+        if ($ts === false) return;
+        $conn = \Bitrix\Main\Application::getConnection();
+        $safeDate = $conn->getSqlHelper()->forSql(date('Y-m-d H:i:s', $ts));
+        $conn->queryExecute(
+            "UPDATE b_crm_timeline SET CREATED = '{$safeDate}' "
+            . "WHERE ASSOCIATED_ENTITY_TYPE_ID = 4 AND ASSOCIATED_ENTITY_ID = {$activityId}"
+        );
     }
 }

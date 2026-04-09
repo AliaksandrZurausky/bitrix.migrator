@@ -2496,7 +2496,10 @@ class MigrationService
             $this->addLog('Кэш сделок box: ' . count($boxDealsByTitle) . ' записей');
         }
 
-        $params = ['select' => ['*', 'UF_*']];
+        // order=ID ASC — обязательно для устойчивой start-based пагинации между respawn.
+        // Без этого Bitrix по умолчанию отдаёт ID DESC → свежие сделки в облаке смещают
+        // курсор между процессами и первые (самые большие) воронки теряют/дублируют записи.
+        $params = ['select' => ['*', 'UF_*'], 'order' => ['ID' => 'ASC']];
         $filter = $this->getIncrementalFilter();
         if (!empty($filter)) $params['filter'] = $filter;
         if ($this->isScopedMode() && !empty($this->scopedIds['deal'])) {
@@ -2786,7 +2789,8 @@ class MigrationService
             $boxCurrencies = $this->boxAPI->getCurrencyCodes();
         } catch (\Throwable $e) {}
 
-        $params = ['select' => ['*', 'UF_*', 'PHONE', 'EMAIL']];
+        // order=ID ASC — см. комментарий в migrateDeals(), та же проблема с respawn.
+        $params = ['select' => ['*', 'UF_*', 'PHONE', 'EMAIL'], 'order' => ['ID' => 'ASC']];
         $filter = $this->getIncrementalFilter();
         if (!empty($filter)) $params['filter'] = $filter;
         if ($this->isScopedMode() && !empty($this->scopedIds['lead'])) {
@@ -3431,6 +3435,7 @@ class MigrationService
                             if (!empty($activity['CREATED'])) {
                                 try {
                                     BoxD7Service::backdateEntity('b_crm_act', $actId, $activity['CREATED'], $activity['LAST_UPDATED'] ?? '');
+                                    BoxD7Service::backdateTimelineForActivity((int)$actId, $activity['CREATED']);
                                 } catch (\Throwable $e) { /* date preservation is non-critical */ }
                             }
 
@@ -3619,6 +3624,7 @@ class MigrationService
                             if (!empty($activity['CREATED'])) {
                                 try {
                                     BoxD7Service::backdateEntity('b_crm_act', $actId, $activity['CREATED'], $activity['LAST_UPDATED'] ?? '');
+                                    BoxD7Service::backdateTimelineForActivity((int)$actId, $activity['CREATED']);
                                 } catch (\Throwable $e) { /* date preservation is non-critical */ }
                             }
 
