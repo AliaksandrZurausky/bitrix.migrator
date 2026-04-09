@@ -449,7 +449,7 @@ class MigrationService
             if ($this->isScopedMode()) {
                 $skipPrereqs = !empty($this->plan['scope']['skip_prereqs']);
                 if ($skipPrereqs) {
-                    $skipInScope = array_merge($skipInScope, ['departments','users','crm_fields','pipelines','currencies','requisites']);
+                    $skipInScope = array_merge($skipInScope, ['departments','users','crm_fields','pipelines','currencies']);
                 }
                 // Workgroups are never scoped to a single CRM entity.
                 $skipInScope[] = 'workgroups';
@@ -3168,6 +3168,10 @@ class MigrationService
 
         foreach ($entityMap as $typeId => $cfg) {
             $cache = $cfg['cache'];
+            // В тестовом прогоне обрабатываем только scoped сущности
+            if ($this->isScopedMode()) {
+                $cache = array_filter($cache, fn($boxId, $cloudId) => $this->inScope($cfg['name'], (int)$cloudId), ARRAY_FILTER_USE_BOTH);
+            }
             $this->addLog("Реквизиты: обработка {$cfg['name']} (" . count($cache) . " шт)...");
 
             foreach ($cache as $cloudEntityId => $boxEntityId) {
@@ -3326,7 +3330,16 @@ class MigrationService
                 continue;
             }
 
-            // 2. Create missing preset on box via EntityPreset
+            // 2. Fallback: match by name only (existing box preset already has
+            //    field definitions in b_crm_preset_field — creating a new one
+            //    would produce an empty duplicate without fields).
+            if (isset($byName[$cloudName])) {
+                $map[$cloudId] = $byName[$cloudName];
+                $this->addLog("  Пресет cloud#$cloudId '{$cp['NAME']}' → box#{$byName[$cloudName]} (по имени, country $cloudCountry не совпал)");
+                continue;
+            }
+
+            // 3. No match at all — create new preset (custom presets absent on box)
             try {
                 $presetObj = new \Bitrix\Crm\EntityPreset();
                 $newPresetFields = [
@@ -3341,18 +3354,14 @@ class MigrationService
                 if ($presetResult->isSuccess()) {
                     $newId = $presetResult->getId();
                     $map[$cloudId] = $newId;
-                    // Update cache for next iterations
                     $byCountryName[$key] = $newId;
                     $byName[$cloudName] = $newId;
                     $this->addLog("  Создан пресет '{$cp['NAME']}' (country=$cloudCountry) box#$newId");
-                    continue;
+                } else {
+                    $this->addLog("  Ошибка создания пресета '{$cp['NAME']}': " . implode('; ', $presetResult->getErrorMessages()));
                 }
-            } catch (\Throwable $e) { /* try next strategy */ }
-
-            // 3. Fallback: match by name only
-            if (isset($byName[$cloudName])) {
-                $map[$cloudId] = $byName[$cloudName];
-                $this->addLog("  Fallback пресет cloud#$cloudId → box#{$byName[$cloudName]} (по имени, country не совпал)");
+            } catch (\Throwable $e) {
+                $this->addLog("  Ошибка создания пресета '{$cp['NAME']}': " . $e->getMessage());
             }
         }
 
