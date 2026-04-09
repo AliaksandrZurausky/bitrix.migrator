@@ -177,6 +177,20 @@ class MapService
     }
 
     /**
+     * Delete a single mapping by (entityType, cloudId). Used for force
+     * recreate in scoped test runs.
+     */
+    public static function deleteMap(string $entityType, int $cloudId): bool
+    {
+        $row = self::getMap($entityType, $cloudId);
+        if (!$row) return false;
+        $entity = self::getEntity();
+        $entityDataClass = $entity->getDataClass();
+        $res = $entityDataClass::delete($row['ID']);
+        return $res->isSuccess();
+    }
+
+    /**
      * Check if mapping exists
      */
     public static function exists($entityType, $cloudId)

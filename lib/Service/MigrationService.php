@@ -247,6 +247,45 @@ class MigrationService
             . ', leads=' . count($this->scopedIds['lead'])
             . ', deals=' . count($this->scopedIds['deal'])
             . ', invoices=' . count($this->scopedIds['invoice']));
+
+        // Force recreate: удаляем ранее созданные на коробке сущности scope
+        // и их маппинги, чтобы фазы пересоздали их заново.
+        $this->forceRecreateScopedEntities();
+    }
+
+    /**
+     * For scoped test runs: delete already-migrated box entities and their
+     * MigratorMap rows so each CRM phase re-creates them from scratch.
+     */
+    private function forceRecreateScopedEntities(): void
+    {
+        $deleters = [
+            'deal'    => [BoxD7Service::class, 'deleteDeal'],
+            'lead'    => [BoxD7Service::class, 'deleteLead'],
+            'contact' => [BoxD7Service::class, 'deleteContact'],
+            'company' => [BoxD7Service::class, 'deleteCompany'],
+        ];
+        $counts = [];
+        // deal → lead → contact → company to respect FK order
+        foreach (['deal', 'lead', 'contact', 'company'] as $type) {
+            $ids = $this->scopedIds[$type] ?? [];
+            if (empty($ids)) continue;
+            $deleted = 0;
+            foreach ($ids as $cloudId) {
+                try {
+                    $localId = MapService::getLocalId($type, (int)$cloudId);
+                    if ($localId) {
+                        try { call_user_func($deleters[$type], (int)$localId); } catch (\Throwable $e) {}
+                    }
+                    MapService::deleteMap($type, (int)$cloudId);
+                    $deleted++;
+                } catch (\Throwable $e) {}
+            }
+            if ($deleted > 0) $counts[] = "$type=$deleted";
+        }
+        if ($counts) {
+            $this->addLog('  [force-recreate] удалено: ' . implode(', ', $counts));
+        }
     }
 
     public function isScopedMode(): bool
@@ -4012,10 +4051,12 @@ class MigrationService
                 // Scope filter: narrow smart process items to those bound to
                 // the selected company/contact via parentId<N>.
                 if ($this->isScopedMode()) {
+                    // Dynamic types bind CRM entities via companyId/contactId
+                    // (not parentId<N> — that's for smart-process→smart-process parents).
                     if ($this->scopeMode === 'company' && !empty($this->scopedIds['company'])) {
-                        $spFilter['parentId4'] = $this->scopedIds['company'];
+                        $spFilter['companyId'] = $this->scopedIds['company'];
                     } elseif ($this->scopeMode === 'contact' && !empty($this->scopedIds['contact'])) {
-                        $spFilter['parentId3'] = $this->scopedIds['contact'];
+                        $spFilter['contactId'] = $this->scopedIds['contact'];
                     } else {
                         // Scope doesn't apply to smart processes in task mode.
                         continue;
