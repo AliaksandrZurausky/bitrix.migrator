@@ -3401,6 +3401,11 @@ class MigrationService
             $typeId = $config['typeId'];
             $cache = $config['cache'];
 
+            // В тестовом прогоне обрабатываем только сущности из scope
+            if ($this->isScopedMode()) {
+                $cache = array_filter($cache, fn($boxId, $cloudId) => $this->inScope($entityName, (int)$cloudId), ARRAY_FILTER_USE_BOTH);
+            }
+
             $this->addLog("Таймлайн: обработка {$entityName} (" . count($cache) . " шт)...");
 
             foreach ($cache as $cloudId => $boxId) {
@@ -3592,6 +3597,9 @@ class MigrationService
             if ($batchReached) break;
             $cloudEntityTypeId = array_search($boxEntityTypeId, $this->smartProcessMapCache);
             if ($cloudEntityTypeId === false) continue;
+
+            // В тестовом прогоне смарт-процессы не в scope — пропускаем
+            if ($this->isScopedMode()) continue;
 
             $this->addLog("Таймлайн: обработка smart_{$boxEntityTypeId} (" . count($itemMap) . " шт)...");
 
