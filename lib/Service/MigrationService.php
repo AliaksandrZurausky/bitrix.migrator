@@ -3463,6 +3463,10 @@ class MigrationService
                 try {
                     $activities = $this->cloudAPI->getActivities($typeId, $cloudId);
                     foreach ($activities as $activity) {
+                        // TYPE_ID=6 — задачи: пропускаем, они привяжутся автоматически
+                        // через UF_CRM_TASK при миграции фазы tasks.
+                        if ((int)($activity['TYPE_ID'] ?? 0) === 6) continue;
+
                         $this->rateLimit();
                         $fields = $this->buildActivityFields($activity, $typeId, $boxId);
 
@@ -3657,6 +3661,7 @@ class MigrationService
                 try {
                     $activities = $this->cloudAPI->getActivities($cloudEntityTypeId, $cloudItemId);
                     foreach ($activities as $activity) {
+                        if ((int)($activity['TYPE_ID'] ?? 0) === 6) continue;
                         $this->rateLimit();
                         $fields = $this->buildActivityFields($activity, $boxEntityTypeId, $boxItemId);
 
