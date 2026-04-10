@@ -1415,7 +1415,27 @@ class BoxD7Service
         $safeDate = $conn->getSqlHelper()->forSql(date('Y-m-d H:i:s', $ts));
         $conn->queryExecute(
             "UPDATE b_crm_timeline SET CREATED = '{$safeDate}' "
-            . "WHERE ASSOCIATED_ENTITY_TYPE_ID = 4 AND ASSOCIATED_ENTITY_ID = {$activityId}"
+            . "WHERE ASSOCIATED_ENTITY_TYPE_ID = 6 AND ASSOCIATED_ENTITY_ID = {$activityId}"
+        );
+    }
+
+    /**
+     * Backdate all b_crm_timeline entries auto-created for a CRM entity
+     * (creation event, modification event, etc). Bitrix generates these
+     * with CREATED=NOW when the entity is created via D7/API.
+     *
+     * @param int $entityTypeId CCrmOwnerType: 1=Lead, 2=Deal, 3=Contact, 4=Company
+     */
+    public static function backdateTimelineForEntity(int $entityTypeId, int $entityId, string $dateCreate): void
+    {
+        if ($entityId <= 0) return;
+        $ts = strtotime($dateCreate);
+        if ($ts === false) return;
+        $conn = \Bitrix\Main\Application::getConnection();
+        $safeDate = $conn->getSqlHelper()->forSql(date('Y-m-d H:i:s', $ts));
+        $conn->queryExecute(
+            "UPDATE b_crm_timeline SET CREATED = '{$safeDate}' "
+            . "WHERE ASSOCIATED_ENTITY_TYPE_ID = {$entityTypeId} AND ASSOCIATED_ENTITY_ID = {$entityId}"
         );
     }
 }

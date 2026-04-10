@@ -2227,6 +2227,7 @@ class MigrationService
                     if (!empty($company['DATE_CREATE'])) {
                         try {
                             BoxD7Service::backdateEntity('b_crm_company', $newId, $company['DATE_CREATE'], $company['DATE_MODIFY'] ?? '');
+                            BoxD7Service::backdateTimelineForEntity(4, $newId, $company['DATE_CREATE']);
                         } catch (\Throwable $e) { /* date preservation is non-critical */ }
                     }
                 }
@@ -2410,6 +2411,7 @@ class MigrationService
                     if (!empty($contact['DATE_CREATE'])) {
                         try {
                             BoxD7Service::backdateEntity('b_crm_contact', $newId, $contact['DATE_CREATE'], $contact['DATE_MODIFY'] ?? '');
+                            BoxD7Service::backdateTimelineForEntity(3, $newId, $contact['DATE_CREATE']);
                         } catch (\Throwable $e) { /* date preservation is non-critical */ }
                     }
 
@@ -2674,6 +2676,7 @@ class MigrationService
                     if (!empty($deal['DATE_CREATE'])) {
                         try {
                             BoxD7Service::backdateEntity('b_crm_deal', $newId, $deal['DATE_CREATE'], $deal['DATE_MODIFY'] ?? '');
+                            BoxD7Service::backdateTimelineForEntity(2, $newId, $deal['DATE_CREATE']);
                         } catch (\Throwable $e) { /* date preservation is non-critical */ }
                     }
 
@@ -2911,6 +2914,7 @@ class MigrationService
                     if (!empty($lead['DATE_CREATE'])) {
                         try {
                             BoxD7Service::backdateEntity('b_crm_lead', $newId, $lead['DATE_CREATE'], $lead['DATE_MODIFY'] ?? '');
+                            BoxD7Service::backdateTimelineForEntity(1, $newId, $lead['DATE_CREATE']);
                         } catch (\Throwable $e) { /* date preservation is non-critical */ }
                     }
                 }
@@ -3482,9 +3486,6 @@ class MigrationService
                 try {
                     $activities = $this->cloudAPI->getActivities($typeId, $cloudId);
                     foreach ($activities as $activity) {
-                        // TYPE_ID=6 — задачи: пропускаем, они привяжутся автоматически
-                        // через UF_CRM_TASK при миграции фазы tasks.
-                        if ((int)($activity['TYPE_ID'] ?? 0) === 6) continue;
 
                         $this->rateLimit();
                         $fields = $this->buildActivityFields($activity, $typeId, $boxId);
