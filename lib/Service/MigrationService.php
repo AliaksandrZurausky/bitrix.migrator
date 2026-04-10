@@ -3303,9 +3303,10 @@ class MigrationService
         }
         if (empty($cloudPresets)) return $map;
 
-        // Load box presets
+        // Load box presets — skip empty duplicates (no FIELDS in SETTINGS)
+        // that were created by previous buggy runs of the migrator.
         $conn = \Bitrix\Main\Application::getConnection();
-        $boxPresets = $conn->query("SELECT ID, NAME, COUNTRY_ID, ENTITY_TYPE_ID FROM b_crm_preset")->fetchAll();
+        $boxPresets = $conn->query("SELECT ID, NAME, COUNTRY_ID, ENTITY_TYPE_ID, SETTINGS FROM b_crm_preset")->fetchAll();
 
         // Index box presets by (country_id + name) and by name
         $byCountryName = [];
@@ -3313,8 +3314,17 @@ class MigrationService
         foreach ($boxPresets as $p) {
             $name = mb_strtolower(trim($p['NAME'] ?? ''));
             $country = (int)($p['COUNTRY_ID'] ?? 0);
-            $byCountryName["$country|$name"] = (int)$p['ID'];
-            if (!isset($byName[$name])) $byName[$name] = (int)$p['ID'];
+            $id = (int)$p['ID'];
+
+            // Skip presets without field definitions in SETTINGS — these are
+            // empty duplicates created by previous buggy runs of the migrator.
+            $settings = @unserialize($p['SETTINGS'] ?? '');
+            $hasFields = is_array($settings) && !empty($settings['FIELDS']);
+            if (!$hasFields) continue;
+
+            $key = "$country|$name";
+            $byCountryName[$key] = $id;
+            if (!isset($byName[$name])) $byName[$name] = $id;
         }
 
         foreach ($cloudPresets as $cp) {
