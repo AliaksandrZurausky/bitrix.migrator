@@ -1897,15 +1897,10 @@
     function initRepairTab() {
         document.querySelectorAll('.repair-accordion-header').forEach(function(header) {
             header.addEventListener('click', function() {
-                var body = header.nextElementSibling;
+                var acc = header.parentElement;
                 var arrow = header.querySelector('.migrator-accordion-arrow');
-                if (body.style.display === 'none') {
-                    body.style.display = '';
-                    if (arrow) arrow.textContent = '\u25BC';
-                } else {
-                    body.style.display = 'none';
-                    if (arrow) arrow.textContent = '\u25B6';
-                }
+                acc.classList.toggle('open');
+                arrow.textContent = acc.classList.contains('open') ? '\u25BC' : '\u25B6';
             });
         });
     }

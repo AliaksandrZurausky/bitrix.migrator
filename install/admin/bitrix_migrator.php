@@ -376,7 +376,7 @@ function migratorStatusText($status) {
                 <span class="migrator-accordion-arrow">&#9654;</span>
                 <span class="migrator-accordion-title">Восстановление маппингов</span>
             </div>
-            <div class="migrator-accordion-body" style="display:none;">
+            <div class="migrator-accordion-body">
                 <p style="margin:0 0 12px;font-size:13px;color:#888;">Сопоставить сущности облака и коробки по названию и записать в HL-блок. Существующие маппинги не перезаписываются.</p>
                 <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
                     <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="repair_type" value="rebuild_mappings_companies" checked> Компании</label>
@@ -394,7 +394,7 @@ function migratorStatusText($status) {
                 <span class="migrator-accordion-arrow">&#9654;</span>
                 <span class="migrator-accordion-title">Дозаполнение полей</span>
             </div>
-            <div class="migrator-accordion-body" style="display:none;">
+            <div class="migrator-accordion-body">
                 <p style="margin:0 0 12px;font-size:13px;color:#888;">Перечитать данные из облака и обновить поля на коробке (стандартные + UF).</p>
                 <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
                     <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="repair_type" value="companies"> Компании</label>
@@ -412,7 +412,7 @@ function migratorStatusText($status) {
                 <span class="migrator-accordion-arrow">&#9654;</span>
                 <span class="migrator-accordion-title">Реквизиты</span>
             </div>
-            <div class="migrator-accordion-body" style="display:none;">
+            <div class="migrator-accordion-body">
                 <p style="margin:0 0 12px;font-size:13px;color:#888;">Создать недостающие реквизиты, банковские реквизиты и адреса. Существующие реквизиты (по PRESET_ID) не дублируются.</p>
                 <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
                     <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="repair_type" value="requisites_companies" checked> Компании</label>
@@ -428,7 +428,7 @@ function migratorStatusText($status) {
                 <span class="migrator-accordion-arrow">&#9654;</span>
                 <span class="migrator-accordion-title">Привязки</span>
             </div>
-            <div class="migrator-accordion-body" style="display:none;">
+            <div class="migrator-accordion-body">
                 <p style="margin:0 0 12px;font-size:13px;color:#888;">Восстановить связи между сущностями по данным из облака.</p>
                 <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
                     <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="repair_type" value="bindings_companies" checked> Компании &rarr; Сделки/Лиды</label>
