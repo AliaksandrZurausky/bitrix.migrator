@@ -1797,4 +1797,108 @@
     function esc(str) {
         return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
+
+    // =====================================================================
+    // Repair (Дозаполнение) tab
+    // =====================================================================
+
+    var repairPollTimer = null;
+
+    window.startRepair = function() {
+        var checkboxes = document.querySelectorAll('input[name="repair_type"]:checked');
+        var types = [];
+        checkboxes.forEach(function(cb) { types.push(cb.value); });
+        if (types.length === 0) {
+            alert('Выберите хотя бы один тип для дозаполнения');
+            return;
+        }
+
+        document.getElementById('btn-start-repair').disabled = true;
+        document.getElementById('btn-stop-repair').style.display = '';
+        document.getElementById('repair-progress-section').style.display = '';
+        document.getElementById('repair-log-section').style.display = '';
+        document.getElementById('repair-status-text').textContent = 'Запуск...';
+        document.getElementById('repair-log').textContent = '';
+
+        var fd = new FormData();
+        fd.append('sessid', BX.bitrix_sessid());
+        fd.append('types', JSON.stringify(types));
+
+        fetch('/local/ajax/bitrix_migrator/start_repair.php', { method: 'POST', body: fd })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.success) {
+                    repairPollTimer = setInterval(pollRepairStatus, 2000);
+                } else {
+                    document.getElementById('repair-status-text').textContent = 'Ошибка: ' + (data.error || '');
+                    document.getElementById('btn-start-repair').disabled = false;
+                    document.getElementById('btn-stop-repair').style.display = 'none';
+                }
+            })
+            .catch(function(err) {
+                document.getElementById('repair-status-text').textContent = 'Ошибка сети: ' + err;
+                document.getElementById('btn-start-repair').disabled = false;
+            });
+    };
+
+    window.stopRepair = function() {
+        var fd = new FormData();
+        fd.append('sessid', BX.bitrix_sessid());
+        fetch('/local/ajax/bitrix_migrator/stop_repair.php', { method: 'POST', body: fd });
+        document.getElementById('repair-status-text').textContent = 'Остановка...';
+    };
+
+    function pollRepairStatus() {
+        fetch('/local/ajax/bitrix_migrator/get_repair_status.php')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (!data.success) return;
+
+                var statusEl = document.getElementById('repair-status-text');
+                var progressBar = document.getElementById('repair-progress-bar');
+                var progressText = document.getElementById('repair-progress-text');
+                var logEl = document.getElementById('repair-log');
+
+                statusEl.textContent = data.message || data.status;
+
+                if (data.progress && data.progress.total > 0) {
+                    var pct = Math.round((data.progress.current / data.progress.total) * 100);
+                    progressBar.style.width = pct + '%';
+                    progressText.textContent = data.progress.current + ' / ' + data.progress.total + ' (' + pct + '%)';
+                }
+
+                if (data.log && data.log.length > 0) {
+                    logEl.textContent = data.log.join('\n');
+                    logEl.scrollTop = logEl.scrollHeight;
+                }
+
+                if (data.status === 'completed' || data.status === 'error' || data.status === 'stopped') {
+                    clearInterval(repairPollTimer);
+                    repairPollTimer = null;
+                    document.getElementById('btn-start-repair').disabled = false;
+                    document.getElementById('btn-stop-repair').style.display = 'none';
+                    if (data.status === 'completed') {
+                        statusEl.textContent = 'Дозаполнение завершено';
+                        progressBar.style.width = '100%';
+                    }
+                }
+            })
+            .catch(function() {});
+    }
+
+    // Load info when repair tab is activated
+    function initRepairTab() {
+        document.querySelectorAll('.migrator-tab-btn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                if (btn.getAttribute('data-tab') === 'repair') {
+                    var infoEl = document.getElementById('repair-mappings-info');
+                    if (infoEl) {
+                        infoEl.textContent = 'Выберите типы данных и нажмите «Запустить дозаполнение».';
+                    }
+                }
+            });
+        });
+    }
+    document.addEventListener('DOMContentLoaded', initRepairTab);
+
 })();

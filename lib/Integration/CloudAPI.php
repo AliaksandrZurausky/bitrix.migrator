@@ -68,12 +68,13 @@ class CloudAPI
         }
 
         // Rate limit — wait and retry (max 5 attempts)
-        if ($httpCode === 429) {
+        // 429 = standard rate limit, 503 = Bitrix Cloud "Too many requests"
+        if ($httpCode === 429 || $httpCode === 503) {
             if ($attempt >= 5) {
-                throw new \Exception('Rate limit exceeded after 5 retries');
+                throw new \Exception('Rate limit exceeded after 5 retries (HTTP ' . $httpCode . ')');
             }
             $headers  = substr($rawResponse, 0, $headerSize);
-            $retryAfter = 2;
+            $retryAfter = $httpCode === 503 ? 3 : 2;
             if (preg_match('/Retry-After:\s*(\d+)/i', $headers, $m)) {
                 $retryAfter = (int)$m[1];
             }

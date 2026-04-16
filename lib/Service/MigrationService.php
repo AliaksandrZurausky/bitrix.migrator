@@ -3154,6 +3154,11 @@ class MigrationService
 
     private function migrateRequisites()
     {
+        // Preload HL-map caches — on respawn these are empty and without them
+        // the phase silently iterates zero entities.
+        $this->loadExistingMappings('company');
+        $this->loadExistingMappings('contact');
+
         // entity type IDs: Company=4, Contact=3
         $entityMap = [
             4 => ['name' => 'company', 'cache' => &$this->companyMapCache],

@@ -53,6 +53,7 @@ function migratorStatusText($status) {
         <button class="migrator-tab-btn" data-tab="dryrun">Анализ</button>
         <button class="migrator-tab-btn" data-tab="plan">План миграции</button>
         <button class="migrator-tab-btn" data-tab="migration">Миграция</button>
+        <button class="migrator-tab-btn" data-tab="repair">Дозаполнение</button>
         <button class="migrator-tab-btn" data-tab="logs">Логи</button>
     </div>
 
@@ -359,6 +360,69 @@ function migratorStatusText($status) {
                     <div id="migration-log" class="migrator-log-box"></div>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <!-- Tab: Repair (Дозаполнение) -->
+    <div id="tab-repair" class="migrator-tab-content">
+        <h2>Дозаполнение данных</h2>
+        <p style="color:#666;font-size:14px;margin:0 0 20px;">
+            Перечитать данные из облака по существующим маппингам и обновить поля, реквизиты и связи на коробке.
+            Работает только если таблица маппингов содержит данные от предыдущей миграции.
+        </p>
+
+        <div id="repair-mappings-info" style="margin-bottom:20px;">
+            <p style="color:#888;">Загрузка статистики маппингов...</p>
+        </div>
+
+        <div style="margin-bottom:20px;">
+            <h3 style="margin:0 0 12px;font-size:16px;">Выберите что дозаполнить:</h3>
+            <div style="display:flex;flex-wrap:wrap;gap:16px;">
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                    <input type="checkbox" name="repair_type" value="companies"> Поля компаний
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                    <input type="checkbox" name="repair_type" value="contacts"> Поля контактов
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                    <input type="checkbox" name="repair_type" value="deals"> Поля сделок
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                    <input type="checkbox" name="repair_type" value="leads"> Поля лидов
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                    <input type="checkbox" name="repair_type" value="requisites_companies" checked> Реквизиты компаний
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                    <input type="checkbox" name="repair_type" value="requisites_contacts"> Реквизиты контактов
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                    <input type="checkbox" name="repair_type" value="bindings"> Связи (M:N)
+                </label>
+            </div>
+        </div>
+
+        <div style="margin-bottom:20px;display:flex;gap:10px;">
+            <button id="btn-start-repair" class="ui-btn ui-btn-success" onclick="startRepair()">Запустить дозаполнение</button>
+            <button id="btn-stop-repair" class="ui-btn ui-btn-danger" onclick="stopRepair()" style="display:none;">Остановить</button>
+        </div>
+
+        <!-- Progress -->
+        <div id="repair-progress-section" style="display:none;margin-bottom:20px;">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+                <strong>Статус:</strong>
+                <span id="repair-status-text">—</span>
+            </div>
+            <div style="background:#e8e8e8;border-radius:6px;height:24px;overflow:hidden;margin-bottom:8px;">
+                <div id="repair-progress-bar" style="height:100%;background:#4CAF50;border-radius:6px;transition:width 0.3s;width:0%;"></div>
+            </div>
+            <div id="repair-progress-text" style="font-size:13px;color:#666;"></div>
+        </div>
+
+        <!-- Log -->
+        <div id="repair-log-section" style="display:none;">
+            <h3 style="margin:0 0 8px;font-size:15px;">Лог дозаполнения</h3>
+            <div id="repair-log" style="background:#1e1e1e;color:#d4d4d4;font-family:monospace;font-size:12px;padding:12px;border-radius:6px;height:350px;overflow-y:auto;white-space:pre-wrap;"></div>
         </div>
     </div>
 
