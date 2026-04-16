@@ -367,51 +367,86 @@ function migratorStatusText($status) {
     <div id="tab-repair" class="migrator-tab-content">
         <h2>Дозаполнение данных</h2>
         <p style="color:#666;font-size:14px;margin:0 0 20px;">
-            Перечитать данные из облака по существующим маппингам и обновить поля, реквизиты и связи на коробке.
-            Работает только если таблица маппингов содержит данные от предыдущей миграции.
+            Работает по существующим маппингам из HL-блока. Выберите нужную секцию, отметьте типы и запустите.
         </p>
 
-        <div id="repair-mappings-info" style="margin-bottom:20px;">
-            <p style="color:#888;">Загрузка статистики маппингов...</p>
-        </div>
-
-        <div style="margin-bottom:20px;">
-            <h3 style="margin:0 0 12px;font-size:16px;">Выберите что дозаполнить:</h3>
-            <div style="display:flex;flex-wrap:wrap;gap:16px;">
-                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-                    <input type="checkbox" name="repair_type" value="companies"> Поля компаний
-                </label>
-                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-                    <input type="checkbox" name="repair_type" value="contacts"> Поля контактов
-                </label>
-                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-                    <input type="checkbox" name="repair_type" value="deals"> Поля сделок
-                </label>
-                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-                    <input type="checkbox" name="repair_type" value="leads"> Поля лидов
-                </label>
-                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-                    <input type="checkbox" name="repair_type" value="requisites_companies" checked> Реквизиты компаний
-                </label>
-                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-                    <input type="checkbox" name="repair_type" value="requisites_contacts"> Реквизиты контактов
-                </label>
-                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-                    <input type="checkbox" name="repair_type" value="bindings"> Связи (M:N)
-                </label>
+        <!-- Accordion 1: Rebuild Mappings -->
+        <div class="migrator-accordion" style="margin-bottom:16px;">
+            <div class="migrator-accordion-header repair-accordion-header" style="cursor:pointer;">
+                <span class="migrator-accordion-arrow">&#9654;</span>
+                <span class="migrator-accordion-title">Восстановление маппингов</span>
+            </div>
+            <div class="migrator-accordion-body" style="display:none;">
+                <p style="margin:0 0 12px;font-size:13px;color:#888;">Сопоставить сущности облака и коробки по названию и записать в HL-блок. Существующие маппинги не перезаписываются.</p>
+                <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="repair_type" value="rebuild_mappings_companies" checked> Компании</label>
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="repair_type" value="rebuild_mappings_contacts"> Контакты</label>
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="repair_type" value="rebuild_mappings_deals"> Сделки</label>
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="repair_type" value="rebuild_mappings_leads"> Лиды</label>
+                </div>
+                <button class="ui-btn ui-btn-primary btn-repair-start" onclick="startRepair(this)">Восстановить маппинги</button>
             </div>
         </div>
 
-        <div style="margin-bottom:20px;display:flex;gap:10px;">
-            <button id="btn-start-repair" class="ui-btn ui-btn-success" onclick="startRepair()">Запустить дозаполнение</button>
+        <!-- Accordion 2: Fields -->
+        <div class="migrator-accordion" style="margin-bottom:16px;">
+            <div class="migrator-accordion-header repair-accordion-header" style="cursor:pointer;">
+                <span class="migrator-accordion-arrow">&#9654;</span>
+                <span class="migrator-accordion-title">Дозаполнение полей</span>
+            </div>
+            <div class="migrator-accordion-body" style="display:none;">
+                <p style="margin:0 0 12px;font-size:13px;color:#888;">Перечитать данные из облака и обновить поля на коробке (стандартные + UF).</p>
+                <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="repair_type" value="companies"> Компании</label>
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="repair_type" value="contacts"> Контакты</label>
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="repair_type" value="deals"> Сделки</label>
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="repair_type" value="leads"> Лиды</label>
+                </div>
+                <button class="ui-btn ui-btn-primary btn-repair-start" onclick="startRepair(this)">Запустить дозаполнение</button>
+            </div>
+        </div>
+
+        <!-- Accordion 3: Requisites -->
+        <div class="migrator-accordion" style="margin-bottom:16px;">
+            <div class="migrator-accordion-header repair-accordion-header" style="cursor:pointer;">
+                <span class="migrator-accordion-arrow">&#9654;</span>
+                <span class="migrator-accordion-title">Реквизиты</span>
+            </div>
+            <div class="migrator-accordion-body" style="display:none;">
+                <p style="margin:0 0 12px;font-size:13px;color:#888;">Создать недостающие реквизиты, банковские реквизиты и адреса. Существующие реквизиты (по PRESET_ID) не дублируются.</p>
+                <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="repair_type" value="requisites_companies" checked> Компании</label>
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="repair_type" value="requisites_contacts"> Контакты</label>
+                </div>
+                <button class="ui-btn ui-btn-primary btn-repair-start" onclick="startRepair(this)">Запустить</button>
+            </div>
+        </div>
+
+        <!-- Accordion 4: Bindings -->
+        <div class="migrator-accordion" style="margin-bottom:16px;">
+            <div class="migrator-accordion-header repair-accordion-header" style="cursor:pointer;">
+                <span class="migrator-accordion-arrow">&#9654;</span>
+                <span class="migrator-accordion-title">Привязки</span>
+            </div>
+            <div class="migrator-accordion-body" style="display:none;">
+                <p style="margin:0 0 12px;font-size:13px;color:#888;">Восстановить связи между сущностями по данным из облака.</p>
+                <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:14px;">
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="repair_type" value="bindings_companies" checked> Компании &rarr; Сделки/Лиды</label>
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" name="repair_type" value="bindings"> Сделки &harr; Контакты, Контакты &harr; Компании (M:N)</label>
+                </div>
+                <button class="ui-btn ui-btn-primary btn-repair-start" onclick="startRepair(this)">Запустить</button>
+            </div>
+        </div>
+
+        <!-- Shared: stop button, progress, log -->
+        <div style="margin-bottom:12px;">
             <button id="btn-stop-repair" class="ui-btn ui-btn-danger" onclick="stopRepair()" style="display:none;">Остановить</button>
         </div>
 
-        <!-- Progress -->
         <div id="repair-progress-section" style="display:none;margin-bottom:20px;">
             <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
                 <strong>Статус:</strong>
-                <span id="repair-status-text">—</span>
+                <span id="repair-status-text">&mdash;</span>
             </div>
             <div style="background:#e8e8e8;border-radius:6px;height:24px;overflow:hidden;margin-bottom:8px;">
                 <div id="repair-progress-bar" style="height:100%;background:#4CAF50;border-radius:6px;transition:width 0.3s;width:0%;"></div>
@@ -419,9 +454,8 @@ function migratorStatusText($status) {
             <div id="repair-progress-text" style="font-size:13px;color:#666;"></div>
         </div>
 
-        <!-- Log -->
         <div id="repair-log-section" style="display:none;">
-            <h3 style="margin:0 0 8px;font-size:15px;">Лог дозаполнения</h3>
+            <h3 style="margin:0 0 8px;font-size:15px;">Лог</h3>
             <div id="repair-log" style="background:#1e1e1e;color:#d4d4d4;font-family:monospace;font-size:12px;padding:12px;border-radius:6px;height:350px;overflow-y:auto;white-space:pre-wrap;"></div>
         </div>
     </div>

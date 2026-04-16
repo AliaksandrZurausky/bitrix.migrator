@@ -57,13 +57,29 @@ class RepairService
         try {
             $this->restoreCaches();
 
+            // Rebuild mappings run without pre-counted totals (cloud count unknown)
+            $rebuildTypes = array_filter($selectedTypes, fn($t) => strpos($t, 'rebuild_mappings_') === 0);
+            $repairTypes = array_diff($selectedTypes, $rebuildTypes);
+
+            // Phase 1: Rebuild mappings (if requested)
+            foreach ($rebuildTypes as $type) {
+                $this->checkStop();
+                $entityType = str_replace('rebuild_mappings_', '', $type);
+                $entityType = rtrim($entityType, 's'); // companies → company
+                $this->rebuildMappings($entityType);
+            }
+
+            // Restore caches after potential mapping rebuild
+            if (!empty($rebuildTypes)) {
+                $this->restoreCaches();
+            }
+
+            // Phase 2: Repair operations
             $total = 0;
             $done = 0;
-            // Count totals for progress
-            foreach ($selectedTypes as $type) {
+            foreach ($repairTypes as $type) {
                 if (in_array($type, ['companies', 'contacts', 'deals', 'leads'])) {
-                    $entityType = rtrim($type, 's'); // companies → company
-                    $total += count(MapService::getAllMappings($entityType));
+                    $total += count(MapService::getAllMappings(rtrim($type, 's')));
                 } elseif ($type === 'requisites_companies') {
                     $total += count(MapService::getAllMappings('company'));
                 } elseif ($type === 'requisites_contacts') {
@@ -71,11 +87,13 @@ class RepairService
                 } elseif ($type === 'bindings') {
                     $total += count(MapService::getAllMappings('deal'));
                     $total += count(MapService::getAllMappings('contact'));
+                } elseif ($type === 'bindings_companies') {
+                    $total += count(MapService::getAllMappings('company'));
                 }
             }
-            $this->addLog("Всего элементов для обработки: $total");
+            if ($total > 0) $this->addLog("Элементов для обработки: $total");
 
-            foreach ($selectedTypes as $type) {
+            foreach ($repairTypes as $type) {
                 $this->checkStop();
                 switch ($type) {
                     case 'companies':
@@ -92,6 +110,9 @@ class RepairService
                         break;
                     case 'bindings':
                         $done += $this->repairBindings($done, $total);
+                        break;
+                    case 'bindings_companies':
+                        $done += $this->repairCompanyBindings($done, $total);
                         break;
                 }
             }
@@ -434,6 +455,169 @@ class RepairService
 
         $this->addLog("Связи: исправлено=$fixed");
         return $processed;
+    }
+
+    // ------------------------------------------------------------------
+    // Repair: Company → Deal/Lead bindings
+    // ------------------------------------------------------------------
+
+    private function repairCompanyBindings(int $offset, int $total): int
+    {
+        $companyMappings = MapService::getAllMappings('company');
+        $this->addLog("--- Привязки компаний к сделкам/лидам (" . count($companyMappings) . " шт) ---");
+
+        $processed = 0;
+        $fixedDeals = 0;
+        $fixedLeads = 0;
+
+        foreach ($companyMappings as $cloudCompanyId => $boxCompanyId) {
+            $this->checkStop();
+            $processed++;
+            $this->saveProgress($offset + $processed, $total);
+
+            // Deals linked to this company in the cloud
+            try {
+                $this->rateLimit();
+                $cloudDeals = $this->cloudAPI->request('crm.deal.list', [
+                    'filter' => ['COMPANY_ID' => (int)$cloudCompanyId],
+                    'select' => ['ID'],
+                ]);
+                foreach (($cloudDeals['result'] ?? []) as $d) {
+                    $cloudDealId = (int)($d['ID'] ?? 0);
+                    if ($cloudDealId > 0 && isset($this->dealMapCache[$cloudDealId])) {
+                        $boxDealId = (int)$this->dealMapCache[$cloudDealId];
+                        try {
+                            BoxD7Service::updateDeal($boxDealId, ['COMPANY_ID' => (int)$boxCompanyId]);
+                            $fixedDeals++;
+                        } catch (\Throwable $e) {}
+                    }
+                }
+            } catch (\Throwable $e) {}
+
+            // Leads linked to this company in the cloud
+            try {
+                $this->rateLimit();
+                $cloudLeads = $this->cloudAPI->request('crm.lead.list', [
+                    'filter' => ['COMPANY_ID' => (int)$cloudCompanyId],
+                    'select' => ['ID'],
+                ]);
+                foreach (($cloudLeads['result'] ?? []) as $l) {
+                    $cloudLeadId = (int)($l['ID'] ?? 0);
+                    if ($cloudLeadId > 0 && isset($this->leadMapCache[$cloudLeadId])) {
+                        $boxLeadId = (int)$this->leadMapCache[$cloudLeadId];
+                        try {
+                            BoxD7Service::updateLead($boxLeadId, ['COMPANY_ID' => (int)$boxCompanyId]);
+                            $fixedLeads++;
+                        } catch (\Throwable $e) {}
+                    }
+                }
+            } catch (\Throwable $e) {}
+
+            if ($processed % 20 === 0) {
+                $this->addLog("  Обработано $processed/" . count($companyMappings) . " (сделок=$fixedDeals, лидов=$fixedLeads)");
+            }
+        }
+
+        $this->addLog("Привязки компаний: сделок=$fixedDeals, лидов=$fixedLeads");
+        return $processed;
+    }
+
+    // ------------------------------------------------------------------
+    // Rebuild mappings by TITLE / NAME matching
+    // ------------------------------------------------------------------
+
+    private function rebuildMappings(string $entityType): void
+    {
+        $this->addLog("--- Восстановление маппингов: $entityType ---");
+        $conn = \Bitrix\Main\Application::getConnection();
+
+        // Build box index by title/name
+        $boxIndex = [];
+        switch ($entityType) {
+            case 'company':
+                $rows = $conn->query("SELECT ID, TITLE FROM b_crm_company")->fetchAll();
+                foreach ($rows as $r) {
+                    $key = mb_strtolower(trim($r['TITLE'] ?? ''));
+                    if ($key !== '') $boxIndex[$key] = (int)$r['ID'];
+                }
+                $apiMethod = 'crm.company.list';
+                $selectFields = ['ID', 'TITLE'];
+                break;
+            case 'contact':
+                $rows = $conn->query("SELECT ID, NAME, LAST_NAME FROM b_crm_contact")->fetchAll();
+                foreach ($rows as $r) {
+                    $key = mb_strtolower(trim(($r['LAST_NAME'] ?? '') . ' ' . ($r['NAME'] ?? '')));
+                    if ($key !== '' && $key !== ' ') $boxIndex[$key] = (int)$r['ID'];
+                }
+                $apiMethod = 'crm.contact.list';
+                $selectFields = ['ID', 'NAME', 'LAST_NAME'];
+                break;
+            case 'deal':
+                $rows = $conn->query("SELECT ID, TITLE FROM b_crm_deal")->fetchAll();
+                foreach ($rows as $r) {
+                    $key = mb_strtolower(trim($r['TITLE'] ?? ''));
+                    if ($key !== '') $boxIndex[$key] = (int)$r['ID'];
+                }
+                $apiMethod = 'crm.deal.list';
+                $selectFields = ['ID', 'TITLE'];
+                break;
+            case 'lead':
+                $rows = $conn->query("SELECT ID, TITLE FROM b_crm_lead")->fetchAll();
+                // Leads can have duplicate titles — store arrays, match only unique
+                $leadIndex = [];
+                foreach ($rows as $r) {
+                    $key = mb_strtolower(trim($r['TITLE'] ?? ''));
+                    if ($key !== '') $leadIndex[$key][] = (int)$r['ID'];
+                }
+                foreach ($leadIndex as $key => $ids) {
+                    if (count($ids) === 1) $boxIndex[$key] = $ids[0];
+                }
+                $apiMethod = 'crm.lead.list';
+                $selectFields = ['ID', 'TITLE'];
+                break;
+            default:
+                $this->addLog("  Неизвестный тип: $entityType");
+                return;
+        }
+
+        $this->addLog("  Box $entityType: " . count($boxIndex) . " записей");
+
+        $matched = 0;
+        $skipped = 0;
+        $notFound = 0;
+        $self = $this;
+
+        $this->cloudAPI->fetchBatched($apiMethod, ['select' => $selectFields], function ($batch) use ($self, $entityType, $boxIndex, &$matched, &$skipped, &$notFound) {
+            foreach ($batch as $item) {
+                $cloudId = (int)($item['ID'] ?? 0);
+                if ($cloudId <= 0) continue;
+
+                // Build matching key
+                if ($entityType === 'contact') {
+                    $key = mb_strtolower(trim(($item['LAST_NAME'] ?? '') . ' ' . ($item['NAME'] ?? '')));
+                } else {
+                    $key = mb_strtolower(trim($item['TITLE'] ?? ''));
+                }
+                if ($key === '' || $key === ' ') continue;
+
+                if (!isset($boxIndex[$key])) {
+                    $notFound++;
+                    continue;
+                }
+
+                if (MapService::exists($entityType, $cloudId)) {
+                    $skipped++;
+                    continue;
+                }
+
+                MapService::addMap($entityType, $cloudId, $boxIndex[$key]);
+                $matched++;
+            }
+            $self->addLog("  batch: matched=$matched, existed=$skipped, not_found=$notFound");
+        });
+
+        $total = count(MapService::getAllMappings($entityType));
+        $this->addLog("  Итого: новых=$matched, было=$skipped, не найдено=$notFound. Всего маппингов $entityType: $total");
     }
 
     // ------------------------------------------------------------------

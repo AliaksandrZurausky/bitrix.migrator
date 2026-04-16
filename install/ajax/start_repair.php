@@ -40,7 +40,12 @@ $selectedTypes = $_POST['types'] ?? [];
 if (is_string($selectedTypes)) {
     $selectedTypes = json_decode($selectedTypes, true) ?: [];
 }
-$allowed = ['companies', 'contacts', 'deals', 'leads', 'requisites_companies', 'requisites_contacts', 'bindings'];
+$allowed = [
+    'rebuild_mappings_companies', 'rebuild_mappings_contacts', 'rebuild_mappings_deals', 'rebuild_mappings_leads',
+    'companies', 'contacts', 'deals', 'leads',
+    'requisites_companies', 'requisites_contacts',
+    'bindings_companies', 'bindings',
+];
 $selectedTypes = array_values(array_intersect($selectedTypes, $allowed));
 
 if (empty($selectedTypes)) {

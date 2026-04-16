@@ -1803,21 +1803,28 @@
     // =====================================================================
 
     var repairPollTimer = null;
+    var activeRepairBtn = null;
 
-    window.startRepair = function() {
-        var checkboxes = document.querySelectorAll('input[name="repair_type"]:checked');
+    window.startRepair = function(btn) {
+        // Collect checkboxes from the accordion section that contains the clicked button
+        var section = btn.closest('.migrator-accordion-body');
+        var checkboxes = section.querySelectorAll('input[name="repair_type"]:checked');
         var types = [];
         checkboxes.forEach(function(cb) { types.push(cb.value); });
         if (types.length === 0) {
-            alert('Выберите хотя бы один тип для дозаполнения');
+            alert('Выберите хотя бы один тип');
             return;
         }
 
-        document.getElementById('btn-start-repair').disabled = true;
+        // Disable all start buttons, show stop
+        activeRepairBtn = btn;
+        document.querySelectorAll('.btn-repair-start').forEach(function(b) { b.disabled = true; });
         document.getElementById('btn-stop-repair').style.display = '';
         document.getElementById('repair-progress-section').style.display = '';
         document.getElementById('repair-log-section').style.display = '';
         document.getElementById('repair-status-text').textContent = 'Запуск...';
+        document.getElementById('repair-progress-bar').style.width = '0%';
+        document.getElementById('repair-progress-text').textContent = '';
         document.getElementById('repair-log').textContent = '';
 
         var fd = new FormData();
@@ -1831,13 +1838,13 @@
                     repairPollTimer = setInterval(pollRepairStatus, 2000);
                 } else {
                     document.getElementById('repair-status-text').textContent = 'Ошибка: ' + (data.error || '');
-                    document.getElementById('btn-start-repair').disabled = false;
+                    document.querySelectorAll('.btn-repair-start').forEach(function(b) { b.disabled = false; });
                     document.getElementById('btn-stop-repair').style.display = 'none';
                 }
             })
             .catch(function(err) {
                 document.getElementById('repair-status-text').textContent = 'Ошибка сети: ' + err;
-                document.getElementById('btn-start-repair').disabled = false;
+                document.querySelectorAll('.btn-repair-start').forEach(function(b) { b.disabled = false; });
             });
     };
 
@@ -1875,10 +1882,10 @@
                 if (data.status === 'completed' || data.status === 'error' || data.status === 'stopped') {
                     clearInterval(repairPollTimer);
                     repairPollTimer = null;
-                    document.getElementById('btn-start-repair').disabled = false;
+                    document.querySelectorAll('.btn-repair-start').forEach(function(b) { b.disabled = false; });
                     document.getElementById('btn-stop-repair').style.display = 'none';
                     if (data.status === 'completed') {
-                        statusEl.textContent = 'Дозаполнение завершено';
+                        statusEl.textContent = 'Завершено';
                         progressBar.style.width = '100%';
                     }
                 }
@@ -1886,15 +1893,18 @@
             .catch(function() {});
     }
 
-    // Load info when repair tab is activated
+    // Accordion toggle for repair tab
     function initRepairTab() {
-        document.querySelectorAll('.migrator-tab-btn').forEach(function(btn) {
-            btn.addEventListener('click', function() {
-                if (btn.getAttribute('data-tab') === 'repair') {
-                    var infoEl = document.getElementById('repair-mappings-info');
-                    if (infoEl) {
-                        infoEl.textContent = 'Выберите типы данных и нажмите «Запустить дозаполнение».';
-                    }
+        document.querySelectorAll('.repair-accordion-header').forEach(function(header) {
+            header.addEventListener('click', function() {
+                var body = header.nextElementSibling;
+                var arrow = header.querySelector('.migrator-accordion-arrow');
+                if (body.style.display === 'none') {
+                    body.style.display = '';
+                    if (arrow) arrow.textContent = '\u25BC';
+                } else {
+                    body.style.display = 'none';
+                    if (arrow) arrow.textContent = '\u25B6';
                 }
             });
         });
